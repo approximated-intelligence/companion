@@ -1,0 +1,93 @@
+[versions]
+agp = "9.1.0"
+camerax = "1.5.3"
+coil = "3.4.0"
+compose-activity = "1.13.0"
+compose-bom = "2026.03.00"
+core-ktx = "1.18.0"
+coroutines = "1.10.2"
+datastore = "1.2.1"
+diff-utils = "4.16"
+documentfile = "1.1.0"
+exifinterface = "1.4.2"
+hilt = "2.59.2"
+hilt-androidx = "1.3.0"
+jna = "5.18.1"
+kotlin = "2.3.10"
+ksp = "2.3.6"
+ktor = "3.4.1"
+lazysodium = "5.2.0"
+lifecycle = "2.10.0"
+media3 = "1.9.2"
+navigation-compose = "2.9.7"
+reorderable = "3.0.0"
+room = "2.8.4"
+version-catalog-update = "1.1.0"
+workmanager = "2.11.1"
+zxing = "3.5.4"
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+version-catalog-update = { id = "nl.littlerobots.version-catalog-update", version.ref = "version-catalog-update" }
+
+[libraries]
+# CameraX
+camerax-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "camerax" }
+camerax-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "camerax" }
+camerax-view = { module = "androidx.camera:camera-view", version.ref = "camerax" }
+# Coil
+coil-compose = { module = "io.coil-kt.coil3:coil-compose", version.ref = "coil" }
+coil-video = { module = "io.coil-kt.coil3:coil-video", version.ref = "coil" }
+compose-activity = { module = "androidx.activity:activity-compose", version.ref = "compose-activity" }
+# Compose BOM
+compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
+compose-lifecycle = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
+compose-material-icons = { module = "androidx.compose.material:material-icons-extended" }
+compose-material3 = { module = "androidx.compose.material3:material3" }
+compose-ui = { module = "androidx.compose.ui:ui" }
+compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
+compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+compose-viewmodel = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+# AndroidX
+core-ktx = { module = "androidx.core:core-ktx", version.ref = "core-ktx" }
+# Coroutines
+coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
+# Diff
+diff-utils = { module = "io.github.java-diff-utils:java-diff-utils", version.ref = "diff-utils" }
+documentfile = { module = "androidx.documentfile:documentfile", version.ref = "documentfile" }
+exifinterface = { module = "androidx.exifinterface:exifinterface", version.ref = "exifinterface" }
+# Hilt
+hilt-android = { module = "com.google.dagger:hilt-android", version.ref = "hilt" }
+hilt-compiler = { module = "com.google.dagger:hilt-android-compiler", version.ref = "hilt" }
+hilt-navigation-compose = { module = "androidx.hilt:hilt-navigation-compose", version.ref = "hilt-androidx" }
+hilt-work = { module = "androidx.hilt:hilt-work", version.ref = "hilt-androidx" }
+hilt-work-compiler = { module = "androidx.hilt:hilt-compiler", version.ref = "hilt-androidx" }
+jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
+# Ktor
+ktor-client-android = { module = "io.ktor:ktor-client-android", version.ref = "ktor" }
+ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
+ktor-serialization-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
+# Crypto
+lazysodium-android = { module = "com.goterl:lazysodium-android", version.ref = "lazysodium" }
+media3-effect = { module = "androidx.media3:media3-effect", version.ref = "media3" }
+# Media3
+media3-exoplayer = { module = "androidx.media3:media3-exoplayer", version.ref = "media3" }
+media3-transformer = { module = "androidx.media3:media3-transformer", version.ref = "media3" }
+media3-ui = { module = "androidx.media3:media3-ui", version.ref = "media3" }
+# Navigation
+navigation-compose = { module = "androidx.navigation:navigation-compose", version.ref = "navigation-compose" }
+# Drag-to-reorder
+reorderable = { module = "sh.calvin.reorderable:reorderable", version.ref = "reorderable" }
+room-compiler = { module = "androidx.room:room-compiler", version.ref = "room" }
+room-ktx = { module = "androidx.room:room-ktx", version.ref = "room" }
+# Room
+room-runtime = { module = "androidx.room:room-runtime", version.ref = "room" }
+# WorkManager
+workmanager = { module = "androidx.work:work-runtime-ktx", version.ref = "workmanager" }
+# QR
+zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }

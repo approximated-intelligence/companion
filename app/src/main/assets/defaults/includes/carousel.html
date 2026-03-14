@@ -1,0 +1,48 @@
+{% comment %}
+  Reusable carousel partial.
+  Parameters: media, slug, motto, title, mode (optional: "full" or "card", default "card")
+  Usage: {% include carousel.html media=post.media slug=post.slug motto=post.motto title=post.title mode="full" %}
+{% endcomment %}
+{% assign carousel_mode = include.mode | default: "card" %}
+{% if include.media and include.media.size > 0 %}
+  <div class="carousel" id="carousel-{{ include.slug }}" data-slug="{{ include.slug }}" data-mode="{{ carousel_mode }}">
+    {% for item in include.media %}
+      {% if item.type == "image" %}
+        <figure class="carousel-slide"
+          {% if item.width and item.height %}style="aspect-ratio: {{ item.width }}/{{ item.height }}"{% endif %}
+          {% if forloop.first and include.motto %}data-motto="{{ include.motto }}"{% endif %}>
+          <img
+            src="{{ '/static/' | append: include.slug | append: '/' | append: item.file | relative_url }}"
+            data-src="{{ '/static/' | append: include.slug | append: '/' | append: item.file | relative_url }}"
+            alt="{{ include.title }}{% if forloop.first and include.motto %} — {{ include.motto }}{% endif %}"
+            {% if item.width and item.height %}width="{{ item.width }}" height="{{ item.height }}"{% endif %}
+            loading="{% if forloop.first %}eager{% else %}lazy{% endif %}">
+          {% if forloop.first and include.motto %}
+            <figcaption class="carousel-motto">{{ include.motto }}</figcaption>
+          {% endif %}
+        </figure>
+      {% elsif item.type == "video" %}
+        <figure class="carousel-slide"
+          {% if item.width and item.height %}style="aspect-ratio: {{ item.width }}/{{ item.height }}"{% endif %}>
+          <video
+            src="{{ '/static/' | append: include.slug | append: '/' | append: item.file | relative_url }}"
+            data-src="{{ '/static/' | append: include.slug | append: '/' | append: item.file | relative_url }}"
+            {% if item.width and item.height %}width="{{ item.width }}" height="{{ item.height }}"{% endif %}
+            controls
+            preload="metadata"
+            playsinline
+            {% unless include.autoplay == false %}muted{% endunless %}>
+          </video>
+        </figure>
+      {% endif %}
+    {% endfor %}
+    <div class="carousel-controls" aria-hidden="true">
+      <button class="carousel-prev" aria-label="Previous">&#8592;</button>
+      <div class="carousel-dots"></div>
+      <button class="carousel-next" aria-label="Next">&#8594;</button>
+    </div>
+    {% if include.media.size > 1 %}
+      <div class="carousel-count" aria-live="polite">1 / {{ include.media.size }}</div>
+    {% endif %}
+  </div>
+{% endif %}
