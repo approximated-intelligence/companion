@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <files-path name="post_media" path="post_media/" />
+    <cache-path name="gpx_share" path="gpx_share/" />
+    <external-files-path name="postmedia" path="PostMedia/" />
+    <external-files-path name="site_assets" path="site_assets/" />
+</paths>
