@@ -1,0 +1,489 @@
+---
+---
+
+@font-face {
+    font-family: 'Latin Modern Mono';
+    src: url('/static/fonts/lmmono10-regular.woff2') format('woff2');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'Latin Modern Mono';
+    src: url('/static/fonts/lmmono10-italic.woff2') format('woff2');
+    font-weight: normal;
+    font-style: italic;
+    font-display: swap;
+}
+
+@media print {
+    @font-face {
+        font-family: 'Latin Modern Mono';
+        src: url('/static/fonts/lmmono10-regular.otf') format('opentype'),
+             url('/static/fonts/lmmono10-regular.ttf') format('truetype');
+        font-weight: normal;
+        font-style: normal;
+    }
+    @font-face {
+        font-family: 'Latin Modern Mono';
+        src: url('/static/fonts/lmmono10-italic.otf') format('opentype'),
+             url('/static/fonts/lmmono10-italic.ttf') format('truetype');
+        font-weight: normal;
+        font-style: italic;
+    }
+}
+
+$base-font-family: "Latin Modern Mono", "Courier New", monospace;
+$base-font-size: 16px;
+$code-font-family: "Latin Modern Mono", "Courier New", monospace;
+
+@import "minima";
+
+// =============================================================================
+// Carousel - shared base
+// =============================================================================
+
+.carousel {
+  position: relative;
+  width: 100%;
+  font-family: inherit;
+  overflow: hidden;
+  background: #f5f5f5;
+  &:focus { outline: 2px solid #5af; outline-offset: -2px; }
+  &:focus:not(:focus-visible) { outline: none; }
+}
+
+// ---- No-JS fallback ----
+
+.carousel:not(.carousel-enhanced) .carousel-slide {
+  display: block;
+  margin: 0 0 0.75rem 0;
+  padding: 0;
+  position: relative;
+}
+
+.carousel:not(.carousel-enhanced) .carousel-slide img,
+.carousel:not(.carousel-enhanced) .carousel-slide video {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 80vh;
+  object-fit: contain;
+  background: #111;
+}
+
+.carousel:not(.carousel-enhanced) .carousel-controls {
+  display: none;
+}
+
+.carousel:not(.carousel-enhanced) .carousel-count {
+  display: none;
+}
+
+.carousel:not(.carousel-enhanced) .carousel-slide:not(:first-child) .carousel-motto {
+  display: none;
+}
+
+// ---- JS-enhanced single-item view ----
+
+.carousel-enhanced {
+  position: relative;
+}
+
+.carousel-enhanced .carousel-slide {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+
+.carousel-enhanced .carousel-slide.is-active {
+  position: relative;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.carousel-enhanced .carousel-slide img,
+.carousel-enhanced .carousel-slide video {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+}
+
+// ---- Motto overlay ----
+
+.carousel-motto {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 1.5rem 1rem 0.75rem;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
+  color: #fff;
+  font-style: italic;
+  font-size: 1.05rem;
+  line-height: 1.4;
+  pointer-events: none;
+  z-index: 2;
+}
+
+// ---- Slide count badge ----
+
+.carousel-count {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: bold;
+  line-height: 1;
+  padding: 0.3rem 0.6rem;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 5;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+// ---- Controls bar ----
+
+.carousel-controls {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.75rem;
+  background: rgba(0, 0, 0, 0.45);
+  user-select: none;
+}
+
+.carousel-prev,
+.carousel-next {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  color: rgba(255, 255, 255, 0.8);
+  font-family: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0.3rem 0.65rem;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: border-color 0.15s, color 0.15s, opacity 0.15s;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 11;
+
+  &:hover,
+  &:focus-visible {
+    border-color: #fff;
+    color: #fff;
+    outline: none;
+  }
+
+  &:disabled {
+    opacity: 0.25;
+    cursor: default;
+  }
+}
+
+// ---- Dots ----
+
+.carousel-dots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  justify-content: center;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.carousel-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.35);
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.15s;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 11;
+
+  &.is-active {
+    background: #fff;
+    transform: scale(1.4);
+  }
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.7);
+  }
+
+  &:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.6);
+    outline-offset: 2px;
+  }
+}
+
+// =============================================================================
+// Carousel - post page (full mode): rounded, generous height
+// =============================================================================
+
+.post .carousel {
+  margin: 1.5rem 0;
+  border-radius: 6px;
+}
+
+.post .carousel-enhanced .carousel-slide img,
+.post .carousel-enhanced .carousel-slide video {
+  max-height: 85vh;
+}
+
+// =============================================================================
+// Carousel - feed cards (card mode): edge-to-edge, compact, subtle buttons
+// =============================================================================
+
+.post-card .carousel {
+  margin: 0;
+  border-radius: 0;
+}
+
+.post-card .carousel-enhanced .carousel-slide img,
+.post-card .carousel-enhanced .carousel-slide video {
+  max-height: 70vh;
+}
+
+// Subtle controls in feed - appear on hover/focus
+.post-card .carousel-controls {
+  opacity: 0.4;
+  transition: opacity 0.2s ease;
+}
+
+.post-card .carousel:hover .carousel-controls,
+.post-card .carousel:focus-within .carousel-controls {
+  opacity: 1;
+}
+
+// Smaller, more subtle buttons in feed
+.post-card .carousel-prev,
+.post-card .carousel-next {
+  font-size: 0.85rem;
+  padding: 0.2rem 0.5rem;
+  border-color: rgba(255, 255, 255, 0.25);
+  color: rgba(255, 255, 255, 0.6);
+
+  &:hover,
+  &:focus-visible {
+    border-color: rgba(255, 255, 255, 0.7);
+    color: #fff;
+  }
+}
+
+// Smaller dots in feed
+.post-card .carousel-dot {
+  width: 6px;
+  height: 6px;
+}
+
+// =============================================================================
+// Post card - clickable media-first feed entry for home & tags
+// =============================================================================
+
+.post-card {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  position: relative;
+}
+
+.post-card + .post-card {
+  margin-top: 0.5rem;
+}
+
+.post-card-link {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+  overflow: hidden;
+  transition: background 0.15s ease;
+
+  &:hover {
+    background: rgba(0, 0, 0, 0.02);
+  }
+
+  &:active {
+    background: rgba(0, 0, 0, 0.04);
+  }
+
+  &:focus-visible {
+    outline: 2px solid #5af;
+    outline-offset: -2px;
+  }
+}
+
+.post-card-body {
+  padding: 0.5rem 0.125rem 0.4rem;
+}
+
+.post-card-teaser {
+  margin: 0 0 0.2rem;
+  font-size: 0.92rem;
+  line-height: 1.45;
+  color: #555;
+}
+
+.post-card-meta {
+  display: block;
+  font-size: 0.78rem;
+  color: #999;
+}
+
+// Tags sit outside the link so they remain independently clickable
+.post-card-tags {
+  padding: 0.2rem 0.125rem 0.4rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  position: relative;
+  z-index: 5;
+}
+
+// =============================================================================
+// Post typography
+// =============================================================================
+
+.post-teaser {
+  color: #555;
+  margin: 0.3rem 0 1rem;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.post-teaser-line {
+  margin: 0.75rem 0 0.25rem;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: #555;
+}
+
+.post-more {
+  color: inherit;
+  white-space: nowrap;
+}
+
+.post-motto {
+  font-style: italic;
+  color: #666;
+  margin: 0.2rem 0 1rem;
+}
+
+// =============================================================================
+// Tags page
+// =============================================================================
+
+.tags-page {
+  h1 { margin-bottom: 1.5rem; }
+}
+
+.tag-group {
+  margin-bottom: 1.5rem;
+}
+
+.tag-heading {
+  font-size: 1.1rem;
+  margin-bottom: 0.5rem;
+}
+
+.tag-count {
+  color: #999;
+  font-weight: normal;
+  font-size: 0.9rem;
+}
+
+.tag-posts {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+// =============================================================================
+// Tags (shared)
+// =============================================================================
+
+.post-tags {
+  margin: 1.5rem 0 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.post-tags-small {
+  margin: 0.5rem 0 0;
+}
+
+.post-tag {
+  display: inline-block;
+  background: #f0f0f0;
+  color: #555;
+  padding: 0.15rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.8rem;
+  text-decoration: none;
+  transition: background 0.12s, color 0.12s;
+  position: relative;
+  z-index: 5;
+
+  &:hover {
+    background: #ddd;
+    color: #333;
+  }
+}
+
+// =============================================================================
+// Post list - feed layout
+// =============================================================================
+
+.post-list {
+  list-style: none;
+  margin-left: 0;
+  padding-left: 0;
+}
+
+.post-entry {
+  margin: 0 0 2rem;
+  padding: 0;
+}
+
+.post-entry-title {
+  margin-bottom: 0.2rem;
+}
+
+.post-entry-more {
+  margin-top: 0.5rem;
+}
+
+// Thin separator between feed items
+.post-divider {
+  border: none;
+  border-top: 1px solid #eee;
+  margin: 0.75rem 0;
+}

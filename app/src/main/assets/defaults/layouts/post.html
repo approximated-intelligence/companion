@@ -1,0 +1,21 @@
+---
+layout: default
+---
+<article class="post">
+  <h2 class="post-title">{{ page.title }}</h2>
+
+  {% include carousel.html media=page.media slug=page.slug motto=page.motto title=page.title mode="full" %}
+
+  <div class="post-content">
+    {{ content }}
+  </div>
+
+  {% if page.tags and page.tags.size > 0 %}
+    <div class="post-tags">
+      {% for tag in page.tags %}
+        <a href="{{ '/tags/' | relative_url }}#{{ tag }}" class="post-tag">#{{ tag }}</a>
+      {% endfor %}
+    </div>
+  {% endif %}
+</article>
+<script src="{{ '/assets/js/carousel.js' | relative_url }}" defer></script>

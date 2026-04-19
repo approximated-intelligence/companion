@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Companion</string>
+    <plurals name="parts_finished">
+        <item quantity="one">%d part finished</item>
+        <item quantity="other">%d parts finished</item>
+    </plurals>
+</resources>
