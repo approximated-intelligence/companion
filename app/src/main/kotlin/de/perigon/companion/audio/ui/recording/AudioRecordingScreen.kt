@@ -493,7 +493,7 @@ private fun RecordingRow(
                         )
                     } else {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(rec.name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+                            Text(rec.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                             if (!selectionMode) {
                                 IconButton(onClick = { editing = true }, modifier = Modifier.size(24.dp)) {
                                     Icon(Icons.Default.Edit, "Rename", modifier = Modifier.size(14.dp),
