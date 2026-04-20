@@ -3,9 +3,7 @@ package de.perigon.companion.audio.ui.recording
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.os.ParcelFileDescriptor
 import androidx.compose.runtime.Immutable
-import androidx.core.content.FileProvider
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -25,14 +23,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 @Immutable
 data class AudioRecordingUiState(
     val isRecording:        Boolean = false,
     val isPaused:           Boolean = false,
-    val isAutoPaused:       Boolean = false,
     val amplitudeDb:        Int     = -100,
     val elapsedMs:          Long    = 0L,
     val currentRecordingId: Long    = 0L,
@@ -68,7 +64,6 @@ class AudioRecordingViewModel @Inject constructor(
                 AudioRecordingUiState(
                     isRecording        = status.isRecording,
                     isPaused           = status.isPaused,
-                    isAutoPaused       = status.isAutoPaused,
                     amplitudeDb        = status.amplitudeDb,
                     elapsedMs          = status.elapsedMs,
                     currentRecordingId = status.currentRecordingId,
@@ -114,35 +109,39 @@ class AudioRecordingViewModel @Inject constructor(
         })
     }
 
-    // ---- Config ----
+    // ---- Config: preset-bound fields switch preset to CUSTOM ----
 
     fun setPreset(preset: AudioPreset) {
         viewModelScope.launch {
-            if (preset == AudioPreset.CUSTOM) {
-                configPrefs.update { it.copy(preset = AudioPreset.CUSTOM) }
-            } else {
-                configPrefs.update { AudioConfigEntity.fromPreset(preset) }
+            configPrefs.update { current ->
+                if (preset == AudioPreset.CUSTOM) current.copy(preset = AudioPreset.CUSTOM)
+                else current.applyingPreset(preset)
             }
         }
     }
 
     fun setFormat(format: AudioFormat) {
         viewModelScope.launch {
-            configPrefs.update {
-                it.copy(format = format, preset = AudioPreset.CUSTOM,
-                    skipSilence = it.skipSilence && format.supportsPause)
-            }
+            configPrefs.update { it.copy(format = format, preset = AudioPreset.CUSTOM) }
         }
     }
 
-    fun setSampleRate(hz: Int)     { viewModelScope.launch { configPrefs.update { it.copy(sampleRateHz = hz, preset = AudioPreset.CUSTOM) } } }
-    fun setBitrate(bps: Int)       { viewModelScope.launch { configPrefs.update { it.copy(bitrateBps = bps, preset = AudioPreset.CUSTOM) } } }
-    fun setSkipSilence(on: Boolean){ viewModelScope.launch { configPrefs.update { it.copy(skipSilence = on, preset = AudioPreset.CUSTOM) } } }
-    fun setSilenceThresholdDb(db: Int) { viewModelScope.launch { configPrefs.update { it.copy(silenceThresholdDb = db, preset = AudioPreset.CUSTOM) } } }
-    fun setSilenceGraceMs(ms: Long){ viewModelScope.launch { configPrefs.update { it.copy(silenceGraceMs = ms, preset = AudioPreset.CUSTOM) } } }
-    fun setNoiseSuppression(on: Boolean) { viewModelScope.launch { configPrefs.update { it.copy(noiseSuppression = on, preset = AudioPreset.CUSTOM) } } }
-    fun setAutoGain(on: Boolean)   { viewModelScope.launch { configPrefs.update { it.copy(autoGain = on, preset = AudioPreset.CUSTOM) } } }
-    fun setShowLevel(on: Boolean)  { viewModelScope.launch { configPrefs.update { it.copy(showLevel = on) } } }
+    fun setSampleRate(hz: Int) { viewModelScope.launch {
+        configPrefs.update { it.copy(sampleRateHz = hz, preset = AudioPreset.CUSTOM) } } }
+
+    fun setBitrate(bps: Int) { viewModelScope.launch {
+        configPrefs.update { it.copy(bitrateBps = bps, preset = AudioPreset.CUSTOM) } } }
+
+    fun setNoiseSuppression(on: Boolean) { viewModelScope.launch {
+        configPrefs.update { it.copy(noiseSuppression = on, preset = AudioPreset.CUSTOM) } } }
+
+    fun setAutoGain(on: Boolean) { viewModelScope.launch {
+        configPrefs.update { it.copy(autoGain = on, preset = AudioPreset.CUSTOM) } } }
+
+    // ---- Config: recording-only fields don't affect preset ----
+
+    fun setShowLevel(on: Boolean) { viewModelScope.launch {
+        configPrefs.update { it.copy(showLevel = on) } } }
 
     // ---- Folder ----
 
@@ -226,7 +225,7 @@ class AudioRecordingViewModel @Inject constructor(
                         "Play audio",
                     ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                 )
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 snackbar.send("No app can play this file")
             }
         }

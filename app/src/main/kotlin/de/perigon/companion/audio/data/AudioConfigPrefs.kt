@@ -21,9 +21,6 @@ private object Keys {
     val FORMAT                = stringPreferencesKey("format")
     val SAMPLE_RATE_HZ        = intPreferencesKey("sample_rate_hz")
     val BITRATE_BPS           = intPreferencesKey("bitrate_bps")
-    val SKIP_SILENCE          = booleanPreferencesKey("skip_silence")
-    val SILENCE_THRESHOLD_DB  = intPreferencesKey("silence_threshold_db")
-    val SILENCE_GRACE_MS      = longPreferencesKey("silence_grace_ms")
     val NOISE_SUPPRESSION     = booleanPreferencesKey("noise_suppression")
     val AUTO_GAIN             = booleanPreferencesKey("auto_gain")
     val SHOW_LEVEL            = booleanPreferencesKey("show_level")
@@ -33,17 +30,18 @@ private object Keys {
 
 private fun Preferences.toAudioConfig(): AudioConfigEntity {
     val d = AudioConfigEntity.DEFAULT
+    // Guard against legacy formats (e.g. AMR_NB removed) → fall back to default.
+    val format = this[Keys.FORMAT]?.let { name ->
+        runCatching { AudioFormat.valueOf(name) }.getOrNull()
+    } ?: d.format
     return AudioConfigEntity(
         preset             = this[Keys.PRESET]?.let { runCatching { AudioPreset.valueOf(it) }.getOrNull() } ?: d.preset,
-        format             = this[Keys.FORMAT]?.let { runCatching { AudioFormat.valueOf(it) }.getOrNull() } ?: d.format,
-        sampleRateHz       = this[Keys.SAMPLE_RATE_HZ]       ?: d.sampleRateHz,
-        bitrateBps         = this[Keys.BITRATE_BPS]          ?: d.bitrateBps,
-        skipSilence        = this[Keys.SKIP_SILENCE]         ?: d.skipSilence,
-        silenceThresholdDb = this[Keys.SILENCE_THRESHOLD_DB] ?: d.silenceThresholdDb,
-        silenceGraceMs     = this[Keys.SILENCE_GRACE_MS]     ?: d.silenceGraceMs,
-        noiseSuppression   = this[Keys.NOISE_SUPPRESSION]    ?: d.noiseSuppression,
-        autoGain           = this[Keys.AUTO_GAIN]            ?: d.autoGain,
-        showLevel          = this[Keys.SHOW_LEVEL]           ?: d.showLevel,
+        format             = format,
+        sampleRateHz       = this[Keys.SAMPLE_RATE_HZ]    ?: d.sampleRateHz,
+        bitrateBps         = this[Keys.BITRATE_BPS]       ?: d.bitrateBps,
+        noiseSuppression   = this[Keys.NOISE_SUPPRESSION] ?: d.noiseSuppression,
+        autoGain           = this[Keys.AUTO_GAIN]         ?: d.autoGain,
+        showLevel          = this[Keys.SHOW_LEVEL]        ?: d.showLevel,
     )
 }
 
@@ -71,9 +69,6 @@ class AudioConfigPrefs @Inject constructor(
             set(Keys.FORMAT,               updated.format.name)
             set(Keys.SAMPLE_RATE_HZ,       updated.sampleRateHz)
             set(Keys.BITRATE_BPS,          updated.bitrateBps)
-            set(Keys.SKIP_SILENCE,         updated.skipSilence)
-            set(Keys.SILENCE_THRESHOLD_DB, updated.silenceThresholdDb)
-            set(Keys.SILENCE_GRACE_MS,     updated.silenceGraceMs)
             set(Keys.NOISE_SUPPRESSION,    updated.noiseSuppression)
             set(Keys.AUTO_GAIN,            updated.autoGain)
             set(Keys.SHOW_LEVEL,           updated.showLevel)

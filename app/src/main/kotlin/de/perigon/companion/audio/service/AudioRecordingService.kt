@@ -27,7 +27,7 @@ import de.perigon.companion.audio.data.AudioConfigPrefs
 import de.perigon.companion.audio.data.AudioFormat
 import de.perigon.companion.audio.data.AudioRecordingEntity
 import de.perigon.companion.audio.data.AudioRepository
-import de.perigon.companion.audio.domain.SilenceGate
+import de.perigon.companion.audio.data.amplitudeToDb
 import de.perigon.companion.core.di.ApplicationScope
 import de.perigon.companion.core.ui.NotificationChannels
 import kotlinx.coroutines.CoroutineScope
@@ -48,13 +48,12 @@ import java.util.Locale
 import javax.inject.Inject
 
 data class AudioRecordingStatus(
-    val isRecording:       Boolean = false,
-    val isPaused:          Boolean = false,
-    val isAutoPaused:      Boolean = false,
-    val currentRecordingId: Long   = 0L,
-    val currentName:       String  = "",
-    val elapsedMs:         Long    = 0L,
-    val amplitudeDb:       Int     = -100,
+    val isRecording:        Boolean = false,
+    val isPaused:           Boolean = false,
+    val currentRecordingId: Long    = 0L,
+    val currentName:        String  = "",
+    val elapsedMs:          Long    = 0L,
+    val amplitudeDb:        Int     = -100,
 )
 
 @AndroidEntryPoint
@@ -75,7 +74,8 @@ class AudioRecordingService : Service() {
         private const val RESUME_REQUEST_CODE  = 9022
         private const val CONTENT_REQUEST_CODE = 9023
 
-        private const val AMPLITUDE_POLL_MS = 100L
+        private const val LEVEL_POLL_MS    = 100L
+        private const val ELAPSED_TICK_MS  = 500L
 
         private val _status = MutableStateFlow(AudioRecordingStatus())
         val status: StateFlow<AudioRecordingStatus> = _status.asStateFlow()
@@ -98,9 +98,7 @@ class AudioRecordingService : Service() {
     private var pauseAccumulatedMs: Long = 0L
     private var pauseStartedAtMs: Long = 0L
     private var userPaused: Boolean = false
-    private var autoPaused: Boolean = false
-    private var amplitudeJob: Job? = null
-    private var silenceGate: SilenceGate? = null
+    private var tickJob: Job? = null
     private var config: AudioConfigEntity = AudioConfigEntity.DEFAULT
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -175,24 +173,20 @@ class AudioRecordingService : Service() {
             startElapsedMs     = SystemClock.elapsedRealtime()
             pauseAccumulatedMs = 0L
             userPaused         = false
-            autoPaused         = false
-            silenceGate = if (cfg.skipSilence && cfg.format.supportsPause)
-                SilenceGate(cfg.silenceThresholdDb, cfg.silenceGraceMs) else null
 
             _status.value = AudioRecordingStatus(
-                isRecording       = true,
+                isRecording        = true,
                 currentRecordingId = recordingId,
-                currentName       = name,
+                currentName        = name,
             )
 
-            startAmplitudePolling()
+            startTickLoop()
         }
     }
 
     private fun stopRecording() {
         val rec = recorder ?: run { stopSelf(); return }
-        amplitudeJob?.cancel()
-        amplitudeJob = null
+        tickJob?.cancel(); tickJob = null
 
         try { rec.stop() } catch (e: Exception) { Log.w(TAG, "MediaRecorder.stop failed: ${e.message}") }
         detachEffects()
@@ -209,7 +203,6 @@ class AudioRecordingService : Service() {
         fileUri = null
         recordingId = 0L
         recordingName = ""
-        silenceGate = null
 
         appScope.launch(Dispatchers.IO) {
             val sizeBytes = capturedUri?.let { uri ->
@@ -248,52 +241,26 @@ class AudioRecordingService : Service() {
         refreshNotification()
     }
 
-    private fun autoPause() {
-        val rec = recorder ?: return
-        if (autoPaused || userPaused) return
-        try { rec.pause() } catch (_: Exception) { return }
-        autoPaused = true
-        pauseStartedAtMs = SystemClock.elapsedRealtime()
-        _status.update { it.copy(isAutoPaused = true) }
-    }
+    // ---- Tick loop (elapsed + optional level) ----
 
-    private fun autoResume() {
-        val rec = recorder ?: return
-        if (!autoPaused) return
-        try { rec.resume() } catch (_: Exception) { return }
-        pauseAccumulatedMs += SystemClock.elapsedRealtime() - pauseStartedAtMs
-        autoPaused = false
-        _status.update { it.copy(isAutoPaused = false) }
-    }
-
-    // ---- Amplitude polling & silence gate ----
-
-    private fun startAmplitudePolling() {
-        amplitudeJob?.cancel()
-        amplitudeJob = scope.launch {
+    private fun startTickLoop() {
+        tickJob?.cancel()
+        tickJob = scope.launch {
+            var sinceLastLevelMs = 0L
             while (recorder != null) {
-                delay(AMPLITUDE_POLL_MS)
                 val rec = recorder ?: break
-                val amplitude = try { rec.maxAmplitude } catch (_: Exception) { 0 }
-                val db = SilenceGate.amplitudeToDb(amplitude)
-                val now = SystemClock.elapsedRealtime()
 
-                silenceGate?.let { gate ->
-                    if (!userPaused) {
-                        val currentlyCapturing = !autoPaused
-                        when (gate.evaluate(amplitude, now, currentlyCapturing)) {
-                            SilenceGate.Decision.Pause  -> autoPause()
-                            SilenceGate.Decision.Resume -> autoResume()
-                            SilenceGate.Decision.Stay   -> {}
-                        }
-                    }
-                }
+                _status.update { it.copy(elapsedMs = computeElapsed()) }
 
-                _status.update {
-                    it.copy(
-                        amplitudeDb = db,
-                        elapsedMs   = computeElapsed(),
-                    )
+                if (config.showLevel) {
+                    val amplitude = try { rec.maxAmplitude } catch (_: Exception) { 0 }
+                    val db = amplitudeToDb(amplitude)
+                    _status.update { it.copy(amplitudeDb = db) }
+                    delay(LEVEL_POLL_MS)
+                    sinceLastLevelMs = 0L
+                } else {
+                    delay(ELAPSED_TICK_MS)
+                    sinceLastLevelMs += ELAPSED_TICK_MS
                 }
             }
         }
@@ -301,7 +268,7 @@ class AudioRecordingService : Service() {
 
     private fun computeElapsed(): Long {
         val now = SystemClock.elapsedRealtime()
-        val activePause = if (userPaused || autoPaused) now - pauseStartedAtMs else 0L
+        val activePause = if (userPaused) now - pauseStartedAtMs else 0L
         return (now - startElapsedMs - pauseAccumulatedMs - activePause).coerceAtLeast(0L)
     }
 
@@ -413,7 +380,7 @@ class AudioRecordingService : Service() {
     }
 
     override fun onDestroy() {
-        amplitudeJob?.cancel()
+        tickJob?.cancel()
         recorder?.let { r ->
             try { r.stop() } catch (_: Exception) {}
             try { r.release() } catch (_: Exception) {}
