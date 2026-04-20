@@ -11,7 +11,6 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -30,6 +29,10 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.Flip
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.NavigateBefore
+import androidx.compose.material.icons.filled.NavigateNext
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
@@ -52,6 +55,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -72,12 +76,12 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.exifinterface.media.ExifInterface
 import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.common.Effect
-import androidx.media3.common.Player
 import androidx.media3.effect.ScaleAndRotateTransformation
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import de.perigon.companion.media.domain.CropHandle
 import de.perigon.companion.media.domain.CropRect
+import de.perigon.companion.media.domain.FrameGrabber
 import de.perigon.companion.media.domain.MediaType
 import de.perigon.companion.media.domain.OrientationTransform
 import de.perigon.companion.media.domain.PixelCrop
@@ -102,6 +106,7 @@ import de.perigon.companion.util.media.VideoProbe
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -118,9 +123,7 @@ private const val FINE_ROTATION_RANGE = 15f
 private const val FINE_ROTATION_SNAP_ZONE = 0.5f
 private const val MEDIA_PADDING_DP = 24f
 
-// =============================================================================
-// Main screen
-// =============================================================================
+private enum class VideoEditMode { TRIM, FRAME_GRAB }
 
 @Composable
 fun MediaEditScreen(
@@ -129,10 +132,13 @@ fun MediaEditScreen(
     initialIntent: TransformIntent = TransformIntent(),
     onConfirm: (TransformIntent) -> Unit,
     onCancel: () -> Unit,
+    onFrameExtracted: (Uri) -> Unit = {},
+    onError: (String) -> Unit = {},
 ) {
     BackHandler { onCancel() }
 
     val context = LocalContext.current
+    val grabScope = rememberCoroutineScope()
 
     var orientation by remember { mutableStateOf(initialIntent.orientation) }
     var fineRotation by remember { mutableFloatStateOf(initialIntent.fineRotationDegrees) }
@@ -148,16 +154,17 @@ fun MediaEditScreen(
     var isPlaying by remember { mutableStateOf(false) }
     var playbackFraction by remember { mutableFloatStateOf(0f) }
 
-    // Probed display-oriented dimensions — source of truth for crop geometry.
-    // Set once from MediaMetadataRetriever on IO, never changes for a given URI.
     var probedVideoSize by remember { mutableStateOf(IntSize.Zero) }
 
     var pixelCrop by remember { mutableStateOf<PixelCrop?>(null) }
 
-    /**
-     * Compute the effective display dimensions after applying the user's
-     * coarse orientation on top of the probed display size.
-     */
+    // ---- Frame grab mode state ----
+    var videoMode by remember { mutableStateOf(VideoEditMode.TRIM) }
+    var keyframesUs by remember { mutableStateOf<List<Long>>(emptyList()) }
+    var currentKeyframeIndex by remember { mutableIntStateOf(0) }
+    var isGrabbing by remember { mutableStateOf(false) }
+    var grabCount by remember { mutableIntStateOf(0) }
+
     fun effectiveVideoDimensions(): Pair<Float, Float> {
         if (probedVideoSize == IntSize.Zero) return 0f to 0f
         val userCoarse = orientation.rotationDegrees % 360
@@ -194,7 +201,6 @@ fun MediaEditScreen(
         onDispose { player?.release() }
     }
 
-    // Probe video dimensions once on IO — deterministic, no race.
     LaunchedEffect(uri, mediaType) {
         if (mediaType == MediaType.VIDEO) {
             val (w, h) = withContext(Dispatchers.IO) {
@@ -204,6 +210,25 @@ fun MediaEditScreen(
                 probedVideoSize = IntSize(w, h)
             }
         }
+    }
+
+    LaunchedEffect(uri, mediaType) {
+        if (mediaType == MediaType.VIDEO) {
+            val ks = withContext(Dispatchers.IO) {
+                FrameGrabber.enumerateKeyframes(context, uri)
+            }
+            keyframesUs = ks
+            currentKeyframeIndex = 0
+        }
+    }
+
+    // In frame-grab mode, seek the video view to the selected keyframe so
+    // what the user sees matches what they'd grab.
+    LaunchedEffect(videoMode, currentKeyframeIndex, keyframesUs) {
+        if (videoMode != VideoEditMode.FRAME_GRAB) return@LaunchedEffect
+        val ts = keyframesUs.getOrNull(currentKeyframeIndex) ?: return@LaunchedEffect
+        if (isPlaying) { player?.pause(); isPlaying = false }
+        player?.seekTo(ts / 1000L)
     }
 
     LaunchedEffect(orientation) {
@@ -263,15 +288,23 @@ fun MediaEditScreen(
         }
     }
 
-    LaunchedEffect(isPlaying) {
+    LaunchedEffect(isPlaying, videoMode) {
         if (!isPlaying || player == null) return@LaunchedEffect
         while (isActive && isPlaying) {
             val pos = player.currentPosition
-            val currentEndMs = (trimEndFraction * durationMs).toLong()
             if (durationMs > 0) playbackFraction = pos.toFloat() / durationMs
-            if (pos >= currentEndMs) { player.pause(); isPlaying = false }
+            if (videoMode == VideoEditMode.TRIM) {
+                val currentEndMs = (trimEndFraction * durationMs).toLong()
+                if (pos >= currentEndMs) { player.pause(); isPlaying = false }
+            }
             delay(50)
         }
+    }
+
+    fun snapToNearestKeyframe() {
+        if (keyframesUs.isEmpty() || player == null) return
+        val posUs = player.currentPosition * 1000L
+        currentKeyframeIndex = nearestKeyframeIndex(keyframesUs, posUs)
     }
 
     val trimStartMs = (trimStartFraction * durationMs).toLong()
@@ -300,6 +333,34 @@ fun MediaEditScreen(
         ))
     }
 
+    fun launchGrab() {
+        val ts = keyframesUs.getOrNull(currentKeyframeIndex)
+        if (ts == null) {
+            onError("No keyframe selected")
+            return
+        }
+        if (isGrabbing) return
+        isGrabbing = true
+        grabScope.launch {
+            val resultUri = withContext(Dispatchers.IO) {
+                FrameGrabber.extractKeyframeToCache(
+                    context = context,
+                    videoUri = uri,
+                    timestampUs = ts,
+                    orientation = orientation,
+                    fineRotationDegrees = fineRotation,
+                )
+            }
+            if (resultUri != null) {
+                onFrameExtracted(resultUri)
+                grabCount++
+            } else {
+                onError("Frame grab failed — see logcat (tag: FrameGrabber)")
+            }
+            isGrabbing = false
+        }
+    }
+
     Box(
         modifier = Modifier.fillMaxSize().background(Color.Black).systemBarsPadding(),
     ) {
@@ -311,10 +372,28 @@ fun MediaEditScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onCancel) { Icon(Icons.Default.Close, "Cancel", tint = Color.White) }
-            Text(
-                if (mediaType == MediaType.VIDEO) "Edit video" else "Edit image",
-                style = MaterialTheme.typography.titleMedium, color = Color.White,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    when {
+                        mediaType == MediaType.IMAGE -> "Edit image"
+                        videoMode == VideoEditMode.FRAME_GRAB -> "Grab frame"
+                        else -> "Edit video"
+                    },
+                    style = MaterialTheme.typography.titleMedium, color = Color.White,
+                )
+                if (mediaType == MediaType.VIDEO) {
+                    IconButton(onClick = {
+                        videoMode = if (videoMode == VideoEditMode.TRIM) VideoEditMode.FRAME_GRAB else VideoEditMode.TRIM
+                        if (isPlaying) { player?.pause(); isPlaying = false }
+                    }) {
+                        Icon(
+                            if (videoMode == VideoEditMode.TRIM) Icons.Default.PhotoCamera else Icons.Default.ContentCut,
+                            if (videoMode == VideoEditMode.TRIM) "Switch to frame grab" else "Switch to trim",
+                            tint = Color.White,
+                        )
+                    }
+                }
+            }
             IconButton(onClick = ::confirm) { Icon(Icons.Default.Check, "Apply", tint = Color.White) }
         }
 
@@ -344,7 +423,8 @@ fun MediaEditScreen(
             MediaType.VIDEO -> {
                 Box(
                     modifier = Modifier.fillMaxSize().padding(
-                        top = 64.dp, bottom = 280.dp,
+                        top = 64.dp,
+                        bottom = if (videoMode == VideoEditMode.TRIM) 280.dp else 240.dp,
                         start = MEDIA_PADDING_DP.dp, end = MEDIA_PADDING_DP.dp,
                     ),
                 ) {
@@ -364,12 +444,14 @@ fun MediaEditScreen(
                             modifier = Modifier.fillMaxSize(),
                         )
 
-                        // Use probed dimensions for frame rect — deterministic, no async race
                         val videoFrameRect = remember(containerSize, probedVideoSize, orientation) {
                             computeVideoFrameRect(containerSize, probedVideoSize, orientation)
                         }
 
-                        if (videoFrameRect != Rect.Zero && probedVideoSize != IntSize.Zero) {
+                        if (videoMode == VideoEditMode.TRIM
+                            && videoFrameRect != Rect.Zero
+                            && probedVideoSize != IntSize.Zero
+                        ) {
                             val (unrotW, unrotH) = effectiveVideoDimensions()
 
                             if (pixelCrop == null) {
@@ -399,7 +481,7 @@ fun MediaEditScreen(
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            // Rotation & flip controls
+            // Rotation & flip controls (shared across modes)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly,
@@ -413,8 +495,13 @@ fun MediaEditScreen(
                 }
                 if (mediaType == MediaType.VIDEO) {
                     IconButton(onClick = {
-                        if (isPlaying) { player?.pause(); isPlaying = false }
-                        else { player?.seekTo(trimStartMs); player?.play(); isPlaying = true }
+                        if (isPlaying) {
+                            player?.pause(); isPlaying = false
+                            if (videoMode == VideoEditMode.FRAME_GRAB) snapToNearestKeyframe()
+                        } else {
+                            val startMs = if (videoMode == VideoEditMode.TRIM) trimStartMs else player?.currentPosition ?: 0L
+                            player?.seekTo(startMs); player?.play(); isPlaying = true
+                        }
                     }) {
                         Icon(
                             if (isPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
@@ -434,7 +521,7 @@ fun MediaEditScreen(
                 }
             }
 
-            // Fine rotation slider
+            // Fine rotation slider (shared)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -464,24 +551,53 @@ fun MediaEditScreen(
                 }
             }
 
-            // Trim strip (video only)
-            if (mediaType == MediaType.VIDEO && frames.isNotEmpty()) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(formatTime(trimStartMs), color = Color.White, style = MaterialTheme.typography.labelSmall)
-                    Text("Duration: ${formatTime(trimEndMs - trimStartMs)}",
-                        color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.labelSmall)
-                    Text(formatTime(trimEndMs), color = Color.White, style = MaterialTheme.typography.labelSmall)
+            // Mode-specific controls
+            if (mediaType == MediaType.VIDEO) {
+                when (videoMode) {
+                    VideoEditMode.TRIM -> {
+                        if (frames.isNotEmpty()) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(formatTime(trimStartMs), color = Color.White, style = MaterialTheme.typography.labelSmall)
+                                Text("Duration: ${formatTime(trimEndMs - trimStartMs)}",
+                                    color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.labelSmall)
+                                Text(formatTime(trimEndMs), color = Color.White, style = MaterialTheme.typography.labelSmall)
+                            }
+                            TrimStrip(
+                                frames = frames,
+                                startFraction = trimStartFraction, endFraction = trimEndFraction,
+                                playbackFraction = if (isPlaying) playbackFraction else null,
+                                onStartChanged = { f ->
+                                    trimStartFraction = f.coerceIn(0f, trimEndFraction - 0.02f)
+                                    if (!isPlaying) player?.seekTo((trimStartFraction * durationMs).toLong())
+                                },
+                                onEndChanged = { f -> trimEndFraction = f.coerceIn(trimStartFraction + 0.02f, 1f) },
+                            )
+                        }
+                    }
+                    VideoEditMode.FRAME_GRAB -> {
+                        FrameGrabControls(
+                            keyframeCount = keyframesUs.size,
+                            currentIndex = currentKeyframeIndex,
+                            currentTimestampUs = keyframesUs.getOrNull(currentKeyframeIndex) ?: 0L,
+                            isGrabbing = isGrabbing,
+                            grabCount = grabCount,
+                            sliderFraction = if (keyframesUs.size > 1)
+                                currentKeyframeIndex.toFloat() / (keyframesUs.size - 1) else 0f,
+                            onSliderChange = { f ->
+                                if (keyframesUs.isEmpty()) return@FrameGrabControls
+                                val idx = (f * (keyframesUs.size - 1)).roundToInt().coerceIn(0, keyframesUs.size - 1)
+                                if (idx != currentKeyframeIndex) currentKeyframeIndex = idx
+                            },
+                            onPrev = {
+                                if (currentKeyframeIndex > 0) currentKeyframeIndex--
+                            },
+                            onNext = {
+                                if (currentKeyframeIndex < keyframesUs.size - 1) currentKeyframeIndex++
+                            },
+                            onGrab = { launchGrab() },
+                        )
+                    }
                 }
-                TrimStrip(
-                    frames = frames,
-                    startFraction = trimStartFraction, endFraction = trimEndFraction,
-                    playbackFraction = if (isPlaying) playbackFraction else null,
-                    onStartChanged = { f ->
-                        trimStartFraction = f.coerceIn(0f, trimEndFraction - 0.02f)
-                        if (!isPlaying) player?.seekTo((trimStartFraction * durationMs).toLong())
-                    },
-                    onEndChanged = { f -> trimEndFraction = f.coerceIn(trimStartFraction + 0.02f, 1f) },
-                )
             }
 
             // Action buttons
@@ -495,6 +611,21 @@ fun MediaEditScreen(
     }
 }
 
+// ===== Helper: nearest keyframe lookup =====
+
+private fun nearestKeyframeIndex(keyframesUs: List<Long>, targetUs: Long): Int {
+    if (keyframesUs.isEmpty()) return 0
+    var lo = 0; var hi = keyframesUs.size - 1
+    while (lo < hi) {
+        val mid = (lo + hi) ushr 1
+        if (keyframesUs[mid] < targetUs) lo = mid + 1 else hi = mid
+    }
+    if (lo == 0) return 0
+    val prev = keyframesUs[lo - 1]
+    val here = keyframesUs[lo]
+    return if (abs(targetUs - prev) <= abs(here - targetUs)) lo - 1 else lo
+}
+
 // ===== Video preview effects (coarse only) =====
 
 private fun buildVideoPreviewEffects(orientation: OrientationTransform): List<Effect> {
@@ -505,11 +636,6 @@ private fun buildVideoPreviewEffects(orientation: OrientationTransform): List<Ef
     return listOf(builder.build())
 }
 
-/**
- * Compute the video frame rectangle within the container.
- * [probedVideoSize] is from VideoProbe and already accounts for native rotation.
- * We only apply the user's orientation rotation on top.
- */
 private fun computeVideoFrameRect(
     containerSize: IntSize,
     probedVideoSize: IntSize,
@@ -524,6 +650,95 @@ private fun computeVideoFrameRect(
         probedVideoSize.width to probedVideoSize.height
     }
     return computeImageRect(vw, vh, containerSize)
+}
+
+// ===== Frame grab controls =====
+
+@Composable
+private fun FrameGrabControls(
+    keyframeCount: Int,
+    currentIndex: Int,
+    currentTimestampUs: Long,
+    isGrabbing: Boolean,
+    grabCount: Int,
+    sliderFraction: Float,
+    onSliderChange: (Float) -> Unit,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
+    onGrab: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                if (keyframeCount == 0) "No keyframes"
+                else "Keyframe ${currentIndex + 1} / $keyframeCount",
+                color = Color.White,
+                style = MaterialTheme.typography.labelSmall,
+            )
+            Text(
+                formatTimeMs(currentTimestampUs / 1000L),
+                color = Color.White,
+                style = MaterialTheme.typography.labelSmall,
+            )
+            if (grabCount > 0) {
+                Text(
+                    "$grabCount grabbed",
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+        }
+        Slider(
+            value = sliderFraction,
+            onValueChange = onSliderChange,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = keyframeCount > 1,
+            colors = SliderDefaults.colors(
+                thumbColor = Color.White,
+                activeTrackColor = MaterialTheme.colorScheme.primary,
+                inactiveTrackColor = Color.White.copy(alpha = 0.3f),
+            ),
+        )
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onPrev, enabled = currentIndex > 0 && keyframeCount > 0) {
+                Icon(Icons.Default.NavigateBefore, "Previous keyframe",
+                    tint = if (currentIndex > 0) Color.White else Color.White.copy(alpha = 0.3f))
+            }
+            Button(
+                onClick = onGrab,
+                modifier = Modifier.weight(1f),
+                enabled = keyframeCount > 0 && !isGrabbing,
+            ) {
+                if (isGrabbing) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Grabbing…")
+                } else {
+                    Icon(Icons.Default.Image, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Grab frame")
+                }
+            }
+            IconButton(onClick = onNext, enabled = currentIndex < keyframeCount - 1 && keyframeCount > 0) {
+                Icon(Icons.Default.NavigateNext, "Next keyframe",
+                    tint = if (currentIndex < keyframeCount - 1) Color.White else Color.White.copy(alpha = 0.3f))
+            }
+        }
+    }
+}
+
+private fun formatTimeMs(ms: Long): String {
+    val totalSec = ms / 1000
+    val millis = ms % 1000
+    return "%d:%02d.%03d".format(totalSec / 60, totalSec % 60, millis)
 }
 
 // ===== Image crop overlay =====
