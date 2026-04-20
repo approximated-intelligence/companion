@@ -29,10 +29,9 @@ import de.perigon.companion.audio.data.AudioPreset
 import de.perigon.companion.audio.data.AudioRecordingEntity
 import de.perigon.companion.audio.data.BITRATE_OPTIONS_BPS
 import de.perigon.companion.audio.data.SAMPLE_RATE_OPTIONS_HZ
-import de.perigon.companion.audio.data.SILENCE_GRACE_OPTIONS_MS
+import de.perigon.companion.audio.data.asciiMeter
 import de.perigon.companion.audio.data.formatBitrate
 import de.perigon.companion.audio.data.formatSampleRate
-import de.perigon.companion.audio.domain.SilenceGate
 import de.perigon.companion.core.ui.AppTopBar
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -137,81 +136,18 @@ fun AudioRecordingScreen(
             }
 
             item { HorizontalDivider() }
-            item { Text("Silence gate", style = MaterialTheme.typography.titleSmall) }
+            item { Text("Display", style = MaterialTheme.typography.titleSmall) }
             item {
                 ToggleRow(
-                    title    = "Skip silence",
-                    subtitle = if (state.config.format.supportsPause)
-                        "Auto-pause when input stays below threshold."
-                    else
-                        "Not supported for ${state.config.format.displayName}.",
-                    checked  = state.config.skipSilence && state.config.format.supportsPause,
-                    enabled  = state.config.format.supportsPause,
-                    onCheckedChange = vm::setSkipSilence,
-                )
-            }
-            if (state.config.skipSilence && state.config.format.supportsPause) {
-                item {
-                    Text("Threshold: ${state.config.silenceThresholdDb} dB",
-                        style = MaterialTheme.typography.bodyMedium)
-                    Slider(
-                        value         = state.config.silenceThresholdDb.toFloat(),
-                        onValueChange = { vm.setSilenceThresholdDb(it.toInt()) },
-                        valueRange    = -60f..-10f,
-                        steps         = 49,
-                    )
-                    Text("Lower = less sensitive. Quiet rooms: -50 dB. Noisy: -30 dB.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                item { Text("Grace period", style = MaterialTheme.typography.bodyMedium) }
-                item {
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        SILENCE_GRACE_OPTIONS_MS.forEach { ms ->
-                            FilterChip(
-                                selected = state.config.silenceGraceMs == ms,
-                                onClick  = { vm.setSilenceGraceMs(ms) },
-                                label    = { Text(if (ms < 1000) "${ms}ms" else "${ms / 1000}s") },
-                            )
-                        }
-                    }
-                }
-            }
-
-            item { HorizontalDivider() }
-            item { Text("Audio processing", style = MaterialTheme.typography.titleSmall) }
-            item {
-                ToggleRow(
-                    title    = "Noise suppression",
-                    subtitle = if (android.media.audiofx.NoiseSuppressor.isAvailable())
-                        "Reduce steady background noise."
-                    else
-                        "Not available on this device.",
-                    checked  = state.config.noiseSuppression && android.media.audiofx.NoiseSuppressor.isAvailable(),
-                    enabled  = android.media.audiofx.NoiseSuppressor.isAvailable(),
-                    onCheckedChange = vm::setNoiseSuppression,
-                )
-            }
-            item {
-                ToggleRow(
-                    title    = "Automatic gain control",
-                    subtitle = if (android.media.audiofx.AutomaticGainControl.isAvailable())
-                        "Normalise recording volume."
-                    else
-                        "Not available on this device.",
-                    checked  = state.config.autoGain && android.media.audiofx.AutomaticGainControl.isAvailable(),
-                    enabled  = android.media.audiofx.AutomaticGainControl.isAvailable(),
-                    onCheckedChange = vm::setAutoGain,
-                )
-            }
-            item {
-                ToggleRow(
-                    title    = "Show level",
-                    subtitle = "Display amplitude meter while recording.",
+                    title    = "Show level meter",
+                    subtitle = "Amplitude meter during recording. Disabling reduces CPU use.",
                     checked  = state.config.showLevel,
                     onCheckedChange = vm::setShowLevel,
                 )
             }
+
+            item { HorizontalDivider() }
+            item { AdvancedAudioProcessing(state.config, vm) }
 
             item { HorizontalDivider() }
             item { Text("Storage folder", style = MaterialTheme.typography.titleSmall) }
@@ -232,7 +168,6 @@ fun AudioRecordingScreen(
                         rec              = rec,
                         isActive         = isActive,
                         isPaused         = isActive && state.isPaused,
-                        isAutoPaused     = isActive && state.isAutoPaused,
                         elapsedMs        = if (isActive) state.elapsedMs else rec.durationMs ?: 0L,
                         amplitudeDb      = if (isActive && state.config.showLevel) state.amplitudeDb else null,
                         isSelected       = rec.id in state.selectedIds,
@@ -261,7 +196,7 @@ private fun ControlsCard(
     when {
         state.isRecording -> Card(
             colors   = CardDefaults.cardColors(
-                containerColor = if (state.isPaused || state.isAutoPaused)
+                containerColor = if (state.isPaused)
                     MaterialTheme.colorScheme.secondaryContainer
                 else MaterialTheme.colorScheme.primaryContainer,
             ),
@@ -275,17 +210,15 @@ private fun ControlsCard(
                         fontFamily = FontFamily.Monospace,
                         modifier = Modifier.weight(1f),
                     )
-                    val stateLabel = when {
-                        state.isPaused     -> "Paused"
-                        state.isAutoPaused -> "Silence"
-                        else               -> "Recording"
-                    }
-                    Text(stateLabel, style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        if (state.isPaused) "Paused" else "Recording",
+                        style = MaterialTheme.typography.labelMedium,
+                    )
                 }
 
                 if (state.config.showLevel) {
                     Text(
-                        "${SilenceGate.asciiMeter(state.amplitudeDb)}  ${state.amplitudeDb} dB",
+                        "${asciiMeter(state.amplitudeDb)}  ${state.amplitudeDb} dB",
                         style = MaterialTheme.typography.bodyMedium,
                         fontFamily = FontFamily.Monospace,
                     )
@@ -334,6 +267,67 @@ private fun ControlsCard(
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.padding(top = 4.dp))
             }
+        }
+    }
+}
+
+@Composable
+private fun AdvancedAudioProcessing(config: AudioConfigEntity, vm: AudioRecordingViewModel) {
+    var expanded by remember { mutableStateOf(false) }
+
+    val nsAvailable = android.media.audiofx.NoiseSuppressor.isAvailable()
+    val agcAvailable = android.media.audiofx.AutomaticGainControl.isAvailable()
+
+    Column {
+        Row(
+            Modifier.fillMaxWidth().animateContentSize(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Advanced", style = MaterialTheme.typography.titleSmall)
+                val summary = buildList {
+                    if (config.noiseSuppression) add("NS on")
+                    if (config.autoGain) add("AGC on")
+                }.joinToString(" · ").ifEmpty { "No processing" }
+                Text(summary, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            TextButton(onClick = { expanded = !expanded }) {
+                Text(if (expanded) "Hide" else "Show")
+                Spacer(Modifier.width(4.dp))
+                Icon(
+                    if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    null, Modifier.size(18.dp),
+                )
+            }
+        }
+
+        if (expanded) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Device-dependent. Quality varies by manufacturer. Test with your recording subject before relying on either.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            ToggleRow(
+                title    = "Noise suppression",
+                subtitle = if (nsAvailable) "Tuned for speech. Can mangle music and ambient sound."
+                           else "Not available on this device.",
+                checked  = config.noiseSuppression && nsAvailable,
+                enabled  = nsAvailable,
+                onCheckedChange = vm::setNoiseSuppression,
+            )
+            Spacer(Modifier.height(4.dp))
+            ToggleRow(
+                title    = "Automatic gain control",
+                subtitle = if (agcAvailable) "Unreliable on many devices including Pixels."
+                           else "Not available on this device.",
+                checked  = config.autoGain && agcAvailable,
+                enabled  = agcAvailable,
+                onCheckedChange = vm::setAutoGain,
+            )
         }
     }
 }
@@ -428,7 +422,6 @@ private fun RecordingRow(
     rec: AudioRecordingEntity,
     isActive: Boolean,
     isPaused: Boolean,
-    isAutoPaused: Boolean,
     elapsedMs: Long,
     amplitudeDb: Int?,
     isSelected: Boolean,
@@ -469,10 +462,9 @@ private fun RecordingRow(
                 }
                 Icon(
                     when {
-                        isActive && isPaused     -> Icons.Default.Pause
-                        isActive && isAutoPaused -> Icons.Default.VolumeOff
-                        isActive                 -> Icons.Default.Mic
-                        else                     -> Icons.Default.AudioFile
+                        isActive && isPaused -> Icons.Default.Pause
+                        isActive             -> Icons.Default.Mic
+                        else                 -> Icons.Default.AudioFile
                     },
                     null,
                     modifier = Modifier.size(20.dp),
@@ -533,7 +525,7 @@ private fun RecordingRow(
 
             if (isActive && amplitudeDb != null) {
                 Text(
-                    "${SilenceGate.asciiMeter(amplitudeDb)}  $amplitudeDb dB",
+                    "${asciiMeter(amplitudeDb)}  $amplitudeDb dB",
                     style = MaterialTheme.typography.labelSmall,
                     fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
