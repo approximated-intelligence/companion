@@ -10,6 +10,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.rememberNavController
+import de.perigon.companion.audio.service.AudioRecordingService
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.ui.NavGraph
 import de.perigon.companion.core.ui.PermissionGate
@@ -69,10 +70,11 @@ private fun parseIntent(intent: Intent): ParsedIntent {
         ?: intent.getStringExtra(MainActivity.EXTRA_NAVIGATE_TO)
     if (navigateTo != null) {
         val route = when (navigateTo) {
-            BackgroundService.NAV_RECORDING -> Route.Recording
-            "Backup"                        -> Route.Backup
-            "Posts"                         -> Route.Posts
-            else                            -> Route.Consolidate
+            BackgroundService.NAV_RECORDING  -> Route.Recording
+            AudioRecordingService.NAV_AUDIO  -> Route.Audio
+            "Backup"                         -> Route.Backup
+            "Posts"                          -> Route.Posts
+            else                             -> Route.Consolidate
         }
         return ParsedIntent(route, emptyList())
     }

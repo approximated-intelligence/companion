@@ -157,3 +157,10 @@ val MIGRATION_14_15 = object : Migration(14, 15) {
         db.execSQL("ALTER TABLE posts ADD COLUMN slugEdited INTEGER NOT NULL DEFAULT 0")
     }
 }
+
+val MIGRATION_15_16 = object : Migration(15, 16) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS audio_recordings (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, name TEXT NOT NULL, uri TEXT NOT NULL, format TEXT NOT NULL, sampleRateHz INTEGER NOT NULL, bitrateBps INTEGER NOT NULL, createdAt INTEGER NOT NULL, durationMs INTEGER, sizeBytes INTEGER)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS index_audio_recordings_createdAt ON audio_recordings (createdAt)")
+    }
+}

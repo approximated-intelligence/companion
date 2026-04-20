@@ -16,6 +16,7 @@ object NotificationChannels {
     const val BACKUP = "backup"
     const val CONSOLIDATE = "consolidate"
     const val TRACK_RECORDER = "track_recorder"
+    const val AUDIO = "audio_recorder"
 
     fun ensureAll(context: Context) {
         val mgr = context.getSystemService(NotificationManager::class.java)
@@ -23,6 +24,7 @@ object NotificationChannels {
         ensureChannel(mgr, BACKUP, "Backup", NotificationManager.IMPORTANCE_LOW)
         ensureChannel(mgr, CONSOLIDATE, "Consolidation", NotificationManager.IMPORTANCE_LOW)
         ensureChannel(mgr, TRACK_RECORDER, "Background Track", NotificationManager.IMPORTANCE_LOW)
+        ensureChannel(mgr, AUDIO, "Audio Recording", NotificationManager.IMPORTANCE_LOW)
     }
 
     private fun ensureChannel(

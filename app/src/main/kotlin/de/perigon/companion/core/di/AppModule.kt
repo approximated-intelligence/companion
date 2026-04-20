@@ -3,6 +3,7 @@ package de.perigon.companion.core.di
 import android.content.Context
 import androidx.room.Room
 import androidx.work.WorkManager
+import de.perigon.companion.audio.data.AudioConfigPrefs
 import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.db.AppDatabase
 import de.perigon.companion.core.db.MIGRATION_1_2
@@ -19,6 +20,7 @@ import de.perigon.companion.core.db.MIGRATION_11_12
 import de.perigon.companion.core.db.MIGRATION_12_13
 import de.perigon.companion.core.db.MIGRATION_13_14
 import de.perigon.companion.core.db.MIGRATION_14_15
+import de.perigon.companion.core.db.MIGRATION_15_16
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.prefs.AppPrefsImpl
 import de.perigon.companion.core.prefs.CredentialStore
@@ -48,7 +50,7 @@ object AppModule {
                 MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                 MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
                 MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13,
-                MIGRATION_13_14, MIGRATION_14_15,
+                MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16,
             )
             .build()
 
