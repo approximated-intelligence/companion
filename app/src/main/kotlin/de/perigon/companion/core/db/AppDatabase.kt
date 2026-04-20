@@ -1,5 +1,7 @@
 package de.perigon.companion.core.db
 
+import de.perigon.companion.audio.data.AudioRecordingDao
+import de.perigon.companion.audio.data.AudioRecordingEntity
 import de.perigon.companion.backup.data.BackupFileEntity
 import de.perigon.companion.backup.data.BackupFileDao
 import de.perigon.companion.backup.data.BackupFileHashEntity
@@ -95,6 +97,7 @@ class CurrentTrackStateConverter {
         ConsolidateFileEntity::class,
         ConsolidateFileDoneEntity::class,
         ConsolidateProtectedFileEntity::class,
+        AudioRecordingEntity::class,
     ],
     views = [
         BackupFileStatusView::class,
@@ -102,7 +105,7 @@ class CurrentTrackStateConverter {
         SafeToDeleteView::class,
         TrackPointRow::class,
     ],
-    version = 15,
+    version = 16,
     exportSchema = true,
 )
 @TypeConverters(
@@ -135,6 +138,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun consolidateFileDoneDao(): ConsolidateFileDoneDao
     abstract fun consolidateProtectedFileDao(): ConsolidateProtectedFileDao
     abstract fun safeToDeleteDao(): SafeToDeleteDao
+    abstract fun audioRecordingDao(): AudioRecordingDao
 
     suspend fun resetBackupState() {
         withTransaction {

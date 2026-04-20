@@ -27,6 +27,7 @@ private val NAV_ITEMS = listOf(
     NavItem("Media prep",    Route.MediaPrep()),
     NavItem("Track render",  Route.TrackRender),
     NavItem("Track",         Route.Recording, requiresRecording = true),
+    NavItem("Audio",         Route.Audio),
     NavItem("Queue",         Route.Queue),
     NavItem("Assets",        Route.Assets),
     NavItem("Settings",      Route.Settings),
@@ -94,6 +95,7 @@ private fun routeTitle(route: String) = when {
     route.contains("MediaPrep")    -> "Media Prep"
     route.contains("TrackRender")  -> "Track Render"
     route.contains("Recording")    -> "Run"
+    route.contains("Audio")        -> "Audio"
     route.contains("Queue")        -> "Queue"
     route.contains("Backup")       -> "Backup"
     route.contains("Restore")      -> "Restore"
@@ -113,6 +115,7 @@ object Route {
     @Serializable data class MediaPicker(val returnRoute: String = "MediaPrep")
     @Serializable object TrackRender
     @Serializable object Recording
+    @Serializable object Audio
     @Serializable object Settings
     @Serializable object Backup
     @Serializable object Restore

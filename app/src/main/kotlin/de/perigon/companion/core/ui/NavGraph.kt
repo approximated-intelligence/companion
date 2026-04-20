@@ -5,6 +5,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.navigation.*
 import androidx.navigation.compose.*
+import de.perigon.companion.audio.ui.recording.AudioRecordingScreen
 import de.perigon.companion.posts.site.ui.editor.AssetEditScreen
 import de.perigon.companion.posts.site.ui.diff.AssetDiffScreen
 import de.perigon.companion.posts.site.ui.list.AssetListScreen
@@ -80,6 +81,9 @@ fun NavGraph(
             }
             composable<Route.Recording> {
                 RecordingScreen(navController = navController)
+            }
+            composable<Route.Audio> {
+                AudioRecordingScreen(navController = navController)
             }
             composable<Route.Settings> {
                 SettingsScreen(navController = navController)
