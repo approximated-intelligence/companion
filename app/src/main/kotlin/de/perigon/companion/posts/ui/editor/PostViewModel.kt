@@ -273,6 +273,11 @@ class PostViewModel @Inject constructor(
         bumpGeneration()
     }
 
+    fun resetTeaser() {
+        _state.update { it.copy(teaser = autoTeaser(it.body), teaserEdited = false) }
+        bumpGeneration()
+    }
+
     fun setSlug(slug: String) {
         _state.update { it.copy(slug = slug, slugEdited = true) }
         bumpGeneration()
