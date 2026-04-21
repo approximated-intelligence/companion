@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.NavigateBefore
+import androidx.compose.material.icons.automirrored.filled.NavigateNext
 import androidx.compose.material.icons.automirrored.filled.RotateLeft
 import androidx.compose.material.icons.automirrored.filled.RotateRight
 import androidx.compose.material.icons.filled.Check
@@ -30,8 +32,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.Flip
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.NavigateBefore
-import androidx.compose.material.icons.filled.NavigateNext
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
@@ -82,6 +82,7 @@ import androidx.media3.ui.PlayerView
 import de.perigon.companion.media.domain.CropHandle
 import de.perigon.companion.media.domain.CropRect
 import de.perigon.companion.media.domain.FrameGrabber
+import de.perigon.companion.media.domain.GrabResult
 import de.perigon.companion.media.domain.MediaType
 import de.perigon.companion.media.domain.OrientationTransform
 import de.perigon.companion.media.domain.PixelCrop
@@ -334,15 +335,14 @@ fun MediaEditScreen(
     }
 
     fun launchGrab() {
-        val ts = keyframesUs.getOrNull(currentKeyframeIndex)
-        if (ts == null) {
+        val ts = keyframesUs.getOrNull(currentKeyframeIndex) ?: run {
             onError("No keyframe selected")
             return
         }
         if (isGrabbing) return
         isGrabbing = true
         grabScope.launch {
-            val resultUri = withContext(Dispatchers.IO) {
+            val result = withContext(Dispatchers.IO) {
                 FrameGrabber.extractKeyframeToCache(
                     context = context,
                     videoUri = uri,
@@ -351,11 +351,12 @@ fun MediaEditScreen(
                     fineRotationDegrees = fineRotation,
                 )
             }
-            if (resultUri != null) {
-                onFrameExtracted(resultUri)
-                grabCount++
-            } else {
-                onError("Frame grab failed — see logcat (tag: FrameGrabber)")
+            when (result) {
+                is GrabResult.Success -> {
+                    onFrameExtracted(result.uri)
+                    grabCount++
+                }
+                is GrabResult.Failure -> onError("Grab failed: ${result.reason}")
             }
             isGrabbing = false
         }
@@ -709,7 +710,7 @@ private fun FrameGrabControls(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onPrev, enabled = currentIndex > 0 && keyframeCount > 0) {
-                Icon(Icons.Default.NavigateBefore, "Previous keyframe",
+                Icon(Icons.AutoMirrored.Filled.NavigateBefore, "Previous keyframe",
                     tint = if (currentIndex > 0) Color.White else Color.White.copy(alpha = 0.3f))
             }
             Button(
@@ -728,7 +729,7 @@ private fun FrameGrabControls(
                 }
             }
             IconButton(onClick = onNext, enabled = currentIndex < keyframeCount - 1 && keyframeCount > 0) {
-                Icon(Icons.Default.NavigateNext, "Next keyframe",
+                Icon(Icons.AutoMirrored.Filled.NavigateNext, "Next keyframe",
                     tint = if (currentIndex < keyframeCount - 1) Color.White else Color.White.copy(alpha = 0.3f))
             }
         }
