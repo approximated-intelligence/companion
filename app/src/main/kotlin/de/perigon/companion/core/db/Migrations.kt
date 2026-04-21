@@ -164,3 +164,26 @@ val MIGRATION_15_16 = object : Migration(15, 16) {
         db.execSQL("CREATE INDEX IF NOT EXISTS index_audio_recordings_createdAt ON audio_recordings (createdAt)")
     }
 }
+
+val MIGRATION_16_17 = object : Migration(16, 17) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS file_content_hashes (path TEXT NOT NULL, mtime INTEGER NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, computedAt INTEGER NOT NULL, PRIMARY KEY (path, mtime, size))")
+        db.execSQL("DROP VIEW IF EXISTS backup_file_status_view")
+        db.execSQL("DROP VIEW IF EXISTS backup_restore_view")
+        db.execSQL("DROP VIEW IF EXISTS safe_to_delete_view")
+        db.execSQL("CREATE TABLE backup_files_new (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, path TEXT NOT NULL, uri TEXT NOT NULL, mtime INTEGER NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL)")
+        db.execSQL("INSERT INTO backup_files_new (id, path, uri, mtime, size, sha256, createdAt, updatedAt) SELECT f.id, f.path, f.uri, f.mtime, f.size, h.sha256, f.createdAt, f.updatedAt FROM backup_files f JOIN backup_file_hashes h ON h.backupFileId = f.id WHERE f.id IN (SELECT id FROM (SELECT f2.id AS id, ROW_NUMBER() OVER (PARTITION BY f2.path, h2.sha256 ORDER BY (SELECT COUNT(*) FROM backup_chunks c WHERE c.backupFileId = f2.id) DESC, f2.id ASC) AS rn FROM backup_files f2 JOIN backup_file_hashes h2 ON h2.backupFileId = f2.id) ranked WHERE rn = 1)")
+        db.execSQL("DROP TABLE backup_files")
+        db.execSQL("ALTER TABLE backup_files_new RENAME TO backup_files")
+        db.execSQL("CREATE UNIQUE INDEX index_backup_files_path_sha256 ON backup_files (path, sha256)")
+        db.execSQL("DROP TABLE IF EXISTS backup_file_hashes")
+        db.execSQL("CREATE TABLE consolidate_files_new (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, path TEXT NOT NULL, uri TEXT NOT NULL, mtime INTEGER NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, createdAt INTEGER NOT NULL)")
+        db.execSQL("INSERT INTO consolidate_files_new (id, path, uri, mtime, size, sha256, createdAt) SELECT id, path, uri, mtime, size, sha256, createdAt FROM (SELECT cf.id AS id, cf.path AS path, cf.uri AS uri, cf.mtime AS mtime, cf.size AS size, cf.createdAt AS createdAt, COALESCE(bf.sha256, fch.sha256) AS sha256, ROW_NUMBER() OVER (PARTITION BY cf.path, COALESCE(bf.sha256, fch.sha256) ORDER BY cf.id ASC) AS rn FROM consolidate_files cf LEFT JOIN backup_files bf ON bf.path = cf.path AND bf.mtime = cf.mtime AND bf.size = cf.size LEFT JOIN file_content_hashes fch ON fch.path = cf.path AND fch.mtime = cf.mtime AND fch.size = cf.size WHERE COALESCE(bf.sha256, fch.sha256) IS NOT NULL) WHERE rn = 1")
+        db.execSQL("DROP TABLE consolidate_files")
+        db.execSQL("ALTER TABLE consolidate_files_new RENAME TO consolidate_files")
+        db.execSQL("CREATE UNIQUE INDEX index_consolidate_files_path_sha256 ON consolidate_files (path, sha256)")
+        db.execSQL("CREATE VIEW `backup_file_status_view` AS SELECT f.id, f.path, f.uri, f.mtime, f.size, f.sha256, CASE WHEN COUNT(c.id) = 0 THEN 0 WHEN SUM(CASE WHEN s.packNumber IS NOT NULL THEN 1 ELSE 0 END) = COUNT(c.id) THEN 2 WHEN SUM(CASE WHEN e.backupPartId IS NOT NULL THEN 1 ELSE 0 END) > 0 THEN 1 ELSE 0 END as state FROM backup_files f LEFT JOIN backup_chunks c ON c.backupFileId = f.id LEFT JOIN backup_parts p ON p.id = c.backupPartId LEFT JOIN backup_part_etags e ON e.backupPartId = p.id LEFT JOIN backup_pack_sealed s ON s.packNumber = p.packNumber GROUP BY f.id ORDER BY f.id ASC")
+        db.execSQL("CREATE VIEW `backup_restore_view` AS SELECT f.id, f.path, f.mtime, f.size, f.sha256, MIN(p.packNumber) as startPack, MIN(CASE WHEN p.packNumber = (SELECT MIN(p2.packNumber) FROM backup_parts p2 JOIN backup_chunks c2 ON c2.backupPartId = p2.id WHERE c2.backupFileId = f.id) THEN p.partNumber ELSE NULL END) as startPart, (SELECT c2.partOffset FROM backup_chunks c2 JOIN backup_parts p2 ON p2.id = c2.backupPartId WHERE c2.backupFileId = f.id AND c2.fileOffset = 0) as startPartOffset, MAX(p.packNumber) as endPack, MAX(CASE WHEN p.packNumber = (SELECT MAX(p2.packNumber) FROM backup_parts p2 JOIN backup_chunks c2 ON c2.backupPartId = p2.id WHERE c2.backupFileId = f.id) THEN p.partNumber ELSE NULL END) as endPart, COUNT(c.id) as numParts FROM backup_files f JOIN backup_chunks c ON c.backupFileId = f.id JOIN backup_parts p ON p.id = c.backupPartId JOIN backup_pack_sealed s ON s.packNumber = p.packNumber GROUP BY f.id ORDER BY startPack, startPart")
+        db.execSQL("CREATE VIEW `safe_to_delete_view` AS SELECT cf.id, cf.path, cf.uri, cf.mtime, cf.size, d.destinationName, d.completedAt as consolidatedAt, CASE WHEN p.consolidateFileId IS NOT NULL THEN 1 ELSE 0 END as isProtected FROM consolidate_files cf JOIN consolidate_files_done d ON d.consolidateFileId = cf.id JOIN backup_files bf ON bf.path = cf.path AND bf.sha256 = cf.sha256 JOIN backup_files_done bd ON bd.backupFileId = bf.id LEFT JOIN consolidate_protected_files p ON p.consolidateFileId = cf.id")
+    }
+}

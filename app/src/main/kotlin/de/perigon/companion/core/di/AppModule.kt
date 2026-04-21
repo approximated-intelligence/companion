@@ -21,10 +21,12 @@ import de.perigon.companion.core.db.MIGRATION_12_13
 import de.perigon.companion.core.db.MIGRATION_13_14
 import de.perigon.companion.core.db.MIGRATION_14_15
 import de.perigon.companion.core.db.MIGRATION_15_16
+import de.perigon.companion.core.db.MIGRATION_16_17
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.prefs.AppPrefsImpl
 import de.perigon.companion.core.prefs.CredentialStore
 import de.perigon.companion.core.prefs.KeyStoreCredentialStore
+import de.perigon.companion.util.FileContentHashDao
 import com.goterl.lazysodium.LazySodiumAndroid
 import com.goterl.lazysodium.SodiumAndroid
 import dagger.Module
@@ -50,11 +52,13 @@ object AppModule {
                 MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                 MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
                 MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13,
-                MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16,
+                MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17,
             )
             .build()
 
     @Provides fun provideUserNotificationDao(db: AppDatabase): UserNotificationDao = db.userNotificationDao()
+
+    @Provides fun provideFileContentHashDao(db: AppDatabase): FileContentHashDao = db.fileContentHashDao()
 
     @Provides @Singleton
     fun provideHttpClient(): HttpClient = HttpClient(Android)
