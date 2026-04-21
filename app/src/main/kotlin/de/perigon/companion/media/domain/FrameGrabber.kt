@@ -16,6 +16,15 @@ import java.io.File
 private const val TAG = "FrameGrabber"
 
 /**
+ * Result of a frame extraction attempt. Top-level so `is GrabResult.Success` etc.
+ * resolve cleanly from callers without fighting nested-in-object resolution.
+ */
+sealed class GrabResult {
+    data class Success(val uri: Uri) : GrabResult()
+    data class Failure(val reason: String, val cause: Throwable? = null) : GrabResult()
+}
+
+/**
  * Keyframe enumeration + single-frame extraction for videos.
  *
  * Keyframe enumeration uses MediaExtractor to walk the sample index — no
@@ -76,7 +85,7 @@ object FrameGrabber {
      * + horizontal flip) and [fineRotationDegrees] via [ImageTransformer.applyPipeline]
      * with identity crop, write as PNG into the app cache, return content URI.
      *
-     * Returns null on failure; errors are logged to logcat under tag "$TAG".
+     * Errors are logged and returned as [GrabResult.Failure] so the UI can show them.
      */
     fun extractKeyframeToCache(
         context: Context,
@@ -85,11 +94,16 @@ object FrameGrabber {
         orientation: OrientationTransform,
         fineRotationDegrees: Float,
         filePrefix: String = "frame",
-    ): Uri? {
-        val bitmap = extractKeyframeBitmap(context, videoUri, timestampUs)
+    ): GrabResult {
+        val bitmap = try {
+            extractKeyframeBitmap(context, videoUri, timestampUs)
+        } catch (e: Exception) {
+            Log.e(TAG, "extractKeyframeToCache: decode threw", e)
+            return GrabResult.Failure("Decode failed: ${e.message}", e)
+        }
         if (bitmap == null) {
-            Log.w(TAG, "extractKeyframeToCache: bitmap decode returned null at $timestampUs µs")
-            return null
+            Log.w(TAG, "extractKeyframeToCache: decoder returned null at $timestampUs µs")
+            return GrabResult.Failure("Decoder returned no frame at $timestampUs µs")
         }
 
         val transformed = try {
@@ -108,7 +122,7 @@ object FrameGrabber {
         } catch (e: Exception) {
             Log.e(TAG, "extractKeyframeToCache: applyPipeline failed", e)
             bitmap.recycle()
-            return null
+            return GrabResult.Failure("Transform failed: ${e.message}", e)
         }
 
         val cacheDir = File(context.cacheDir, "frames").apply { mkdirs() }
@@ -125,10 +139,10 @@ object FrameGrabber {
                 file,
             )
             Log.d(TAG, "extractKeyframeToCache: wrote ${file.length()} bytes → $uri")
-            uri
+            GrabResult.Success(uri)
         } catch (e: Exception) {
             Log.e(TAG, "extractKeyframeToCache: write/FileProvider failed for $file", e)
-            null
+            GrabResult.Failure("Write failed: ${e.message}", e)
         }
     }
 
