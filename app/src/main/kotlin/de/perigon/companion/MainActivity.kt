@@ -73,6 +73,7 @@ private fun parseIntent(intent: Intent): ParsedIntent {
             BackgroundService.NAV_RECORDING  -> Route.Recording
             AudioRecordingService.NAV_AUDIO  -> Route.Audio
             "Backup"                         -> Route.Backup
+            "Consolidate"                    -> Route.Consolidate
             "Posts"                          -> Route.Posts
             else                             -> Route.Consolidate
         }

@@ -1,12 +1,16 @@
 package de.perigon.companion.media.worker
 
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.hilt.work.HiltWorker
 import androidx.work.*
+import de.perigon.companion.MainActivity
 import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.data.UserNotifications
 import de.perigon.companion.core.prefs.AppPrefs
@@ -14,22 +18,23 @@ import de.perigon.companion.core.ui.NotificationChannels
 import de.perigon.companion.media.data.ConsolidateFileEntity
 import de.perigon.companion.media.data.ConsolidateRepository
 import de.perigon.companion.media.data.TransformJobDao
-import de.perigon.companion.media.data.TransformJobEntity
 import de.perigon.companion.media.data.TransformJobStatus
 import de.perigon.companion.media.data.TransformQueue
+import de.perigon.companion.util.FileHasher
 import de.perigon.companion.util.saf.ScannedFile
 import de.perigon.companion.util.saf.collectFileNames
 import de.perigon.companion.util.saf.navigateOrCreate
 import de.perigon.companion.util.saf.setMtime
-import de.perigon.companion.util.saf.walkDocumentTree
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.flow.first
 import java.io.File
 
+private const val TAG = "ConsolidateWorker"
 private const val CONSOLIDATED_SUBFOLDER = "Consolidated"
 private const val CAMERA_SUBFOLDER = "Camera"
 private const val NOTIF_ID = 43
+private const val CONTENT_REQUEST_CODE = 9022
 private const val CALLER_TAG = "consolidate"
 
 @HiltWorker
@@ -41,6 +46,7 @@ class ConsolidateWorker @AssistedInject constructor(
     private val consolidateRepo: ConsolidateRepository,
     private val notificationDao: UserNotificationDao,
     private val appPrefs: AppPrefs,
+    private val hasher: FileHasher,
 ) : CoroutineWorker(ctx, params) {
 
     companion object {
@@ -68,10 +74,8 @@ class ConsolidateWorker @AssistedInject constructor(
 
         setForeground(foregroundInfo("Scanning…"))
 
-        // Step 1: Scan Camera via SAF and persist source files
         val scanned = scanAndPersistSourceFiles(treeUri)
 
-        // Step 2: Query DB for files without a done tombstone
         val pending = consolidateRepo.getPending()
         if (pending.isEmpty()) {
             if (scanned == 0) {
@@ -84,7 +88,6 @@ class ConsolidateWorker @AssistedInject constructor(
 
         emitProgress(total = pending.size, processed = 0, failed = 0, currentFile = "Starting…")
 
-        // Step 3: Adopt orphaned transform jobs or submit new ones
         val activeJobs = transformJobDao.findActiveByTag(CALLER_TAG)
         val activeByName = activeJobs.associateBy { it.displayName }
 
@@ -120,7 +123,6 @@ class ConsolidateWorker @AssistedInject constructor(
             }
         }
 
-        // Step 4: Wait for all transform jobs to complete
         var processed = 0
         var failed = 0
 
@@ -134,8 +136,6 @@ class ConsolidateWorker @AssistedInject constructor(
                         val entity = pendingJobs.remove(tj.id) ?: continue
                         if (tj.outputPath != null) {
                             try {
-                                // Pass source mtime so the consolidated file keeps
-                                // the original capture timestamp.
                                 placeInConsolidated(
                                     dcimTreeUri = treeUri,
                                     displayName = tj.displayName,
@@ -183,35 +183,46 @@ class ConsolidateWorker @AssistedInject constructor(
 
     /**
      * Scan DCIM/Camera via SAF and insert new source files into consolidate_files.
+     * Each scanned file is hashed through the shared [FileHasher] cache so
+     * backup and consolidate share lookups. Files that can't be opened/hashed
+     * are silently skipped — next scan will retry.
      */
     private suspend fun scanAndPersistSourceFiles(dcimTreeUri: Uri): Int {
-        // Get existing consolidated names to skip already-done files
         val consolidatedNames = collectFileNames(ctx, dcimTreeUri, CONSOLIDATED_SUBFOLDER)
 
-        // Walk Camera subfolder
         val cameraFiles = walkCameraSubfolder(dcimTreeUri)
         if (cameraFiles.isEmpty()) return 0
 
         val now = System.currentTimeMillis()
-        val entities = cameraFiles.filter { sf ->
+        var dropped = 0
+        val entities = mutableListOf<ConsolidateFileEntity>()
+
+        for (sf in cameraFiles) {
             val stem = sf.path.substringAfterLast('/').substringBeforeLast('.')
             val isVideo = sf.path.endsWith(".mp4", ignoreCase = true)
             val outName = if (isVideo) "${stem}_s.mp4" else "${stem}_s.jpg"
-            outName !in consolidatedNames
-        }.map { sf ->
-            ConsolidateFileEntity(
-                path = sf.path,
-                uri = sf.uri,
-                mtime = sf.mtime,
-                size = sf.size,
-                createdAt = now,
+            if (outName in consolidatedNames) continue
+
+            if (sf.size == 0L) continue
+
+            val sha = hasher.hashOrCached(sf.path, sf.mtime, sf.size) {
+                ctx.contentResolver.openInputStream(Uri.parse(sf.uri))
+                    ?: error("openInputStream returned null")
+            }
+            if (sha == null) {
+                dropped++
+                continue
+            }
+
+            entities += ConsolidateFileEntity(
+                path = sf.path, uri = sf.uri,
+                mtime = sf.mtime, size = sf.size,
+                sha256 = sha, createdAt = now,
             )
         }
 
-        if (entities.isNotEmpty()) {
-            consolidateRepo.insertScannedFiles(entities)
-        }
-
+        if (dropped > 0) Log.w(TAG, "dropped $dropped unreadable file(s) from consolidate scan")
+        if (entities.isNotEmpty()) consolidateRepo.insertScannedFiles(entities)
         return entities.size
     }
 
@@ -223,18 +234,10 @@ class ConsolidateWorker @AssistedInject constructor(
                 lower.endsWith(".jpg") || lower.endsWith(".jpeg") ||
                     lower.endsWith(".mp4") || lower.endsWith(".png")
             }
-            ?.map { sf ->
-                // Prefix with DCIM/ for consistent path format
-                sf.copy(path = "DCIM/${sf.path}")
-            }
+            ?.map { sf -> sf.copy(path = "DCIM/${sf.path}") }
             ?: emptyList()
     }
 
-    /**
-     * Write consolidated output to DCIM/Consolidated/ via SAF, then stamp the
-     * file's last-modified time to match the source so chronological ordering
-     * in galleries reflects capture time, not processing time.
-     */
     private fun placeInConsolidated(
         dcimTreeUri: Uri,
         displayName: String,
@@ -267,10 +270,20 @@ class ConsolidateWorker @AssistedInject constructor(
     }
 
     private fun foregroundInfo(sub: String): ForegroundInfo {
+        val contentIntent = Intent(ctx, MainActivity::class.java).apply {
+            putExtra(MainActivity.EXTRA_NAVIGATE_TO, "Consolidate")
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val contentPi = PendingIntent.getActivity(
+            ctx, CONTENT_REQUEST_CODE, contentIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
         val notif = NotificationCompat.Builder(ctx, NotificationChannels.CONSOLIDATE)
             .setContentTitle("Consolidating media")
             .setContentText(sub)
             .setSmallIcon(android.R.drawable.ic_menu_upload)
+            .setContentIntent(contentPi)
             .setOngoing(true)
             .build()
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE)

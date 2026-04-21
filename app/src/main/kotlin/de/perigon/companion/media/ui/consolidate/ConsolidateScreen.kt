@@ -58,7 +58,6 @@ fun ConsolidateScreen(
         }
     }
 
-    // Confirm delete dialog
     if (state.confirmDeleteCount != null) {
         AlertDialog(
             onDismissRequest = vm::dismissDelete,
@@ -73,7 +72,6 @@ fun ConsolidateScreen(
         )
     }
 
-    // Delete progress dialog
     if (state.deleteProgress != null) {
         val progress = state.deleteProgress!!
         AlertDialog(
@@ -455,11 +453,19 @@ private fun BackfillButton(state: ConsolidateUiState, vm: ConsolidateViewModel) 
 }
 
 private fun backupStateLabel(state: String) = when (state) {
-    BackupWorker.STATE_PLANNING -> "Planning…"; BackupWorker.STATE_HASHING -> "Hashing…"; BackupWorker.STATE_RECOVERING -> "Recovering…"; BackupWorker.STATE_UPLOADING -> "Uploading…"; BackupWorker.STATE_COMPLETING -> "Completing…"; BackupWorker.STATE_CONFIRMING -> "Confirming…"; BackupWorker.STATE_DONE -> "Backup complete"; else -> state
+    BackupWorker.STATE_PLANNING -> "Planning…"
+    BackupWorker.STATE_RECOVERING -> "Recovering…"
+    BackupWorker.STATE_UPLOADING -> "Uploading…"
+    BackupWorker.STATE_COMPLETING -> "Completing…"
+    BackupWorker.STATE_CONFIRMING -> "Confirming…"
+    BackupWorker.STATE_DONE -> "Backup complete"
+    else -> state
 }
 
 private fun formatSize(bytes: Long): String = when {
-    bytes < 1024 -> "$bytes B"; bytes < 1024 * 1024 -> "${bytes / 1024} KB"; else -> "%.1f MB".format(bytes / (1024.0 * 1024.0))
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> "${bytes / 1024} KB"
+    else -> "%.1f MB".format(bytes / (1024.0 * 1024.0))
 }
 
 private fun formatDate(millis: Long): String = SimpleDateFormat("MMM d, yyyy", Locale.getDefault()).format(Date(millis))

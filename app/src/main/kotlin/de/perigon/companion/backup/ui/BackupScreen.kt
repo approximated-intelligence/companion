@@ -338,7 +338,6 @@ private fun FolderRow(
 
 private fun packStateLabel(state: String) = when (state) {
     BackupWorker.STATE_PLANNING   -> "Planning…"
-    BackupWorker.STATE_HASHING    -> "Hashing…"
     BackupWorker.STATE_RECOVERING -> "Recovering interrupted upload…"
     BackupWorker.STATE_UPLOADING  -> "Uploading…"
     BackupWorker.STATE_COMPLETING -> "Completing upload…"
@@ -349,8 +348,6 @@ private fun packStateLabel(state: String) = when (state) {
 
 private fun errorTypeLabel(type: String) = when (type) {
     BackupWorker.ERR_MISSING_CREDENTIALS -> "Credentials not configured"
-    BackupWorker.ERR_FILE_MISSING        -> "File missing during backup"
-    BackupWorker.ERR_FILE_MODIFIED       -> "File modified during backup"
     BackupWorker.ERR_B2_ERROR            -> "Storage error"
     BackupWorker.ERR_INCONSISTENT        -> "Inconsistent state - pack was reset"
     else                                 -> type

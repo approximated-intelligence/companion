@@ -4,8 +4,6 @@ import de.perigon.companion.audio.data.AudioRecordingDao
 import de.perigon.companion.audio.data.AudioRecordingEntity
 import de.perigon.companion.backup.data.BackupFileEntity
 import de.perigon.companion.backup.data.BackupFileDao
-import de.perigon.companion.backup.data.BackupFileHashEntity
-import de.perigon.companion.backup.data.BackupFileHashDao
 import de.perigon.companion.backup.data.BackupFileStatusView
 import de.perigon.companion.backup.data.BackupFileStatusDao
 import de.perigon.companion.backup.data.BackupPackEntity
@@ -59,6 +57,8 @@ import de.perigon.companion.track.data.TrackStatsEntity
 import de.perigon.companion.track.data.CurrentTrackState
 import de.perigon.companion.track.data.TrackDao
 import de.perigon.companion.track.data.TrackPointRow
+import de.perigon.companion.util.FileContentHashDao
+import de.perigon.companion.util.FileContentHashEntity
 import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
@@ -74,7 +74,6 @@ class CurrentTrackStateConverter {
     entities = [
         ProcessedFileEntity::class,
         BackupFileEntity::class,
-        BackupFileHashEntity::class,
         BackupPackEntity::class,
         BackupPackSealedEntity::class,
         BackupPartEntity::class,
@@ -98,6 +97,7 @@ class CurrentTrackStateConverter {
         ConsolidateFileDoneEntity::class,
         ConsolidateProtectedFileEntity::class,
         AudioRecordingEntity::class,
+        FileContentHashEntity::class,
     ],
     views = [
         BackupFileStatusView::class,
@@ -105,7 +105,7 @@ class CurrentTrackStateConverter {
         SafeToDeleteView::class,
         TrackPointRow::class,
     ],
-    version = 16,
+    version = 17,
     exportSchema = true,
 )
 @TypeConverters(
@@ -116,7 +116,6 @@ class CurrentTrackStateConverter {
 abstract class AppDatabase : RoomDatabase() {
     abstract fun processedFileDao(): ProcessedFileDao
     abstract fun backupFileDao(): BackupFileDao
-    abstract fun backupFileHashDao(): BackupFileHashDao
     abstract fun backupPackDao(): BackupPackDao
     abstract fun backupPackSealedDao(): BackupPackSealedDao
     abstract fun backupPartDao(): BackupPartDao
@@ -139,6 +138,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun consolidateProtectedFileDao(): ConsolidateProtectedFileDao
     abstract fun safeToDeleteDao(): SafeToDeleteDao
     abstract fun audioRecordingDao(): AudioRecordingDao
+    abstract fun fileContentHashDao(): FileContentHashDao
 
     suspend fun resetBackupState() {
         withTransaction {
@@ -148,7 +148,6 @@ abstract class AppDatabase : RoomDatabase() {
             backupPartDao().deleteAll()
             backupPackSealedDao().deleteAll()
             backupPackDao().deleteAll()
-            backupFileHashDao().deleteAll()
             backupFileDoneDao().deleteAll()
             backupFileDao().deleteAll()
         }

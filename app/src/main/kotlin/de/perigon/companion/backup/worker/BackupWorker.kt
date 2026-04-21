@@ -12,6 +12,7 @@ import de.perigon.companion.backup.data.BackupStateRepository
 import de.perigon.companion.backup.data.BackupSchedulePrefs
 import de.perigon.companion.backup.domain.BackupFileSource
 import de.perigon.companion.backup.domain.BackupOrchestrator
+import de.perigon.companion.util.FileHasher
 import de.perigon.companion.util.network.S3BackendFactory
 import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.data.UserNotifications
@@ -41,6 +42,7 @@ class BackupWorker @AssistedInject constructor(
     private val credentialStore: CredentialStore,
     private val schedulePrefs:   BackupSchedulePrefs,
     private val notificationDao: UserNotificationDao,
+    private val hasher:          FileHasher,
 ) : CoroutineWorker(ctx, params) {
 
     companion object {
@@ -58,7 +60,6 @@ class BackupWorker @AssistedInject constructor(
         const val KEY_PACK_PERCENT   = "pack_percent"
 
         const val STATE_PLANNING     = "PLANNING"
-        const val STATE_HASHING      = "HASHING"
         const val STATE_RECOVERING   = "RECOVERING"
         const val STATE_UPLOADING    = "UPLOADING"
         const val STATE_COMPLETING   = "COMPLETING"
@@ -67,11 +68,8 @@ class BackupWorker @AssistedInject constructor(
 
         const val ERR_NONE                = "NONE"
         const val ERR_MISSING_CREDENTIALS = "MISSING_CREDENTIALS"
-        const val ERR_FILE_MISSING        = "FILE_MISSING"
-        const val ERR_FILE_MODIFIED       = "FILE_MODIFIED"
         const val ERR_B2_ERROR            = "B2_ERROR"
         const val ERR_INCONSISTENT        = "INCONSISTENT"
-
     }
 
     private val notifier = BackupNotifier(applicationContext)
@@ -87,7 +85,7 @@ class BackupWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result {
         val b2Config     = appPrefs.b2Config()
-        val b2RwAppKey     = credentialStore.b2RwAppKey()
+        val b2RwAppKey   = credentialStore.b2RwAppKey()
         val serverPkHex  = appPrefs.naclPkHex()
         val phoneSkHex   = credentialStore.phoneSecretKey()
         val phonePkHex   = appPrefs.phonePkHex()
@@ -100,10 +98,9 @@ class BackupWorker @AssistedInject constructor(
         setForeground(notifier.foregroundInfo("Starting backup…"))
 
         val numParts = schedulePrefs.numPartsPerPack()
-        val region   = b2Config.region
 
         return try {
-            val b2 = s3Factory.create(b2Config.endpoint, b2Config.bucket, b2Config.keyId, b2RwAppKey, region)
+            val b2 = s3Factory.create(b2Config.endpoint, b2Config.bucket, b2Config.keyId, b2RwAppKey, b2Config.region)
             val orchestrator = BackupOrchestrator(
                 fileSource   = AndroidBackupFileSource(applicationContext.contentResolver),
                 serverPk     = serverPkHex.fromHex(),
@@ -111,6 +108,7 @@ class BackupWorker @AssistedInject constructor(
                 sodium       = lazySodium,
                 scanner      = scanner,
                 stateRepo    = stateRepo,
+                hasher       = hasher,
                 b2           = b2,
                 partsPerPack = numParts,
                 packPrefix   = phonePkHex,
@@ -138,7 +136,6 @@ class BackupWorker @AssistedInject constructor(
             trackedPackPosition = packNumber
             trackedPackState = when (state) {
                 "PLANNING"   -> STATE_PLANNING
-                "HASHING"    -> STATE_HASHING
                 "RECOVERING" -> STATE_RECOVERING
                 "UPLOADING"  -> STATE_UPLOADING
                 "COMPLETING" -> STATE_COMPLETING

@@ -7,13 +7,14 @@ import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
 import javax.inject.Singleton
 
-@Entity(tableName = "backup_files", indices = [Index(value = ["path", "mtime", "size"], unique = true)])
+@Entity(tableName = "backup_files", indices = [Index(value = ["path", "sha256"], unique = true)])
 data class BackupFileEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val path: String,
     val uri: String,
     val mtime: Long,
     val size: Long,
+    val sha256: String,
     val createdAt: Long,
     val updatedAt: Long,
 )
@@ -23,34 +24,13 @@ interface BackupFileDao {
     @Query("SELECT * FROM backup_files WHERE id = :id")
     suspend fun getById(id: Long): BackupFileEntity?
 
-    @Query("SELECT * FROM backup_files WHERE path = :path AND mtime = :mtime AND size = :size LIMIT 1")
-    suspend fun getByPathMtimeSize(path: String, mtime: Long, size: Long): BackupFileEntity?
+    @Query("SELECT * FROM backup_files WHERE path = :path AND sha256 = :sha256 LIMIT 1")
+    suspend fun getByPathSha256(path: String, sha256: String): BackupFileEntity?
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertAll(files: List<BackupFileEntity>): List<Long>
 
     @Query("DELETE FROM backup_files")
-    suspend fun deleteAll()
-}
-
-@Entity(tableName = "backup_file_hashes", foreignKeys = [ForeignKey(entity = BackupFileEntity::class, parentColumns = ["id"], childColumns = ["backupFileId"], onDelete = ForeignKey.CASCADE)])
-data class BackupFileHashEntity(
-    @PrimaryKey val backupFileId: Long,
-    val sha256: String,
-)
-
-@Dao
-interface BackupFileHashDao {
-    @Query("SELECT * FROM backup_file_hashes WHERE backupFileId = :fileId")
-    suspend fun getByFileId(fileId: Long): BackupFileHashEntity?
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(hash: BackupFileHashEntity)
-
-    @Query("DELETE FROM backup_file_hashes WHERE backupFileId = :fileId")
-    suspend fun deleteForFile(fileId: Long)
-
-    @Query("DELETE FROM backup_file_hashes")
     suspend fun deleteAll()
 }
 
@@ -307,14 +287,14 @@ interface RestoreSelectionDao {
     suspend fun deleteAll()
 }
 
-@DatabaseView(viewName = "backup_file_status_view", value = "SELECT f.id, f.path, f.uri, f.mtime, f.size, h.sha256, CASE WHEN COUNT(c.id) = 0 THEN 0 WHEN SUM(CASE WHEN s.packNumber IS NOT NULL THEN 1 ELSE 0 END) = COUNT(c.id) THEN 2 WHEN SUM(CASE WHEN e.backupPartId IS NOT NULL THEN 1 ELSE 0 END) > 0 THEN 1 ELSE 0 END as state FROM backup_files f LEFT JOIN backup_file_hashes h ON h.backupFileId = f.id LEFT JOIN backup_chunks c ON c.backupFileId = f.id LEFT JOIN backup_parts p ON p.id = c.backupPartId LEFT JOIN backup_part_etags e ON e.backupPartId = p.id LEFT JOIN backup_pack_sealed s ON s.packNumber = p.packNumber GROUP BY f.id ORDER BY f.id ASC")
+@DatabaseView(viewName = "backup_file_status_view", value = "SELECT f.id, f.path, f.uri, f.mtime, f.size, f.sha256, CASE WHEN COUNT(c.id) = 0 THEN 0 WHEN SUM(CASE WHEN s.packNumber IS NOT NULL THEN 1 ELSE 0 END) = COUNT(c.id) THEN 2 WHEN SUM(CASE WHEN e.backupPartId IS NOT NULL THEN 1 ELSE 0 END) > 0 THEN 1 ELSE 0 END as state FROM backup_files f LEFT JOIN backup_chunks c ON c.backupFileId = f.id LEFT JOIN backup_parts p ON p.id = c.backupPartId LEFT JOIN backup_part_etags e ON e.backupPartId = p.id LEFT JOIN backup_pack_sealed s ON s.packNumber = p.packNumber GROUP BY f.id ORDER BY f.id ASC")
 data class BackupFileStatusView(
     val id: Long,
     val path: String,
     val uri: String,
     val mtime: Long,
     val size: Long,
-    val sha256: String?,
+    val sha256: String,
     val state: Int,
 )
 
@@ -327,7 +307,7 @@ interface BackupFileStatusDao {
     suspend fun maxSealedPack(): Int?
 }
 
-@DatabaseView(viewName = "backup_restore_view", value = "SELECT f.id, f.path, f.mtime, f.size, h.sha256, MIN(p.packNumber) as startPack, MIN(CASE WHEN p.packNumber = (SELECT MIN(p2.packNumber) FROM backup_parts p2 JOIN backup_chunks c2 ON c2.backupPartId = p2.id WHERE c2.backupFileId = f.id) THEN p.partNumber ELSE NULL END) as startPart, (SELECT c2.partOffset FROM backup_chunks c2 JOIN backup_parts p2 ON p2.id = c2.backupPartId WHERE c2.backupFileId = f.id AND c2.fileOffset = 0) as startPartOffset, MAX(p.packNumber) as endPack, MAX(CASE WHEN p.packNumber = (SELECT MAX(p2.packNumber) FROM backup_parts p2 JOIN backup_chunks c2 ON c2.backupPartId = p2.id WHERE c2.backupFileId = f.id) THEN p.partNumber ELSE NULL END) as endPart, COUNT(c.id) as numParts FROM backup_files f JOIN backup_file_hashes h ON h.backupFileId = f.id JOIN backup_chunks c ON c.backupFileId = f.id JOIN backup_parts p ON p.id = c.backupPartId JOIN backup_pack_sealed s ON s.packNumber = p.packNumber GROUP BY f.id ORDER BY startPack, startPart")
+@DatabaseView(viewName = "backup_restore_view", value = "SELECT f.id, f.path, f.mtime, f.size, f.sha256, MIN(p.packNumber) as startPack, MIN(CASE WHEN p.packNumber = (SELECT MIN(p2.packNumber) FROM backup_parts p2 JOIN backup_chunks c2 ON c2.backupPartId = p2.id WHERE c2.backupFileId = f.id) THEN p.partNumber ELSE NULL END) as startPart, (SELECT c2.partOffset FROM backup_chunks c2 JOIN backup_parts p2 ON p2.id = c2.backupPartId WHERE c2.backupFileId = f.id AND c2.fileOffset = 0) as startPartOffset, MAX(p.packNumber) as endPack, MAX(CASE WHEN p.packNumber = (SELECT MAX(p2.packNumber) FROM backup_parts p2 JOIN backup_chunks c2 ON c2.backupPartId = p2.id WHERE c2.backupFileId = f.id) THEN p.partNumber ELSE NULL END) as endPart, COUNT(c.id) as numParts FROM backup_files f JOIN backup_chunks c ON c.backupFileId = f.id JOIN backup_parts p ON p.id = c.backupPartId JOIN backup_pack_sealed s ON s.packNumber = p.packNumber GROUP BY f.id ORDER BY startPack, startPart")
 data class BackupRestoreView(
     val id: Long,
     val path: String,
@@ -361,7 +341,6 @@ interface BackupRestoreViewDao {
 class BackupStateRepository @Inject constructor(
     private val db: AppDatabase,
     private val backupFileDao: BackupFileDao,
-    private val backupFileHashDao: BackupFileHashDao,
     private val backupPackDao: BackupPackDao,
     private val backupPackSealedDao: BackupPackSealedDao,
     private val backupPartDao: BackupPartDao,
@@ -442,12 +421,9 @@ class BackupStateRepository @Inject constructor(
     }
     suspend fun getChunksForFile(fileId: Long): List<ChunkWithPartInfo> = backupChunkDao.getForFile(fileId)
     suspend fun getFileById(id: Long): BackupFileEntity? = backupFileDao.getById(id)
-    suspend fun getHashForFile(fileId: Long): BackupFileHashEntity? = backupFileHashDao.getByFileId(fileId)
     suspend fun insertScannedFiles(files: List<BackupFileEntity>) = backupFileDao.insertAll(files)
     suspend fun getPendingFiles(): List<BackupFileStatusView> = backupFileStatusDao.getPendingFiles()
     suspend fun maxSealedPack(): Int? = backupFileStatusDao.maxSealedPack()
-    suspend fun persistFileHash(fileId: Long, sha256: String) { backupFileHashDao.upsert(BackupFileHashEntity(backupFileId = fileId, sha256 = sha256)) }
-    suspend fun clearFileHash(fileId: Long) { backupFileHashDao.deleteForFile(fileId) }
     fun observeFolders(): Flow<List<BackupFolderEntity>> = backupFolderDao.observeAll()
     suspend fun countDefaultFolders(): Int = backupFolderDao.countDefaults()
     suspend fun getDefaultFolders(): List<BackupFolderEntity> = backupFolderDao.getDefaults()
@@ -459,7 +435,8 @@ class BackupStateRepository @Inject constructor(
     fun observeLastConfirmedAt(): Flow<Long?> = backupFileDoneDao.observeLastSealedAt()
     suspend fun getRestoreFiles(): List<BackupRestoreView> = backupRestoreViewDao.getAll()
     suspend fun getRestoreFilesByFileId(fileId: Long): List<BackupRestoreView> = backupRestoreViewDao.getByFileId(fileId)
-    suspend fun findFileByPathMtimeSize(path: String, mtime: Long, size: Long): BackupFileEntity? = backupFileDao.getByPathMtimeSize(path, mtime, size)
+    suspend fun findFileByPathSha256(path: String, sha256: String): BackupFileEntity? =
+        backupFileDao.getByPathSha256(path, sha256)
 
     suspend fun upsertRestoredFileLocation(
         fileId: Long,
@@ -483,7 +460,6 @@ class BackupStateRepository @Inject constructor(
                 chunkBytes = chunkBytes,
                 partOffset = partOffset,
             )))
-            backupFileHashDao.upsert(BackupFileHashEntity(backupFileId = fileId, sha256 = sha256))
             if (backupPackSealedDao.getByPackNumber(packNumber) == null) {
                 backupPackSealedDao.insert(BackupPackSealedEntity(packNumber = packNumber, sealedAt = System.currentTimeMillis()))
             }

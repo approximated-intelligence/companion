@@ -10,7 +10,7 @@ import javax.inject.Singleton
 
 @Entity(
     tableName = "consolidate_files",
-    indices = [Index(value = ["path", "mtime", "size"], unique = true)],
+    indices = [Index(value = ["path", "sha256"], unique = true)],
 )
 data class ConsolidateFileEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -18,13 +18,14 @@ data class ConsolidateFileEntity(
     val uri: String,
     val mtime: Long,
     val size: Long,
+    val sha256: String,
     val createdAt: Long,
 )
 
 @Dao
 interface ConsolidateFileDao {
-    @Query("SELECT * FROM consolidate_files WHERE path = :path AND mtime = :mtime AND size = :size LIMIT 1")
-    suspend fun getByPathMtimeSize(path: String, mtime: Long, size: Long): ConsolidateFileEntity?
+    @Query("SELECT * FROM consolidate_files WHERE path = :path AND sha256 = :sha256 LIMIT 1")
+    suspend fun getByPathSha256(path: String, sha256: String): ConsolidateFileEntity?
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertAll(files: List<ConsolidateFileEntity>): List<Long>
@@ -109,7 +110,7 @@ interface ConsolidateProtectedFileDao {
 
 @DatabaseView(
     viewName = "safe_to_delete_view",
-    value = "SELECT cf.id, cf.path, cf.uri, cf.mtime, cf.size, d.destinationName, d.completedAt as consolidatedAt, CASE WHEN p.consolidateFileId IS NOT NULL THEN 1 ELSE 0 END as isProtected FROM consolidate_files cf JOIN consolidate_files_done d ON d.consolidateFileId = cf.id JOIN backup_files bf ON bf.path = cf.path AND bf.mtime = cf.mtime AND bf.size = cf.size JOIN backup_files_done bd ON bd.backupFileId = bf.id LEFT JOIN consolidate_protected_files p ON p.consolidateFileId = cf.id",
+    value = "SELECT cf.id, cf.path, cf.uri, cf.mtime, cf.size, d.destinationName, d.completedAt as consolidatedAt, CASE WHEN p.consolidateFileId IS NOT NULL THEN 1 ELSE 0 END as isProtected FROM consolidate_files cf JOIN consolidate_files_done d ON d.consolidateFileId = cf.id JOIN backup_files bf ON bf.path = cf.path AND bf.sha256 = cf.sha256 JOIN backup_files_done bd ON bd.backupFileId = bf.id LEFT JOIN consolidate_protected_files p ON p.consolidateFileId = cf.id",
 )
 data class SafeToDeleteView(
     val id: Long,
@@ -143,8 +144,8 @@ class ConsolidateRepository @Inject constructor(
     suspend fun insertScannedFiles(files: List<ConsolidateFileEntity>) =
         consolidateFileDao.insertAll(files)
 
-    suspend fun findByPathMtimeSize(path: String, mtime: Long, size: Long) =
-        consolidateFileDao.getByPathMtimeSize(path, mtime, size)
+    suspend fun findByPathSha256(path: String, sha256: String) =
+        consolidateFileDao.getByPathSha256(path, sha256)
 
     suspend fun getPending(): List<ConsolidateFileEntity> =
         consolidateFileDao.getPending()

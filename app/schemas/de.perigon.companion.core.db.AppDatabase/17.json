@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 17,
-    "identityHash": "36a2d7e944ea9d7b9f4a94aa82898f84",
+    "identityHash": "89fde96b8d0863fe08f8b3ca1f669506",
     "entities": [
       {
         "tableName": "processed_files",
@@ -53,7 +53,7 @@
       },
       {
         "tableName": "backup_files",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `path` TEXT NOT NULL, `uri` TEXT NOT NULL, `mtime` INTEGER NOT NULL, `size` INTEGER NOT NULL, `sha256` TEXT NOT NULL, `status` TEXT NOT NULL, `startPack` INTEGER NOT NULL, `endPack` INTEGER NOT NULL, `startPart` INTEGER NOT NULL, `startPartOffset` INTEGER NOT NULL, `packFileIndex` INTEGER NOT NULL, `issueDetail` TEXT, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `path` TEXT NOT NULL, `uri` TEXT NOT NULL, `mtime` INTEGER NOT NULL, `size` INTEGER NOT NULL, `sha256` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL)",
         "fields": [
           {
             "fieldPath": "id",
@@ -92,47 +92,6 @@
             "notNull": true
           },
           {
-            "fieldPath": "status",
-            "columnName": "status",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "startPack",
-            "columnName": "startPack",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "endPack",
-            "columnName": "endPack",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "startPart",
-            "columnName": "startPart",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "startPartOffset",
-            "columnName": "startPartOffset",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "packFileIndex",
-            "columnName": "packFileIndex",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "issueDetail",
-            "columnName": "issueDetail",
-            "affinity": "TEXT"
-          },
-          {
             "fieldPath": "createdAt",
             "columnName": "createdAt",
             "affinity": "INTEGER",
@@ -153,47 +112,81 @@
         },
         "indices": [
           {
-            "name": "index_backup_files_path_mtime",
+            "name": "index_backup_files_path_sha256",
             "unique": true,
             "columnNames": [
               "path",
-              "mtime"
-            ],
-            "orders": [],
-            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_backup_files_path_mtime` ON `${TABLE_NAME}` (`path`, `mtime`)"
-          },
-          {
-            "name": "index_backup_files_sha256",
-            "unique": false,
-            "columnNames": [
               "sha256"
             ],
             "orders": [],
-            "createSql": "CREATE INDEX IF NOT EXISTS `index_backup_files_sha256` ON `${TABLE_NAME}` (`sha256`)"
-          },
-          {
-            "name": "index_backup_files_status",
-            "unique": false,
-            "columnNames": [
-              "status"
-            ],
-            "orders": [],
-            "createSql": "CREATE INDEX IF NOT EXISTS `index_backup_files_status` ON `${TABLE_NAME}` (`status`)"
-          },
-          {
-            "name": "index_backup_files_startPack",
-            "unique": false,
-            "columnNames": [
-              "startPack"
-            ],
-            "orders": [],
-            "createSql": "CREATE INDEX IF NOT EXISTS `index_backup_files_startPack` ON `${TABLE_NAME}` (`startPack`)"
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_backup_files_path_sha256` ON `${TABLE_NAME}` (`path`, `sha256`)"
           }
         ]
       },
       {
-        "tableName": "open_pack",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER NOT NULL, `packPosition` INTEGER NOT NULL, `b2UploadId` TEXT NOT NULL, `startFileId` INTEGER NOT NULL, `startFileOffset` INTEGER NOT NULL, `numPartsTarget` INTEGER NOT NULL, `bytesInPack` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "tableName": "backup_packs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`packNumber` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`packNumber`))",
+        "fields": [
+          {
+            "fieldPath": "packNumber",
+            "columnName": "packNumber",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "packNumber"
+          ]
+        }
+      },
+      {
+        "tableName": "backup_pack_sealed",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`packNumber` INTEGER NOT NULL, `sealedAt` INTEGER NOT NULL, PRIMARY KEY(`packNumber`), FOREIGN KEY(`packNumber`) REFERENCES `backup_packs`(`packNumber`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "packNumber",
+            "columnName": "packNumber",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sealedAt",
+            "columnName": "sealedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "packNumber"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "backup_packs",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "packNumber"
+            ],
+            "referencedColumns": [
+              "packNumber"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "backup_parts",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `packNumber` INTEGER NOT NULL, `partNumber` INTEGER NOT NULL, FOREIGN KEY(`packNumber`) REFERENCES `backup_packs`(`packNumber`) ON UPDATE NO ACTION ON DELETE CASCADE )",
         "fields": [
           {
             "fieldPath": "id",
@@ -202,8 +195,211 @@
             "notNull": true
           },
           {
-            "fieldPath": "packPosition",
-            "columnName": "packPosition",
+            "fieldPath": "packNumber",
+            "columnName": "packNumber",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "partNumber",
+            "columnName": "partNumber",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_backup_parts_packNumber_partNumber",
+            "unique": true,
+            "columnNames": [
+              "packNumber",
+              "partNumber"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_backup_parts_packNumber_partNumber` ON `${TABLE_NAME}` (`packNumber`, `partNumber`)"
+          },
+          {
+            "name": "index_backup_parts_packNumber",
+            "unique": false,
+            "columnNames": [
+              "packNumber"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_backup_parts_packNumber` ON `${TABLE_NAME}` (`packNumber`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "backup_packs",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "packNumber"
+            ],
+            "referencedColumns": [
+              "packNumber"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "backup_part_etags",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`backupPartId` INTEGER NOT NULL, `etag` TEXT NOT NULL, PRIMARY KEY(`backupPartId`), FOREIGN KEY(`backupPartId`) REFERENCES `backup_parts`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "backupPartId",
+            "columnName": "backupPartId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "etag",
+            "columnName": "etag",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "backupPartId"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "backup_parts",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "backupPartId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "backup_chunks",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `backupFileId` INTEGER NOT NULL, `backupPartId` INTEGER NOT NULL, `fileOffset` INTEGER NOT NULL, `chunkBytes` INTEGER NOT NULL, `partOffset` INTEGER NOT NULL, FOREIGN KEY(`backupFileId`) REFERENCES `backup_files`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE , FOREIGN KEY(`backupPartId`) REFERENCES `backup_parts`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "backupFileId",
+            "columnName": "backupFileId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "backupPartId",
+            "columnName": "backupPartId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fileOffset",
+            "columnName": "fileOffset",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "chunkBytes",
+            "columnName": "chunkBytes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "partOffset",
+            "columnName": "partOffset",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_backup_chunks_backupFileId",
+            "unique": false,
+            "columnNames": [
+              "backupFileId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_backup_chunks_backupFileId` ON `${TABLE_NAME}` (`backupFileId`)"
+          },
+          {
+            "name": "index_backup_chunks_backupPartId",
+            "unique": false,
+            "columnNames": [
+              "backupPartId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_backup_chunks_backupPartId` ON `${TABLE_NAME}` (`backupPartId`)"
+          },
+          {
+            "name": "index_backup_chunks_backupFileId_backupPartId",
+            "unique": true,
+            "columnNames": [
+              "backupFileId",
+              "backupPartId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_backup_chunks_backupFileId_backupPartId` ON `${TABLE_NAME}` (`backupFileId`, `backupPartId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "backup_files",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "backupFileId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          },
+          {
+            "table": "backup_parts",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "backupPartId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "open_pack",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER NOT NULL, `packNumber` INTEGER NOT NULL, `b2UploadId` TEXT NOT NULL, `numPartsTarget` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "packNumber",
+            "columnName": "packNumber",
             "affinity": "INTEGER",
             "notNull": true
           },
@@ -214,26 +410,8 @@
             "notNull": true
           },
           {
-            "fieldPath": "startFileId",
-            "columnName": "startFileId",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "startFileOffset",
-            "columnName": "startFileOffset",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
             "fieldPath": "numPartsTarget",
             "columnName": "numPartsTarget",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "bytesInPack",
-            "columnName": "bytesInPack",
             "affinity": "INTEGER",
             "notNull": true
           },
@@ -252,8 +430,8 @@
         }
       },
       {
-        "tableName": "current_file",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER NOT NULL, `backupFileId` INTEGER NOT NULL, `byteOffset` INTEGER NOT NULL, `phase` TEXT NOT NULL, PRIMARY KEY(`id`))",
+        "tableName": "backup_folders",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uri` TEXT NOT NULL, `displayName` TEXT NOT NULL, `includeInBackup` INTEGER NOT NULL, `isDefault` INTEGER NOT NULL, `addedAt` INTEGER NOT NULL)",
         "fields": [
           {
             "fieldPath": "id",
@@ -262,68 +440,32 @@
             "notNull": true
           },
           {
-            "fieldPath": "backupFileId",
-            "columnName": "backupFileId",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "byteOffset",
-            "columnName": "byteOffset",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "phase",
-            "columnName": "phase",
-            "affinity": "TEXT",
-            "notNull": true
-          }
-        ],
-        "primaryKey": {
-          "autoGenerate": false,
-          "columnNames": [
-            "id"
-          ]
-        }
-      },
-      {
-        "tableName": "parts_uploaded",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `packPosition` INTEGER NOT NULL, `partNumber` INTEGER NOT NULL, `etag` TEXT NOT NULL, `wireSize` INTEGER NOT NULL, `uploadedAt` INTEGER NOT NULL)",
-        "fields": [
-          {
-            "fieldPath": "id",
-            "columnName": "id",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "packPosition",
-            "columnName": "packPosition",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "partNumber",
-            "columnName": "partNumber",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "etag",
-            "columnName": "etag",
+            "fieldPath": "uri",
+            "columnName": "uri",
             "affinity": "TEXT",
             "notNull": true
           },
           {
-            "fieldPath": "wireSize",
-            "columnName": "wireSize",
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "includeInBackup",
+            "columnName": "includeInBackup",
             "affinity": "INTEGER",
             "notNull": true
           },
           {
-            "fieldPath": "uploadedAt",
-            "columnName": "uploadedAt",
+            "fieldPath": "isDefault",
+            "columnName": "isDefault",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "addedAt",
+            "columnName": "addedAt",
             "affinity": "INTEGER",
             "notNull": true
           }
@@ -333,22 +475,126 @@
           "columnNames": [
             "id"
           ]
-        },
-        "indices": [
+        }
+      },
+      {
+        "tableName": "backup_files_done",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`backupFileId` INTEGER NOT NULL, `sealedAt` INTEGER NOT NULL, PRIMARY KEY(`backupFileId`), FOREIGN KEY(`backupFileId`) REFERENCES `backup_files`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
           {
-            "name": "index_parts_uploaded_packPosition",
-            "unique": false,
-            "columnNames": [
-              "packPosition"
+            "fieldPath": "backupFileId",
+            "columnName": "backupFileId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sealedAt",
+            "columnName": "sealedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "backupFileId"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "backup_files",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "backupFileId"
             ],
-            "orders": [],
-            "createSql": "CREATE INDEX IF NOT EXISTS `index_parts_uploaded_packPosition` ON `${TABLE_NAME}` (`packPosition`)"
+            "referencedColumns": [
+              "id"
+            ]
           }
         ]
       },
       {
+        "tableName": "restore_selections",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `path` TEXT NOT NULL, `sha256` TEXT NOT NULL, `startPack` INTEGER NOT NULL, `startPart` INTEGER NOT NULL, `startPartOffset` INTEGER NOT NULL, `endPack` INTEGER NOT NULL, `endPart` INTEGER NOT NULL, `numParts` INTEGER NOT NULL, `size` INTEGER NOT NULL, `mtime` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "path",
+            "columnName": "path",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sha256",
+            "columnName": "sha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startPack",
+            "columnName": "startPack",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startPart",
+            "columnName": "startPart",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startPartOffset",
+            "columnName": "startPartOffset",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endPack",
+            "columnName": "endPack",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endPart",
+            "columnName": "endPart",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "numParts",
+            "columnName": "numParts",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "size",
+            "columnName": "size",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mtime",
+            "columnName": "mtime",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
         "tableName": "posts",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `localDate` TEXT NOT NULL, `motto` TEXT NOT NULL, `title` TEXT NOT NULL, `titleEdited` INTEGER NOT NULL, `body` TEXT NOT NULL, `teaser` TEXT NOT NULL, `teaserEdited` INTEGER NOT NULL, `tags` TEXT NOT NULL, `pinnedMediaId` INTEGER, `slug` TEXT NOT NULL, `publishState` TEXT NOT NULL, `publishedAt` INTEGER, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL)",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `localDate` TEXT NOT NULL, `motto` TEXT NOT NULL, `title` TEXT NOT NULL, `titleEdited` INTEGER NOT NULL, `body` TEXT NOT NULL, `teaser` TEXT NOT NULL, `teaserEdited` INTEGER NOT NULL, `tags` TEXT NOT NULL, `pinnedMediaId` INTEGER, `slug` TEXT NOT NULL, `slugEdited` INTEGER NOT NULL, `publishState` TEXT NOT NULL, `publishedAt` INTEGER, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL)",
         "fields": [
           {
             "fieldPath": "id",
@@ -413,6 +659,12 @@
             "fieldPath": "slug",
             "columnName": "slug",
             "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "slugEdited",
+            "columnName": "slugEdited",
+            "affinity": "INTEGER",
             "notNull": true
           },
           {
@@ -592,54 +844,6 @@
             ]
           }
         ]
-      },
-      {
-        "tableName": "backup_folders",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `uri` TEXT NOT NULL, `displayName` TEXT NOT NULL, `includeInBackup` INTEGER NOT NULL, `isDefault` INTEGER NOT NULL, `addedAt` INTEGER NOT NULL)",
-        "fields": [
-          {
-            "fieldPath": "id",
-            "columnName": "id",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "uri",
-            "columnName": "uri",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "displayName",
-            "columnName": "displayName",
-            "affinity": "TEXT",
-            "notNull": true
-          },
-          {
-            "fieldPath": "includeInBackup",
-            "columnName": "includeInBackup",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "isDefault",
-            "columnName": "isDefault",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "addedAt",
-            "columnName": "addedAt",
-            "affinity": "INTEGER",
-            "notNull": true
-          }
-        ],
-        "primaryKey": {
-          "autoGenerate": true,
-          "columnNames": [
-            "id"
-          ]
-        }
       },
       {
         "tableName": "transform_jobs",
@@ -940,7 +1144,7 @@
       },
       {
         "tableName": "track_points",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `segmentId` INTEGER NOT NULL, `lat` REAL NOT NULL, `lon` REAL NOT NULL, `ele` REAL, `accuracyM` REAL, `time` INTEGER NOT NULL, `provider` TEXT NOT NULL, FOREIGN KEY(`segmentId`) REFERENCES `track_segments`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `segmentId` INTEGER NOT NULL, `lat` REAL NOT NULL, `lon` REAL NOT NULL, `ele` REAL, `undulation` REAL, `accuracyM` REAL, `speedMs` REAL, `bearing` REAL, `time` INTEGER NOT NULL, `provider` TEXT NOT NULL, FOREIGN KEY(`segmentId`) REFERENCES `track_segments`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
         "fields": [
           {
             "fieldPath": "id",
@@ -972,8 +1176,23 @@
             "affinity": "REAL"
           },
           {
+            "fieldPath": "undulation",
+            "columnName": "undulation",
+            "affinity": "REAL"
+          },
+          {
             "fieldPath": "accuracyM",
             "columnName": "accuracyM",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "speedMs",
+            "columnName": "speedMs",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "bearing",
+            "columnName": "bearing",
             "affinity": "REAL"
           },
           {
@@ -1013,6 +1232,126 @@
             "onUpdate": "NO ACTION",
             "columns": [
               "segmentId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "track_stats",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`trackId` INTEGER NOT NULL, `durationMs` INTEGER NOT NULL, `recordingLengthMs` INTEGER NOT NULL, `distanceM` REAL NOT NULL, `timeMovingMs` INTEGER NOT NULL, PRIMARY KEY(`trackId`), FOREIGN KEY(`trackId`) REFERENCES `tracks`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "trackId",
+            "columnName": "trackId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "durationMs",
+            "columnName": "durationMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "recordingLengthMs",
+            "columnName": "recordingLengthMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "distanceM",
+            "columnName": "distanceM",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "timeMovingMs",
+            "columnName": "timeMovingMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "trackId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_track_stats_trackId",
+            "unique": true,
+            "columnNames": [
+              "trackId"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_track_stats_trackId` ON `${TABLE_NAME}` (`trackId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "tracks",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "trackId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "current_track",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER NOT NULL, `trackId` INTEGER NOT NULL, `state` TEXT NOT NULL, PRIMARY KEY(`id`), FOREIGN KEY(`trackId`) REFERENCES `tracks`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "trackId",
+            "columnName": "trackId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_current_track_trackId",
+            "unique": false,
+            "columnNames": [
+              "trackId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_current_track_trackId` ON `${TABLE_NAME}` (`trackId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "tracks",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "trackId"
             ],
             "referencedColumns": [
               "id"
@@ -1096,21 +1435,294 @@
             "createSql": "CREATE INDEX IF NOT EXISTS `index_user_notifications_createdAt` ON `${TABLE_NAME}` (`createdAt`)"
           }
         ]
+      },
+      {
+        "tableName": "consolidate_files",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `path` TEXT NOT NULL, `uri` TEXT NOT NULL, `mtime` INTEGER NOT NULL, `size` INTEGER NOT NULL, `sha256` TEXT NOT NULL, `createdAt` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "path",
+            "columnName": "path",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "uri",
+            "columnName": "uri",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mtime",
+            "columnName": "mtime",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "size",
+            "columnName": "size",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sha256",
+            "columnName": "sha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_consolidate_files_path_sha256",
+            "unique": true,
+            "columnNames": [
+              "path",
+              "sha256"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_consolidate_files_path_sha256` ON `${TABLE_NAME}` (`path`, `sha256`)"
+          }
+        ]
+      },
+      {
+        "tableName": "consolidate_files_done",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`consolidateFileId` INTEGER NOT NULL, `destinationName` TEXT NOT NULL, `completedAt` INTEGER NOT NULL, PRIMARY KEY(`consolidateFileId`), FOREIGN KEY(`consolidateFileId`) REFERENCES `consolidate_files`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "consolidateFileId",
+            "columnName": "consolidateFileId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "destinationName",
+            "columnName": "destinationName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "completedAt",
+            "columnName": "completedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "consolidateFileId"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "consolidate_files",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "consolidateFileId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "consolidate_protected_files",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`consolidateFileId` INTEGER NOT NULL, `protectedAt` INTEGER NOT NULL, PRIMARY KEY(`consolidateFileId`), FOREIGN KEY(`consolidateFileId`) REFERENCES `consolidate_files`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "consolidateFileId",
+            "columnName": "consolidateFileId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "protectedAt",
+            "columnName": "protectedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "consolidateFileId"
+          ]
+        },
+        "foreignKeys": [
+          {
+            "table": "consolidate_files",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "consolidateFileId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "audio_recordings",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `uri` TEXT NOT NULL, `format` TEXT NOT NULL, `sampleRateHz` INTEGER NOT NULL, `bitrateBps` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, `durationMs` INTEGER, `sizeBytes` INTEGER)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "uri",
+            "columnName": "uri",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "format",
+            "columnName": "format",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sampleRateHz",
+            "columnName": "sampleRateHz",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "bitrateBps",
+            "columnName": "bitrateBps",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "durationMs",
+            "columnName": "durationMs",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "sizeBytes",
+            "columnName": "sizeBytes",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_audio_recordings_createdAt",
+            "unique": false,
+            "columnNames": [
+              "createdAt"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_audio_recordings_createdAt` ON `${TABLE_NAME}` (`createdAt`)"
+          }
+        ]
+      },
+      {
+        "tableName": "file_content_hashes",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`path` TEXT NOT NULL, `mtime` INTEGER NOT NULL, `size` INTEGER NOT NULL, `sha256` TEXT NOT NULL, `computedAt` INTEGER NOT NULL, PRIMARY KEY(`path`, `mtime`, `size`))",
+        "fields": [
+          {
+            "fieldPath": "path",
+            "columnName": "path",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mtime",
+            "columnName": "mtime",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "size",
+            "columnName": "size",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sha256",
+            "columnName": "sha256",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "computedAt",
+            "columnName": "computedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "path",
+            "mtime",
+            "size"
+          ]
+        }
       }
     ],
     "views": [
       {
-        "viewName": "backup_records_view",
-        "createSql": "CREATE VIEW `${VIEW_NAME}` AS SELECT sha256 FROM backup_files WHERE status = 'CONFIRMED'"
+        "viewName": "backup_file_status_view",
+        "createSql": "CREATE VIEW `${VIEW_NAME}` AS SELECT f.id, f.path, f.uri, f.mtime, f.size, f.sha256, CASE WHEN COUNT(c.id) = 0 THEN 0 WHEN SUM(CASE WHEN s.packNumber IS NOT NULL THEN 1 ELSE 0 END) = COUNT(c.id) THEN 2 WHEN SUM(CASE WHEN e.backupPartId IS NOT NULL THEN 1 ELSE 0 END) > 0 THEN 1 ELSE 0 END as state FROM backup_files f LEFT JOIN backup_chunks c ON c.backupFileId = f.id LEFT JOIN backup_parts p ON p.id = c.backupPartId LEFT JOIN backup_part_etags e ON e.backupPartId = p.id LEFT JOIN backup_pack_sealed s ON s.packNumber = p.packNumber GROUP BY f.id ORDER BY f.id ASC"
       },
       {
-        "viewName": "backup_issues_view",
-        "createSql": "CREATE VIEW `${VIEW_NAME}` AS SELECT id, path, mtime, issueDetail, updatedAt FROM backup_files WHERE status = 'ISSUE'"
+        "viewName": "backup_restore_view",
+        "createSql": "CREATE VIEW `${VIEW_NAME}` AS SELECT f.id, f.path, f.mtime, f.size, f.sha256, MIN(p.packNumber) as startPack, MIN(CASE WHEN p.packNumber = (SELECT MIN(p2.packNumber) FROM backup_parts p2 JOIN backup_chunks c2 ON c2.backupPartId = p2.id WHERE c2.backupFileId = f.id) THEN p.partNumber ELSE NULL END) as startPart, (SELECT c2.partOffset FROM backup_chunks c2 JOIN backup_parts p2 ON p2.id = c2.backupPartId WHERE c2.backupFileId = f.id AND c2.fileOffset = 0) as startPartOffset, MAX(p.packNumber) as endPack, MAX(CASE WHEN p.packNumber = (SELECT MAX(p2.packNumber) FROM backup_parts p2 JOIN backup_chunks c2 ON c2.backupPartId = p2.id WHERE c2.backupFileId = f.id) THEN p.partNumber ELSE NULL END) as endPart, COUNT(c.id) as numParts FROM backup_files f JOIN backup_chunks c ON c.backupFileId = f.id JOIN backup_parts p ON p.id = c.backupPartId JOIN backup_pack_sealed s ON s.packNumber = p.packNumber GROUP BY f.id ORDER BY startPack, startPart"
+      },
+      {
+        "viewName": "safe_to_delete_view",
+        "createSql": "CREATE VIEW `${VIEW_NAME}` AS SELECT cf.id, cf.path, cf.uri, cf.mtime, cf.size, d.destinationName, d.completedAt as consolidatedAt, CASE WHEN p.consolidateFileId IS NOT NULL THEN 1 ELSE 0 END as isProtected FROM consolidate_files cf JOIN consolidate_files_done d ON d.consolidateFileId = cf.id JOIN backup_files bf ON bf.path = cf.path AND bf.sha256 = cf.sha256 JOIN backup_files_done bd ON bd.backupFileId = bf.id LEFT JOIN consolidate_protected_files p ON p.consolidateFileId = cf.id"
+      },
+      {
+        "viewName": "track_point_rows",
+        "createSql": "CREATE VIEW `${VIEW_NAME}` AS SELECT t.id AS trackId, t.date AS trackDate, t.name AS trackName, s.id AS segmentId, s.startedAt AS segmentStartedAt, p.id AS pointId, p.lat, p.lon, p.ele, p.undulation, p.accuracyM, p.speedMs, p.bearing, p.time, p.provider FROM track_points p JOIN track_segments s ON s.id = p.segmentId JOIN tracks t ON t.id = s.trackId ORDER BY t.id ASC, s.id ASC, p.id ASC"
       }
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '36a2d7e944ea9d7b9f4a94aa82898f84')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '89fde96b8d0863fe08f8b3ca1f669506')"
     ]
   }
 }
