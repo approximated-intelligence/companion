@@ -239,6 +239,11 @@ fun PostScreen(
                 maxLines        = 6,
                 modifier        = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                trailingIcon    = {
+                    IconButton(onClick = vm::resetTeaser) {
+                        Icon(Icons.Default.AutoFixHigh, "Regenerate teaser from body")
+                    }
+                },
                 supportingText  = {
                     if (state.teaserEdited) Text("Manually edited - won't auto-update")
                 },
