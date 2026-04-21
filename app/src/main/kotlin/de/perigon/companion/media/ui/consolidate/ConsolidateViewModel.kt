@@ -1,6 +1,5 @@
 package de.perigon.companion.media.ui.consolidate
 
-import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -18,6 +17,8 @@ import de.perigon.companion.media.data.ConsolidateFileEntity
 import de.perigon.companion.media.data.ConsolidateRepository
 import de.perigon.companion.media.data.SafeToDeleteView
 import de.perigon.companion.media.worker.ConsolidateWorker
+import de.perigon.companion.util.FileHasher
+import de.perigon.companion.util.saf.ScannedFile
 import de.perigon.companion.util.saf.collectFileNames
 import de.perigon.companion.util.saf.listSubfolder
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -95,6 +96,7 @@ class ConsolidateViewModel @Inject constructor(
     private val backupStateRepo: BackupStateRepository,
     private val notificationDao: UserNotificationDao,
     private val appPrefs: AppPrefs,
+    private val hasher: FileHasher,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ConsolidateUiState(dcimUri = appPrefs.dcimTreeUri()))
@@ -408,9 +410,8 @@ class ConsolidateViewModel @Inject constructor(
 
         val cameraFiles = listSubfolder(ctx, treeUri, "Camera") ?: return 0
 
-        val now = System.currentTimeMillis()
-        val matched = mutableListOf<Pair<de.perigon.companion.util.saf.ScannedFile, String>>()
-
+        // Match camera file -> consolidated output name by stem/extension.
+        val matched = mutableListOf<Pair<ScannedFile, String>>()
         for (consolidatedName in consolidatedNames) {
             val stem = consolidatedName
                 .removeSuffix("_s.jpg")
@@ -430,22 +431,36 @@ class ConsolidateViewModel @Inject constructor(
 
         if (matched.isEmpty()) return 0
 
-        val entities = matched.map { (camera, _) ->
+        // Hash each matched camera file via the shared cache. Files that fail
+        // to hash are skipped — they'll be retried on the next scan.
+        val now = System.currentTimeMillis()
+        val hashed = mutableListOf<Triple<ScannedFile, String, String>>() // (file, sha256, consolidatedName)
+        for ((camera, consolidatedName) in matched) {
+            val dcimPath = "DCIM/${camera.path}"
+            val sha = hasher.hashOrCached(dcimPath, camera.mtime, camera.size) {
+                ctx.contentResolver.openInputStream(Uri.parse(camera.uri))
+                    ?: error("openInputStream returned null")
+            } ?: continue
+            hashed += Triple(camera, sha, consolidatedName)
+        }
+
+        if (hashed.isEmpty()) return 0
+
+        val entities = hashed.map { (camera, sha, _) ->
             ConsolidateFileEntity(
                 path = "DCIM/${camera.path}",
                 uri = camera.uri,
                 mtime = camera.mtime,
                 size = camera.size,
+                sha256 = sha,
                 createdAt = now,
             )
         }
         consolidateRepo.insertScannedFiles(entities)
 
         var count = 0
-        for ((camera, consolidatedName) in matched) {
-            val entity = consolidateRepo.findByPathMtimeSize(
-                "DCIM/${camera.path}", camera.mtime, camera.size,
-            ) ?: continue
+        for ((camera, sha, consolidatedName) in hashed) {
+            val entity = consolidateRepo.findByPathSha256("DCIM/${camera.path}", sha) ?: continue
             consolidateRepo.markDone(entity.id, consolidatedName)
             count++
         }
