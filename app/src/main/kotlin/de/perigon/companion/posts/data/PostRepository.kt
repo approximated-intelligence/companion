@@ -13,6 +13,7 @@ import de.perigon.companion.posts.domain.Post
 import de.perigon.companion.posts.domain.PostPublishState
 import de.perigon.companion.posts.worker.PublishWorker
 import de.perigon.companion.posts.worker.UnpublishWorker
+import de.perigon.companion.util.FileHasher
 import javax.inject.Inject
 import javax.inject.Singleton
 import de.perigon.companion.posts.domain.computeSlug
@@ -32,6 +33,7 @@ class PostRepository @Inject constructor(
     private val consolidateRepo: ConsolidateRepository,
     private val mediaFileStore: PostMediaFileStore,
     private val workManager: WorkManager,
+    private val hasher: FileHasher,
 ) {
     suspend fun getById(id: Long): PostEntity? = postDao.getById(id)
 
@@ -211,23 +213,38 @@ class PostRepository @Inject constructor(
     }
 
     private suspend fun protectSourceIfNeeded(media: PostMediaEntity) {
-        val meta = resolveConsolidateMeta(media.sourceUri) ?: return
-        val cf = consolidateRepo.findByPathMtimeSize(meta.path, meta.mtime, meta.size) ?: return
+        val cf = resolveConsolidateFile(media.sourceUri) ?: return
         consolidateRepo.protect(cf.id)
     }
 
     private suspend fun unprotectSourceIfNeeded(media: PostMediaEntity) {
-        val meta = resolveConsolidateMeta(media.sourceUri) ?: return
-        val cf = consolidateRepo.findByPathMtimeSize(meta.path, meta.mtime, meta.size) ?: return
+        val cf = resolveConsolidateFile(media.sourceUri) ?: return
         consolidateRepo.unprotect(cf.id)
     }
 
+    /**
+     * Resolve a MediaStore source URI to its ConsolidateFileEntity, if any.
+     *
+     * The consolidate identity is (path, sha256). MediaStore gives us path,
+     * mtime and size — we use those to hit the shared FileHasher cache (or
+     * hash on miss) and then look up by (path, sha256).
+     */
+    private suspend fun resolveConsolidateFile(sourceUri: String) =
+        run {
+            if (sourceUri.isBlank()) return@run null
+            val uri = Uri.parse(sourceUri)
+            if (uri.scheme != "content") return@run null
+            val meta = queryMeta(uri) ?: return@run null
+            val sha = hasher.hashOrCached(meta.path, meta.mtime, meta.size) {
+                ctx.contentResolver.openInputStream(uri)
+                    ?: error("openInputStream returned null")
+            } ?: return@run null
+            consolidateRepo.findByPathSha256(meta.path, sha)
+        }
+
     private data class ConsolidateMeta(val path: String, val mtime: Long, val size: Long)
 
-    private fun resolveConsolidateMeta(sourceUri: String): ConsolidateMeta? {
-        if (sourceUri.isBlank()) return null
-        val uri = Uri.parse(sourceUri)
-        if (uri.scheme != "content") return null
+    private fun queryMeta(uri: Uri): ConsolidateMeta? {
         val projection = arrayOf(
             MediaStore.Files.FileColumns.RELATIVE_PATH,
             MediaStore.Files.FileColumns.DISPLAY_NAME,
