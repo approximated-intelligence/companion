@@ -9,24 +9,16 @@ import de.perigon.companion.backup.data.BackupOpenPackEntity
 import de.perigon.companion.backup.data.BackupPartEntity
 import de.perigon.companion.backup.data.BackupSourceScanner
 import de.perigon.companion.backup.data.BackupStateRepository
+import de.perigon.companion.util.FileHasher
 import de.perigon.companion.util.network.S3Backend
-import de.perigon.companion.util.toHex
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
-import java.io.FileNotFoundException
 import java.io.InputStream
-import java.security.MessageDigest
 import java.security.SecureRandom
 
 interface BackupFileSource {
     fun open(uri: String): InputStream
-}
-
-sealed class HashResult {
-    data class Success(val hex: String, val size: Long) : HashResult()
-    data class NotFound(val uri: String) : HashResult()
-    data class ReadError(val uri: String, val cause: String) : HashResult()
 }
 
 data class PackPlan(
@@ -149,6 +141,7 @@ class BackupOrchestrator(
     private val sodium: LazySodiumAndroid,
     private val scanner: BackupSourceScanner,
     private val stateRepo: BackupStateRepository,
+    private val hasher: FileHasher,
     private val b2: S3Backend,
     private val partsPerPack: Int,
     private val packPrefix: String,
@@ -178,7 +171,11 @@ class BackupOrchestrator(
         if (scanned.isNotEmpty()) {
             val now = System.currentTimeMillis()
             stateRepo.insertScannedFiles(scanned.map { sf ->
-                BackupFileEntity(path = sf.path, uri = sf.uri, mtime = sf.mtime, size = sf.size, createdAt = now, updatedAt = now)
+                BackupFileEntity(
+                    path = sf.path, uri = sf.uri,
+                    mtime = sf.mtime, size = sf.size, sha256 = sf.sha256,
+                    createdAt = now, updatedAt = now,
+                )
             })
         }
 
@@ -275,28 +272,45 @@ class BackupOrchestrator(
             val chunks = stateRepo.getChunksForPart(part.packNumber, part.partNumber)
             val buffer = PartBuffer(PART_PAX_CAPACITY.toInt())
 
+            // Re-verify file content at upload time (first chunk only). On
+            // mismatch or read failure we still honour the plan: emit a pad
+            // entry for the reserved bytes so the part stays aligned.
+            // The hash-matched case uses the planned sha256 from the file
+            // record, never a newly-computed one.
+            val verifiedFileIds = mutableSetOf<Long>()
+            val badFileIds = mutableSetOf<Long>()
+
             for (chunk in chunks) {
                 currentCoroutineContext().ensureActive()
 
-                val file = stateRepo.getFileById(chunk.backupFileId) ?: continue
+                val file = stateRepo.getFileById(chunk.backupFileId) ?: run {
+                    writePadChunk(buffer, chunk, secureRandom)
+                    Log.w(TAG, "file ${chunk.backupFileId} missing at upload; padded")
+                    continue
+                }
                 currentFileName = file.path
 
                 if (chunk.fileOffset == 0L) filesDone++
                 listener.onFileProgress(currentPackNumber, currentFileName, filesDone, totalFiles)
 
-                if (chunk.fileOffset == 0L) {
-                    when (val result = hashFileWithSize(file.uri)) {
-                        is HashResult.Success -> {
-                            if (result.size != file.size) { writeZeroChunk(buffer, chunk); continue }
-                            stateRepo.persistFileHash(file.id, result.hex)
-                        }
-                        is HashResult.NotFound,
-                        is HashResult.ReadError -> { writeZeroChunk(buffer, chunk); continue }
+                // Verify once per file at its first chunk
+                if (chunk.fileOffset == 0L && file.id !in verifiedFileIds) {
+                    val rehashed = hasher.rehash(file.path, file.mtime) {
+                        fileSource.open(file.uri)
                     }
+                    val ok = rehashed != null &&
+                        rehashed.first == file.sha256 &&
+                        rehashed.second == file.size
+                    if (!ok) {
+                        badFileIds += file.id
+                        Log.w(TAG, "${file.path}: content changed or unreadable at upload; padding")
+                    }
+                    verifiedFileIds += file.id
                 }
 
-                val hash = stateRepo.getHashForFile(file.id)?.sha256 ?: run {
-                    writeZeroChunk(buffer, chunk); continue
+                if (file.id in badFileIds) {
+                    writePadChunk(buffer, chunk, secureRandom)
+                    continue
                 }
 
                 buffer.appendExact(BackupPaxWriter.buildEntry(
@@ -304,7 +318,7 @@ class BackupOrchestrator(
                     realSize = file.size,
                     offset = chunk.fileOffset,
                     mtime = file.mtime,
-                    sha256Hex = hash,
+                    sha256Hex = file.sha256,
                 ))
 
                 var bytesStreamed = 0L
@@ -391,9 +405,24 @@ class BackupOrchestrator(
         }
     }
 
-    private fun writeZeroChunk(buffer: PartBuffer, chunk: BackupChunkEntity) {
+    /**
+     * Fill a chunk's reserved slot with a valid pad entry when the file can't
+     * be written for real. Size matches what the plan reserved: BLOCK for the
+     * header + paddedDataSize(chunkBytes) for the data region. The pad entry's
+     * declared realsize covers the data region so a decoder skips it cleanly.
+     */
+    private fun writePadChunk(
+        buffer: PartBuffer,
+        chunk: BackupChunkEntity,
+        random: SecureRandom,
+    ) {
         val paddedSize = BackupPaxWriter.paddedDataSize(chunk.chunkBytes)
-        buffer.appendExact(ByteArray(BLOCK + paddedSize.toInt()))
+        buffer.appendExact(BackupPaxWriter.buildPadEntry(paddedSize))
+        if (paddedSize > 0) {
+            val pad = ByteArray(paddedSize.toInt())
+            random.nextBytes(pad)
+            buffer.appendExact(pad)
+        }
     }
 
     private suspend fun uploadWithRetry(key: String, uploadId: String, partNumber: Int, data: ByteArray): String {
@@ -408,25 +437,5 @@ class BackupOrchestrator(
             }
         }
         throw lastError!!
-    }
-
-    private fun hashFileWithSize(uri: String): HashResult = try {
-        fileSource.open(uri).use { stream ->
-            val digest = MessageDigest.getInstance("SHA-256")
-            val buf = ByteArray(IO_BUF)
-            var size = 0L
-            var n: Int
-            while (stream.read(buf).also { n = it } != -1) {
-                digest.update(buf, 0, n)
-                size += n
-            }
-            HashResult.Success(digest.digest().toHex(), size)
-        }
-    } catch (_: FileNotFoundException) {
-        HashResult.NotFound(uri)
-    } catch (e: SecurityException) {
-        HashResult.ReadError(uri, "Permission denied: ${e.message}")
-    } catch (e: Exception) {
-        HashResult.ReadError(uri, e.message ?: "Unknown read error")
     }
 }

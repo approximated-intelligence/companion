@@ -3,7 +3,6 @@ package de.perigon.companion.core.di
 import de.perigon.companion.backup.data.BackupChunkDao
 import de.perigon.companion.backup.data.BackupFileDao
 import de.perigon.companion.backup.data.BackupFileDoneDao
-import de.perigon.companion.backup.data.BackupFileHashDao
 import de.perigon.companion.backup.data.BackupFileStatusDao
 import de.perigon.companion.backup.data.BackupFolderDao
 import de.perigon.companion.backup.data.BackupOpenPackDao
@@ -27,7 +26,6 @@ import javax.inject.Singleton
 object BackupModule {
 
     @Provides fun provideBackupFileDao(db: AppDatabase): BackupFileDao = db.backupFileDao()
-    @Provides fun provideBackupFileHashDao(db: AppDatabase): BackupFileHashDao = db.backupFileHashDao()
     @Provides fun provideBackupPackDao(db: AppDatabase): BackupPackDao = db.backupPackDao()
     @Provides fun provideBackupPackSealedDao(db: AppDatabase): BackupPackSealedDao = db.backupPackSealedDao()
     @Provides fun provideBackupPartDao(db: AppDatabase): BackupPartDao = db.backupPartDao()

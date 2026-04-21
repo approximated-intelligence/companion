@@ -14,6 +14,7 @@ import de.perigon.companion.backup.domain.BackupOrchestrator
 import de.perigon.companion.backup.domain.BackupPartEncryptor
 import de.perigon.companion.backup.domain.BackupPaxWriter
 import de.perigon.companion.backup.domain.FileAccum
+
 import de.perigon.companion.backup.domain.RestoreProgressListener
 import de.perigon.companion.backup.domain.finalizeFileAccum
 import de.perigon.companion.backup.domain.openFileAccum
@@ -26,7 +27,6 @@ import de.perigon.companion.core.prefs.CredentialStore
 import de.perigon.companion.util.fromHex
 import de.perigon.companion.util.network.S3Backend
 import de.perigon.companion.util.network.S3BackendFactory
-import de.perigon.companion.util.toHex
 import kotlinx.coroutines.delay
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -259,9 +259,9 @@ class RestoreWorker @AssistedInject constructor(
                 val now = System.currentTimeMillis()
                 stateRepo.insertScannedFiles(listOf(BackupFileEntity(
                     path = entry.path, uri = "", mtime = entry.mtime, size = entry.realSize,
-                    createdAt = now, updatedAt = now,
+                    sha256 = entry.sha256, createdAt = now, updatedAt = now,
                 )))
-                val fileEntity = stateRepo.findFileByPathMtimeSize(entry.path, entry.mtime, entry.realSize)
+                val fileEntity = stateRepo.findFileByPathSha256(entry.path, entry.sha256)
                 if (fileEntity != null) {
                     stateRepo.upsertRestoredFileLocation(
                         fileId     = fileEntity.id, sha256 = entry.sha256,

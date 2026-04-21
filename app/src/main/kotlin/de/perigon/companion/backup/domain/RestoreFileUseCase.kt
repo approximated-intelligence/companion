@@ -5,11 +5,8 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
-import de.perigon.companion.backup.data.BackupChunkEntity
 import de.perigon.companion.backup.data.BackupFileEntity
-import de.perigon.companion.backup.data.BackupRestoreView
 import de.perigon.companion.backup.data.BackupStateRepository
-import de.perigon.companion.backup.data.ChunkWithPartInfo
 import de.perigon.companion.backup.data.RestoreSelectionEntity
 import de.perigon.companion.util.network.S3Backend
 import de.perigon.companion.util.saf.navigateOrCreate
@@ -97,9 +94,9 @@ class RestoreIndex(
                 val now = System.currentTimeMillis()
                 stateRepo.insertScannedFiles(listOf(BackupFileEntity(
                     path = entry.path, uri = "", mtime = entry.mtime, size = entry.realSize,
-                    createdAt = now, updatedAt = now,
+                    sha256 = entry.sha256, createdAt = now, updatedAt = now,
                 )))
-                val fileEntity = stateRepo.findFileByPathMtimeSize(entry.path, entry.mtime, entry.realSize)
+                val fileEntity = stateRepo.findFileByPathSha256(entry.path, entry.sha256)
 
                 if (fileEntity != null) {
                     val storedPartOffset = if (entry.offset == 0L) partOffset else 0L
@@ -167,7 +164,6 @@ fun resolveDestination(
     return when {
         path.startsWith("DCIM/") -> {
             val uri = dcimUri?.let { Uri.parse(it) } ?: safGrants["DCIM"] ?: return null
-            // subfolders: everything between "DCIM/" and the filename
             val subfolders = parts.drop(1).dropLast(1)
             SafDest(uri, subfolders, displayName)
         }
@@ -297,7 +293,7 @@ suspend fun restoreSelectedFiles(
     val chunks = mutableListOf<RestoreChunk>()
 
     for (sel in selections) {
-        val fileEntity = stateRepo.findFileByPathMtimeSize(sel.path, sel.mtime, sel.size)
+        val fileEntity = stateRepo.findFileByPathSha256(sel.path, sel.sha256)
         if (fileEntity == null) {
             errors += "${sel.path}: file not found in index"
             continue
