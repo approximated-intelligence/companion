@@ -14,7 +14,8 @@ import javax.inject.Singleton
  * Content-hash cache keyed by (path, mtime, size).
  *
  * Pure optimisation: dropping it only costs re-hashing. The key is what we
- * already trust to identify unchanged file content.
+ * already trust to identify unchanged file content — if mtime or size changed,
+ * the file changed and gets a fresh sha256.
  */
 
 @Entity(
@@ -29,13 +30,28 @@ data class FileContentHashEntity(
     val computedAt: Long,
 )
 
+/**
+ * Identity of one file version, as trusted by the cache.
+ */
+data class HashKey(
+    val path: String,
+    val mtime: Long,
+    val size: Long,
+)
+
 @Dao
 interface FileContentHashDao {
     @Query("SELECT sha256 FROM file_content_hashes WHERE path = :path AND mtime = :mtime AND size = :size LIMIT 1")
     suspend fun lookup(path: String, mtime: Long, size: Long): String?
 
+    @Query("SELECT * FROM file_content_hashes WHERE path IN (:paths)")
+    suspend fun lookupByPaths(paths: List<String>): List<FileContentHashEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: FileContentHashEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(entities: List<FileContentHashEntity>)
 
     @Query("DELETE FROM file_content_hashes")
     suspend fun deleteAll()
@@ -45,6 +61,9 @@ interface FileContentHashDao {
  * Streams an input source and produces a sha256 hex digest, consulting a
  * persistent cache keyed by (path, mtime, size). On miss, hashes and stores.
  * On read failure, returns null; caller drops the file.
+ *
+ * Batch entry points ([lookupAll], [hashAllOrCached]) exist so scanners do a
+ * constant number of DB round-trips per scan instead of one per file.
  */
 @Singleton
 class FileHasher @Inject constructor(
@@ -52,11 +71,67 @@ class FileHasher @Inject constructor(
 ) {
     companion object {
         private const val IO_BUF = 64 * 1024
+
+        // Stay under SQLite's 999 bound-variable limit per statement.
+        private const val SQL_CHUNK = 900
     }
 
     /** Cache lookup only — no I/O on the source. */
     suspend fun lookup(path: String, mtime: Long, size: Long): String? =
         dao.lookup(path, mtime, size)
+
+    /**
+     * Batched cache lookup. Returns sha256 for every key that hits the cache;
+     * absent keys are misses. Chunked IN-queries, no per-file round-trips.
+     */
+    suspend fun lookupAll(keys: Collection<HashKey>): Map<HashKey, String> {
+        if (keys.isEmpty()) return emptyMap()
+        val wanted = keys.toHashSet()
+        val result = HashMap<HashKey, String>(wanted.size)
+        val paths = wanted.map { it.path }.distinct()
+        for (batch in paths.chunked(SQL_CHUNK)) {
+            for (row in dao.lookupByPaths(batch)) {
+                val key = HashKey(row.path, row.mtime, row.size)
+                if (key in wanted) result[key] = row.sha256
+            }
+        }
+        return result
+    }
+
+    /**
+     * Batched [hashOrCached]: one lookup pass, hashing only misses, one
+     * batched upsert of freshly computed digests. [open] is invoked lazily
+     * per miss. Keys whose source fails to open/read are absent from the
+     * result — callers drop those files and retry next scan.
+     */
+    suspend fun hashAllOrCached(
+        keys: List<HashKey>,
+        open: (HashKey) -> InputStream,
+    ): Map<HashKey, String> {
+        if (keys.isEmpty()) return emptyMap()
+        val result = lookupAll(keys).toMutableMap()
+
+        val fresh = mutableListOf<FileContentHashEntity>()
+        val now = System.currentTimeMillis()
+        for (key in keys) {
+            if (key in result) continue
+            val digest = try {
+                open(key).use { stream -> streamSha256(stream) }
+            } catch (_: Exception) {
+                continue
+            }
+            result[key] = digest
+            fresh += FileContentHashEntity(
+                path = key.path, mtime = key.mtime, size = key.size,
+                sha256 = digest, computedAt = now,
+            )
+        }
+
+        for (batch in fresh.chunked(SQL_CHUNK)) {
+            dao.upsertAll(batch)
+        }
+        return result
+    }
 
     /**
      * Return sha256 hex for the given file, using the cache if possible.
