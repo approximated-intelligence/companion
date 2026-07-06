@@ -6,6 +6,8 @@ import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.util.FileHasher
+import de.perigon.companion.util.HashKey
+import de.perigon.companion.util.saf.ScannedFile
 import de.perigon.companion.util.saf.walkDocumentTree
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -25,8 +27,9 @@ data class BackupScannedFile(
  * DCIM is the single default folder — PostMedia lives under DCIM/PostMedia/
  * so it's included automatically. Custom SAF folders can be added by the user.
  *
- * Every scanned file is hashed (via [FileHasher] cache). Files that cannot be
- * opened/hashed are dropped silently — they'll be retried on the next scan.
+ * Hashing is batched through [FileHasher]: one cache lookup pass for the whole
+ * scan, only misses (new/changed files) are read and hashed. Files that cannot
+ * be opened/hashed are dropped silently — they'll be retried on the next scan.
  */
 @Singleton
 class BackupSourceScanner @Inject constructor(
@@ -42,42 +45,45 @@ class BackupSourceScanner @Inject constructor(
     }
 
     suspend fun scan(): List<BackupScannedFile> {
-        val results = mutableListOf<BackupScannedFile>()
         val enabled = backupFolderDao.getEnabled()
-        var dropped = 0
 
-        for (folder in enabled) {
-            val raw = when {
+        val raw = enabled.flatMap { folder ->
+            when {
                 folder.isDefault && folder.uri == "DCIM" -> walkDcim()
                 !folder.isDefault -> walkCustom(folder.uri, folder.displayName)
                 else -> emptyList()
             }
-            for (sf in raw) {
-                if (sf.size == 0L) continue
-                val sha = hasher.hashOrCached(sf.path, sf.mtime, sf.size) {
-                    context.contentResolver.openInputStream(Uri.parse(sf.uri))
-                        ?: error("openInputStream returned null")
-                }
-                if (sha == null) {
-                    dropped++
-                    continue
-                }
-                results += BackupScannedFile(
+        }.filter { it.size > 0L }
+
+        // Deduplicate on the content-identity key; keep the first URI seen.
+        val byKey = LinkedHashMap<HashKey, ScannedFile>(raw.size)
+        for (sf in raw) {
+            byKey.putIfAbsent(HashKey(sf.path, sf.mtime, sf.size), sf)
+        }
+
+        val hashes = hasher.hashAllOrCached(byKey.keys.toList()) { key ->
+            context.contentResolver.openInputStream(Uri.parse(byKey.getValue(key).uri))
+                ?: error("openInputStream returned null")
+        }
+
+        val dropped = byKey.size - hashes.size
+        if (dropped > 0) Log.w(TAG, "dropped $dropped unreadable file(s) from scan")
+
+        return byKey.mapNotNull { (key, sf) ->
+            hashes[key]?.let { sha ->
+                BackupScannedFile(
                     path = sf.path, uri = sf.uri,
                     mtime = sf.mtime, size = sf.size, sha256 = sha,
                 )
             }
         }
-
-        if (dropped > 0) Log.w(TAG, "dropped $dropped unreadable file(s) from scan")
-        return results
     }
 
-    private fun walkDcim(): List<de.perigon.companion.util.saf.ScannedFile> {
+    private fun walkDcim(): List<ScannedFile> {
         val dcimUri = appPrefs.dcimTreeUri() ?: return emptyList()
         return walkDocumentTree(context, Uri.parse(dcimUri), "DCIM")
     }
 
-    private fun walkCustom(uri: String, displayName: String): List<de.perigon.companion.util.saf.ScannedFile> =
+    private fun walkCustom(uri: String, displayName: String): List<ScannedFile> =
         walkDocumentTree(context, Uri.parse(uri), displayName)
 }
