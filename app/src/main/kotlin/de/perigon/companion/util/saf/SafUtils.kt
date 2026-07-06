@@ -9,6 +9,10 @@ import androidx.documentfile.provider.DocumentFile
 /**
  * Shared SAF utilities for tree walking, file creation, and permission management.
  * All functions are pure or take explicit Context — no singletons, no DI.
+ *
+ * Traversal is built on DocumentsContract child cursors: one ContentResolver
+ * query per directory (all columns in one projection) instead of DocumentFile's
+ * one query per property per file.
  */
 
 // ---------------------------------------------------------------------------
@@ -62,6 +66,112 @@ fun dcimPickerInitialUri(): Uri {
 }
 
 // ---------------------------------------------------------------------------
+// Low-level cursor queries — the single IPC path all traversal goes through
+// ---------------------------------------------------------------------------
+
+/**
+ * One child entry of a directory, fully populated from a single cursor row.
+ */
+data class ChildDoc(
+    val documentId: String,
+    val name: String,
+    val mimeType: String,
+    val mtime: Long,
+    val size: Long,
+) {
+    val isDirectory: Boolean
+        get() = mimeType == DocumentsContract.Document.MIME_TYPE_DIR
+}
+
+private val CHILD_PROJECTION = arrayOf(
+    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+    DocumentsContract.Document.COLUMN_MIME_TYPE,
+    DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+    DocumentsContract.Document.COLUMN_SIZE,
+)
+
+/**
+ * List all children of a directory in ONE ContentResolver query.
+ * Returns an empty list on any provider failure (matches DocumentFile.listFiles).
+ */
+fun queryChildren(
+    context: Context,
+    treeUri: Uri,
+    parentDocumentId: String,
+): List<ChildDoc> {
+    val childrenUri =
+        DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocumentId)
+    val cursor = try {
+        context.contentResolver.query(childrenUri, CHILD_PROJECTION, null, null, null)
+    } catch (_: Exception) {
+        null
+    } ?: return emptyList()
+
+    val results = mutableListOf<ChildDoc>()
+    cursor.use { c ->
+        while (c.moveToNext()) {
+            val docId = c.getString(0) ?: continue
+            val name = c.getString(1) ?: continue
+            val mime = c.getString(2) ?: ""
+            val mtime = if (c.isNull(3)) 0L else c.getLong(3)
+            val size = if (c.isNull(4)) 0L else c.getLong(4)
+            results += ChildDoc(docId, name, mime, mtime, size)
+        }
+    }
+    return results
+}
+
+/**
+ * Find a direct child by display name — one cursor pass instead of
+ * DocumentFile.findFile's per-entry getName() IPC scan.
+ */
+fun findChildByName(
+    context: Context,
+    treeUri: Uri,
+    parentDocumentId: String,
+    name: String,
+): ChildDoc? =
+    queryChildren(context, treeUri, parentDocumentId).firstOrNull { it.name == name }
+
+/**
+ * Tree-aware document URI for a document ID (carries the tree grant).
+ */
+fun documentUriInTree(treeUri: Uri, documentId: String): Uri =
+    DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId)
+
+/**
+ * Wrap a document within a tree as a DocumentFile. Relies on androidx
+ * DocumentFile.fromTreeUri resolving document-in-tree URIs to the document
+ * itself (isDocumentUri branch), preserving the tree permission grant.
+ */
+fun documentFileInTree(context: Context, treeUri: Uri, documentId: String): DocumentFile? =
+    DocumentFile.fromTreeUri(context, documentUriInTree(treeUri, documentId))
+
+private fun rootDocumentId(treeUri: Uri): String? = try {
+    DocumentsContract.getTreeDocumentId(treeUri)
+} catch (_: Exception) {
+    null
+}
+
+private fun queryDisplayName(context: Context, treeUri: Uri, documentId: String): String? {
+    val docUri = documentUriInTree(treeUri, documentId)
+    val cursor = try {
+        context.contentResolver.query(
+            docUri,
+            arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+            null, null, null,
+        )
+    } catch (_: Exception) {
+        null
+    } ?: return null
+    cursor.use { c ->
+        if (c.moveToFirst()) return c.getString(0)
+    }
+    return null
+}
+
+// ---------------------------------------------------------------------------
 // Tree walking
 // ---------------------------------------------------------------------------
 
@@ -75,39 +185,40 @@ data class ScannedFile(
 /**
  * Recursively walk a SAF document tree, collecting all files.
  * [prefix] is prepended to build logical paths (e.g. "DCIM/Camera/").
+ *
+ * Cost: one ContentResolver query per directory.
  */
 fun walkDocumentTree(
     context: Context,
     treeUri: Uri,
     prefix: String = "",
 ): List<ScannedFile> {
-    val root = DocumentFile.fromTreeUri(context, treeUri) ?: return emptyList()
-    val rootName = if (prefix.isNotEmpty()) prefix else (root.name ?: "")
-    return walkDocumentTreeRecursive(context, root, rootName)
-}
+    val rootId = rootDocumentId(treeUri) ?: return emptyList()
+    val rootPrefix =
+        if (prefix.isNotEmpty()) prefix
+        else queryDisplayName(context, treeUri, rootId) ?: ""
 
-private fun walkDocumentTreeRecursive(
-    context: Context,
-    dir: DocumentFile,
-    prefix: String,
-): List<ScannedFile> {
     val results = mutableListOf<ScannedFile>()
-    for (file in dir.listFiles()) {
-        if (file.isDirectory) {
-            val dirName = file.name ?: continue
-            val subPrefix = if (prefix.isEmpty()) dirName else "$prefix/$dirName"
-            results += walkDocumentTreeRecursive(context, file, subPrefix)
-            continue
+    val stack = ArrayDeque<Pair<String, String>>() // documentId to path prefix
+    stack.addLast(rootId to rootPrefix)
+
+    while (stack.isNotEmpty()) {
+        val (dirId, dirPrefix) = stack.removeLast()
+        for (child in queryChildren(context, treeUri, dirId)) {
+            val childPath =
+                if (dirPrefix.isEmpty()) child.name else "$dirPrefix/${child.name}"
+            if (child.isDirectory) {
+                stack.addLast(child.documentId to childPath)
+                continue
+            }
+            if (child.name == ".nomedia") continue
+            results += ScannedFile(
+                path = childPath,
+                uri = documentUriInTree(treeUri, child.documentId).toString(),
+                mtime = child.mtime,
+                size = child.size,
+            )
         }
-        val name = file.name ?: continue
-        if (name == ".nomedia") continue
-        val path = if (prefix.isEmpty()) name else "$prefix/$name"
-        results += ScannedFile(
-            path = path,
-            uri = file.uri.toString(),
-            mtime = file.lastModified(),
-            size = file.length(),
-        )
     }
     return results
 }
@@ -121,49 +232,69 @@ fun listSubfolder(
     treeUri: Uri,
     subfolderName: String,
 ): List<ScannedFile>? {
-    val root = DocumentFile.fromTreeUri(context, treeUri) ?: return null
-    val subfolder = root.findFile(subfolderName) ?: return null
+    val rootId = rootDocumentId(treeUri) ?: return null
+    val subfolder = findChildByName(context, treeUri, rootId, subfolderName) ?: return null
     if (!subfolder.isDirectory) return null
-    return subfolder.listFiles().mapNotNull { file ->
-        if (file.isDirectory) return@mapNotNull null
-        val name = file.name ?: return@mapNotNull null
-        ScannedFile(
-            path = "$subfolderName/$name",
-            uri = file.uri.toString(),
-            mtime = file.lastModified(),
-            size = file.length(),
-        )
-    }
+    return queryChildren(context, treeUri, subfolder.documentId)
+        .filter { !it.isDirectory }
+        .map { child ->
+            ScannedFile(
+                path = "$subfolderName/${child.name}",
+                uri = documentUriInTree(treeUri, child.documentId).toString(),
+                mtime = child.mtime,
+                size = child.size,
+            )
+        }
 }
 
 // ---------------------------------------------------------------------------
 // Navigation and file creation
 // ---------------------------------------------------------------------------
 
+private fun navigateToId(context: Context, treeUri: Uri, subfolders: List<String>): String? {
+    var currentId = rootDocumentId(treeUri) ?: return null
+    for (name in subfolders) {
+        val child = findChildByName(context, treeUri, currentId, name) ?: return null
+        currentId = child.documentId
+    }
+    return currentId
+}
+
+private fun navigateOrCreateId(context: Context, treeUri: Uri, subfolders: List<String>): String {
+    var currentId = rootDocumentId(treeUri) ?: error("Cannot open SAF tree: $treeUri")
+    for (name in subfolders) {
+        val existing = findChildByName(context, treeUri, currentId, name)
+        currentId = if (existing != null) {
+            existing.documentId
+        } else {
+            val created = DocumentsContract.createDocument(
+                context.contentResolver,
+                documentUriInTree(treeUri, currentId),
+                DocumentsContract.Document.MIME_TYPE_DIR,
+                name,
+            ) ?: error("Cannot create subfolder '$name'")
+            DocumentsContract.getDocumentId(created)
+        }
+    }
+    return currentId
+}
+
 /**
  * Navigate to (or create) a nested subfolder path within a SAF tree.
  * Returns the DocumentFile for the deepest folder.
  */
 fun navigateOrCreate(context: Context, treeUri: Uri, subfolders: List<String>): DocumentFile {
-    var current = DocumentFile.fromTreeUri(context, treeUri)
+    val folderId = navigateOrCreateId(context, treeUri, subfolders)
+    return documentFileInTree(context, treeUri, folderId)
         ?: error("Cannot open SAF tree: $treeUri")
-    for (name in subfolders) {
-        current = current.findFile(name)
-            ?: current.createDirectory(name)
-            ?: error("Cannot create subfolder '$name'")
-    }
-    return current
 }
 
 /**
  * Navigate to a subfolder without creating it. Returns null if not found.
  */
 fun navigateTo(context: Context, treeUri: Uri, subfolders: List<String>): DocumentFile? {
-    var current = DocumentFile.fromTreeUri(context, treeUri) ?: return null
-    for (name in subfolders) {
-        current = current.findFile(name) ?: return null
-    }
-    return current
+    val folderId = navigateToId(context, treeUri, subfolders) ?: return null
+    return documentFileInTree(context, treeUri, folderId)
 }
 
 /**
@@ -179,14 +310,29 @@ fun writeFile(
     mimeType: String,
     bytes: ByteArray,
 ): Uri {
-    val folder = navigateOrCreate(context, treeUri, subfolders)
-    folder.findFile(displayName)?.delete()
-    val doc = folder.createFile(mimeType, displayName)
-        ?: error("Cannot create file '$displayName'")
-    context.contentResolver.openOutputStream(doc.uri)?.use { out ->
+    val folderId = navigateOrCreateId(context, treeUri, subfolders)
+
+    findChildByName(context, treeUri, folderId, displayName)?.let { existing ->
+        try {
+            DocumentsContract.deleteDocument(
+                context.contentResolver,
+                documentUriInTree(treeUri, existing.documentId),
+            )
+        } catch (_: Exception) {
+        }
+    }
+
+    val created = DocumentsContract.createDocument(
+        context.contentResolver,
+        documentUriInTree(treeUri, folderId),
+        mimeType,
+        displayName,
+    ) ?: error("Cannot create file '$displayName'")
+
+    context.contentResolver.openOutputStream(created)?.use { out ->
         out.write(bytes)
-    } ?: error("Cannot open output stream for ${doc.uri}")
-    return doc.uri
+    } ?: error("Cannot open output stream for $created")
+    return created
 }
 
 /**
@@ -201,23 +347,25 @@ fun writeFileFromStream(
     mimeType: String,
     source: java.io.InputStream,
 ): Uri {
-    val folder = navigateOrCreate(context, treeUri, subfolders)
+    val folderId = navigateOrCreateId(context, treeUri, subfolders)
 
     // Delete existing file with same name if present, ignoring errors
-    try {
-        folder.findFile(displayName)?.let { existing ->
-            DocumentsContract.deleteDocument(context.contentResolver, existing.uri)
+    findChildByName(context, treeUri, folderId, displayName)?.let { existing ->
+        try {
+            DocumentsContract.deleteDocument(
+                context.contentResolver,
+                documentUriInTree(treeUri, existing.documentId),
+            )
+        } catch (_: Exception) {
         }
-    } catch (_: Exception) {
     }
 
-    // Build a tree-aware parent URI that carries the original tree grant
-    val folderDocId = DocumentsContract.getDocumentId(folder.uri)
-    val parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, folderDocId)
-
     val created = DocumentsContract.createDocument(
-        context.contentResolver, parentUri, mimeType, displayName,
-    ) ?: error("Cannot create file '$displayName' in $parentUri")
+        context.contentResolver,
+        documentUriInTree(treeUri, folderId),
+        mimeType,
+        displayName,
+    ) ?: error("Cannot create file '$displayName' in folder $folderId")
 
     context.contentResolver.openOutputStream(created)?.use { out ->
         source.copyTo(out)
@@ -258,18 +406,19 @@ fun setMtime(context: Context, uri: Uri, mtime: Long) {
 
 /**
  * Collect display names of all files in a subfolder of a SAF tree.
+ * One cursor query for the folder lookup, one for the listing.
  */
 fun collectFileNames(
     context: Context,
     treeUri: Uri,
     subfolderName: String,
 ): Set<String> {
-    val root = DocumentFile.fromTreeUri(context, treeUri) ?: return emptySet()
-    val subfolder = root.findFile(subfolderName) ?: return emptySet()
+    val rootId = rootDocumentId(treeUri) ?: return emptySet()
+    val subfolder = findChildByName(context, treeUri, rootId, subfolderName) ?: return emptySet()
     if (!subfolder.isDirectory) return emptySet()
-    return subfolder.listFiles()
+    return queryChildren(context, treeUri, subfolder.documentId)
         .filter { !it.isDirectory }
-        .mapNotNull { it.name }
+        .map { it.name }
         .toSet()
 }
 
@@ -282,8 +431,9 @@ fun findFile(
     subfolders: List<String>,
     displayName: String,
 ): DocumentFile? {
-    val folder = navigateTo(context, treeUri, subfolders) ?: return null
-    return folder.findFile(displayName)
+    val folderId = navigateToId(context, treeUri, subfolders) ?: return null
+    val child = findChildByName(context, treeUri, folderId, displayName) ?: return null
+    return documentFileInTree(context, treeUri, child.documentId)
 }
 
 /**
