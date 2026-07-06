@@ -21,6 +21,7 @@ import de.perigon.companion.media.data.TransformJobDao
 import de.perigon.companion.media.data.TransformJobStatus
 import de.perigon.companion.media.data.TransformQueue
 import de.perigon.companion.util.FileHasher
+import de.perigon.companion.util.HashKey
 import de.perigon.companion.util.saf.ScannedFile
 import de.perigon.companion.util.saf.collectFileNames
 import de.perigon.companion.util.saf.navigateOrCreate
@@ -183,9 +184,9 @@ class ConsolidateWorker @AssistedInject constructor(
 
     /**
      * Scan DCIM/Camera via SAF and insert new source files into consolidate_files.
-     * Each scanned file is hashed through the shared [FileHasher] cache so
-     * backup and consolidate share lookups. Files that can't be opened/hashed
-     * are silently skipped — next scan will retry.
+     * Hashing is batched through the shared [FileHasher] cache (one lookup pass,
+     * misses only are read) so backup and consolidate share cached digests.
+     * Files that can't be opened/hashed are silently skipped — next scan retries.
      */
     private suspend fun scanAndPersistSourceFiles(dcimTreeUri: Uri): Int {
         val consolidatedNames = collectFileNames(ctx, dcimTreeUri, CONSOLIDATED_SUBFOLDER)
@@ -193,35 +194,39 @@ class ConsolidateWorker @AssistedInject constructor(
         val cameraFiles = walkCameraSubfolder(dcimTreeUri)
         if (cameraFiles.isEmpty()) return 0
 
-        val now = System.currentTimeMillis()
-        var dropped = 0
-        val entities = mutableListOf<ConsolidateFileEntity>()
-
-        for (sf in cameraFiles) {
+        val candidates = cameraFiles.filter { sf ->
+            if (sf.size == 0L) return@filter false
             val stem = sf.path.substringAfterLast('/').substringBeforeLast('.')
             val isVideo = sf.path.endsWith(".mp4", ignoreCase = true)
             val outName = if (isVideo) "${stem}_s.mp4" else "${stem}_s.jpg"
-            if (outName in consolidatedNames) continue
+            outName !in consolidatedNames
+        }
+        if (candidates.isEmpty()) return 0
 
-            if (sf.size == 0L) continue
-
-            val sha = hasher.hashOrCached(sf.path, sf.mtime, sf.size) {
-                ctx.contentResolver.openInputStream(Uri.parse(sf.uri))
-                    ?: error("openInputStream returned null")
-            }
-            if (sha == null) {
-                dropped++
-                continue
-            }
-
-            entities += ConsolidateFileEntity(
-                path = sf.path, uri = sf.uri,
-                mtime = sf.mtime, size = sf.size,
-                sha256 = sha, createdAt = now,
-            )
+        val byKey = LinkedHashMap<HashKey, ScannedFile>(candidates.size)
+        for (sf in candidates) {
+            byKey.putIfAbsent(HashKey(sf.path, sf.mtime, sf.size), sf)
         }
 
+        val hashes = hasher.hashAllOrCached(byKey.keys.toList()) { key ->
+            ctx.contentResolver.openInputStream(Uri.parse(byKey.getValue(key).uri))
+                ?: error("openInputStream returned null")
+        }
+
+        val dropped = byKey.size - hashes.size
         if (dropped > 0) Log.w(TAG, "dropped $dropped unreadable file(s) from consolidate scan")
+
+        val now = System.currentTimeMillis()
+        val entities = byKey.mapNotNull { (key, sf) ->
+            hashes[key]?.let { sha ->
+                ConsolidateFileEntity(
+                    path = sf.path, uri = sf.uri,
+                    mtime = sf.mtime, size = sf.size,
+                    sha256 = sha, createdAt = now,
+                )
+            }
+        }
+
         if (entities.isNotEmpty()) consolidateRepo.insertScannedFiles(entities)
         return entities.size
     }
