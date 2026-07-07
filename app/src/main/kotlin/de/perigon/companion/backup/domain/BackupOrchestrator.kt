@@ -9,6 +9,8 @@ import de.perigon.companion.backup.data.BackupOpenPackEntity
 import de.perigon.companion.backup.data.BackupPartEntity
 import de.perigon.companion.backup.data.BackupSourceScanner
 import de.perigon.companion.backup.data.BackupStateRepository
+import de.perigon.companion.backup.data.TAIL_PART_REF
+import de.perigon.companion.backup.data.TailPartInfo
 import de.perigon.companion.util.FileHasher
 import de.perigon.companion.util.network.S3Backend
 import kotlinx.coroutines.currentCoroutineContext
@@ -26,9 +28,25 @@ data class PackPlan(
     val chunks: List<BackupChunkEntity>,
 )
 
+/**
+ * The planning loop's suspended state, derived by looking at the existing
+ * plan (see BackupOrchestrator.planResumePoint). A fresh backup is simply a
+ * resume of the empty plan — planBackup is agnostic to which case it's in.
+ *
+ * When [tailPartId] is non-null, planning continues inside that existing
+ * part with [partRemaining] bytes of PAX capacity left; chunks placed there
+ * reference TAIL_PART_REF and are resolved on insert.
+ */
+data class PlanResumePoint(
+    val packNumber: Int,
+    val partNumber: Int,
+    val partRemaining: Long,
+    val tailPartId: Long?,
+)
+
 fun planBackup(
     files: List<BackupFileStatusView>,
-    startPackNumber: Int,
+    resume: PlanResumePoint,
     partsPerPack: Int,
     partPaxCapacity: Long,
     blockSize: Int,
@@ -36,32 +54,37 @@ fun planBackup(
     val parts = mutableListOf<BackupPartEntity>()
     val chunks = mutableListOf<BackupChunkEntity>()
 
-    var packNumber = startPackNumber
-    var partNumber = 1
-    var partRemaining = partPaxCapacity
-    var currentPartIndex = -1
+    var packNumber = resume.packNumber
+    var partNumber = resume.partNumber
+    var partRemaining = resume.partRemaining
+    // Chunk part reference: index into `parts` for parts created by this
+    // plan, or TAIL_PART_REF for the pre-existing tail part being extended.
+    var currentPartRef = TAIL_PART_REF
 
-    fun newPart(): Int {
-        parts += BackupPartEntity(packNumber = packNumber, partNumber = partNumber)
-        currentPartIndex = parts.size - 1
-        partRemaining = partPaxCapacity
-        return currentPartIndex
+    fun rollToNextPart() {
+        partNumber++
+        if (partNumber > partsPerPack) {
+            packNumber++
+            partNumber = 1
+        }
     }
 
-    newPart()
+    fun newPart() {
+        parts += BackupPartEntity(packNumber = packNumber, partNumber = partNumber)
+        currentPartRef = (parts.size - 1).toLong()
+        partRemaining = partPaxCapacity
+    }
+
+    if (resume.tailPartId == null) newPart()
 
     for (file in files) {
-        if (file.size == 0L) continue
-
         var fileOffset = 0L
 
-        while (fileOffset < file.size) {
+        // do/while: runs once even for size-0 files, which yield exactly one
+        // header-only chunk (chunkBytes = 0, consuming one header block).
+        do {
             if (partRemaining < blockSize) {
-                partNumber++
-                if (partNumber > partsPerPack) {
-                    packNumber++
-                    partNumber = 1
-                }
+                rollToNextPart()
                 newPart()
             }
 
@@ -76,7 +99,7 @@ fun planBackup(
 
             chunks += BackupChunkEntity(
                 backupFileId = file.id,
-                backupPartId = currentPartIndex.toLong(),
+                backupPartId = currentPartRef,
                 fileOffset = fileOffset,
                 chunkBytes = chunkBytes,
                 partOffset = partOffset,
@@ -86,20 +109,18 @@ fun planBackup(
             partRemaining -= blockSize + paddedChunk
             fileOffset += chunkBytes
 
-            if (isFinalChunk) break
-
-            // file spans into next part — continuation chunk starts at offset 0
-            partNumber++
-            if (partNumber > partsPerPack) {
-                packNumber++
-                partNumber = 1
+            if (!isFinalChunk) {
+                // file spans into next part — continuation chunk starts at offset 0
+                rollToNextPart()
+                newPart()
             }
-            newPart()
-        }
+        } while (fileOffset < file.size)
     }
 
-    if (currentPartIndex >= 0 && chunks.none { it.backupPartId == currentPartIndex.toLong() }) {
-        parts.removeAt(currentPartIndex)
+    // Drop a trailing part this plan created but never filled (can only
+    // happen when `files` is effectively empty).
+    if (parts.isNotEmpty() && chunks.none { it.backupPartId == (parts.size - 1).toLong() }) {
+        parts.removeAt(parts.size - 1)
     }
 
     return PackPlan(parts, chunks)
@@ -179,29 +200,62 @@ class BackupOrchestrator(
             })
         }
 
-        val firstPending = stateRepo.getFirstPendingPart()
-        if (firstPending == null) {
-            val pending = stateRepo.getPendingFiles()
-            if (pending.isEmpty()) {
-                listener.onPackStateChange("DONE", 0)
-                return
-            }
-            val startPackNumber = (stateRepo.maxSealedPack() ?: -1) + 1
-            createPlan(pending, startPackNumber)
+        // One planning path, agnostic to fresh vs. crash-resume: files without
+        // a header chunk are planned from wherever the existing plan left off.
+        val unplanned = stateRepo.getUnplannedFiles()
+        if (unplanned.isNotEmpty()) {
+            createPlan(unplanned, planResumePoint())
+        }
+
+        if (stateRepo.getFirstPendingPart() == null) {
+            listener.onPackStateChange("DONE", 0)
+            return
         }
 
         execute(listener)
     }
 
-    private suspend fun createPlan(files: List<BackupFileStatusView>, startPackNumber: Int) {
+    /**
+     * Look at the existing plan and derive where planning left off. Only two
+     * facts are irreversible and force stepping past the tail part:
+     *  - sealed: the pack's multipart upload is completed → fresh pack
+     *  - uploaded: the part's bytes are on the wire (etag) → next part
+     * Otherwise planning continues inside the tail part, mid-capacity.
+     */
+    private suspend fun planResumePoint(): PlanResumePoint {
+        val tail = stateRepo.getTailPart()
+            ?: return PlanResumePoint((stateRepo.maxSealedPack() ?: -1) + 1, 1, PART_PAX_CAPACITY, null)
+        return when {
+            tail.sealed -> PlanResumePoint(
+                maxOf(tail.packNumber, stateRepo.maxSealedPack() ?: -1) + 1,
+                1, PART_PAX_CAPACITY, null,
+            )
+            tail.uploaded ->
+                if (tail.partNumber >= partsPerPack)
+                    PlanResumePoint(tail.packNumber + 1, 1, PART_PAX_CAPACITY, null)
+                else
+                    PlanResumePoint(tail.packNumber, tail.partNumber + 1, PART_PAX_CAPACITY, null)
+            else -> PlanResumePoint(
+                tail.packNumber, tail.partNumber, remainingInTailPart(tail), tail.id,
+            )
+        }
+    }
+
+    private suspend fun remainingInTailPart(tail: TailPartInfo): Long {
+        val consumed = stateRepo.getChunksForPart(tail.packNumber, tail.partNumber)
+            .sumOf { BLOCK + BackupPaxWriter.paddedDataSize(it.chunkBytes) }
+        return PART_PAX_CAPACITY - consumed
+    }
+
+    private suspend fun createPlan(files: List<BackupFileStatusView>, resume: PlanResumePoint) {
         val plan = planBackup(
             files = files,
-            startPackNumber = startPackNumber,
+            resume = resume,
             partsPerPack = partsPerPack,
             partPaxCapacity = PART_PAX_CAPACITY,
             blockSize = BLOCK,
         )
-        stateRepo.insertPackPlan(plan.parts, plan.chunks)
+        stateRepo.insertPackPlan(plan.parts, plan.chunks, resume.tailPartId)
     }
 
     private suspend fun execute(listener: ProgressListener) {

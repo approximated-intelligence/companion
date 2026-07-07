@@ -28,8 +28,12 @@ data class BackupScannedFile(
  * so it's included automatically. Custom SAF folders can be added by the user.
  *
  * Hashing is batched through [FileHasher]: one cache lookup pass for the whole
- * scan, only misses (new/changed files) are read and hashed. Files that cannot
- * be opened/hashed are dropped silently — they'll be retried on the next scan.
+ * scan, only misses (new/changed files) are read and hashed.
+ *
+ * Empty files (size 0, e.g. .nomedia) are valid backup candidates. Files with
+ * unknown size (provider reported none) are dropped — planning them could
+ * record a wrong content length — and retried on the next scan, as are files
+ * that cannot be opened/hashed.
  */
 @Singleton
 class BackupSourceScanner @Inject constructor(
@@ -53,13 +57,21 @@ class BackupSourceScanner @Inject constructor(
                 !folder.isDefault -> walkCustom(folder.uri, folder.displayName)
                 else -> emptyList()
             }
-        }.filter { it.size > 0L }
+        }
 
         // Deduplicate on the content-identity key; keep the first URI seen.
+        // Files without a known size never enter the key set.
+        var unknownSize = 0
         val byKey = LinkedHashMap<HashKey, ScannedFile>(raw.size)
         for (sf in raw) {
-            byKey.putIfAbsent(HashKey(sf.path, sf.mtime, sf.size), sf)
+            val size = sf.size
+            if (size == null) {
+                unknownSize++
+                continue
+            }
+            byKey.putIfAbsent(HashKey(sf.path, sf.mtime, size), sf)
         }
+        if (unknownSize > 0) Log.w(TAG, "dropped $unknownSize file(s) with unknown size")
 
         val hashes = hasher.hashAllOrCached(byKey.keys.toList()) { key ->
             context.contentResolver.openInputStream(Uri.parse(byKey.getValue(key).uri))
@@ -73,7 +85,7 @@ class BackupSourceScanner @Inject constructor(
             hashes[key]?.let { sha ->
                 BackupScannedFile(
                     path = sf.path, uri = sf.uri,
-                    mtime = sf.mtime, size = sf.size, sha256 = sha,
+                    mtime = key.mtime, size = key.size, sha256 = sha,
                 )
             }
         }

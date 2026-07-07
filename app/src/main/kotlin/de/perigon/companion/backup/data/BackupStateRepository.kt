@@ -7,6 +7,14 @@ import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Sentinel used in a freshly planned chunk's backupPartId to reference the
+ * pre-existing tail part being extended (see insertPackPlan / planBackup).
+ * All other chunk part references in a plan are indices into the plan's own
+ * parts list, resolved to real row ids on insert.
+ */
+const val TAIL_PART_REF = -1L
+
 @Entity(tableName = "backup_files", indices = [Index(value = ["path", "sha256"], unique = true)])
 data class BackupFileEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -86,6 +94,20 @@ data class BackupPartEntity(
     val partNumber: Int,
 )
 
+/**
+ * The globally last planned part with the two facts that make plan
+ * continuation irreversible: uploaded (etag exists — its bytes are on the
+ * wire and the part row is immutable) and sealed (its pack's multipart
+ * upload is completed — no more parts can join the pack).
+ */
+data class TailPartInfo(
+    val id: Long,
+    val packNumber: Int,
+    val partNumber: Int,
+    val uploaded: Boolean,
+    val sealed: Boolean,
+)
+
 @Dao
 interface BackupPartDao {
     @Query("SELECT * FROM backup_parts WHERE packNumber = :packNumber ORDER BY partNumber ASC")
@@ -99,6 +121,9 @@ interface BackupPartDao {
 
     @Query("SELECT p.* FROM backup_parts p JOIN backup_part_etags e ON e.backupPartId = p.id LEFT JOIN backup_pack_sealed s ON s.packNumber = p.packNumber WHERE p.packNumber = :packNumber AND s.packNumber IS NULL ORDER BY p.partNumber ASC")
     suspend fun getUploadedForPack(packNumber: Int): List<BackupPartEntity>
+
+    @Query("SELECT p.id, p.packNumber, p.partNumber, (e.backupPartId IS NOT NULL) AS uploaded, (s.packNumber IS NOT NULL) AS sealed FROM backup_parts p LEFT JOIN backup_part_etags e ON e.backupPartId = p.id LEFT JOIN backup_pack_sealed s ON s.packNumber = p.packNumber ORDER BY p.packNumber DESC, p.partNumber DESC LIMIT 1")
+    suspend fun getTailPart(): TailPartInfo?
 
     @Insert
     suspend fun insertAll(parts: List<BackupPartEntity>): List<Long>
@@ -145,10 +170,13 @@ data class BackupChunkEntity(
 
 @Dao
 interface BackupChunkDao {
-    @Query("SELECT c.* FROM backup_chunks c JOIN backup_parts p ON p.id = c.backupPartId WHERE p.packNumber = :packNumber AND p.partNumber = :partNumber ORDER BY c.id ASC")
+    // (packNumber, partNumber, partOffset) is the total physical order of a
+    // part's plaintext. Legacy rows (pre-partOffset, all -1) fall back to
+    // insertion order via the id tiebreak — identical to the old ORDER BY.
+    @Query("SELECT c.* FROM backup_chunks c JOIN backup_parts p ON p.id = c.backupPartId WHERE p.packNumber = :packNumber AND p.partNumber = :partNumber ORDER BY c.partOffset ASC, c.id ASC")
     suspend fun getForPart(packNumber: Int, partNumber: Int): List<BackupChunkEntity>
 
-    @Query("SELECT c.* FROM backup_chunks c JOIN backup_parts p ON p.id = c.backupPartId WHERE p.packNumber = :packNumber ORDER BY p.partNumber ASC, c.id ASC")
+    @Query("SELECT c.* FROM backup_chunks c JOIN backup_parts p ON p.id = c.backupPartId WHERE p.packNumber = :packNumber ORDER BY p.partNumber ASC, c.partOffset ASC, c.id ASC")
     suspend fun getForPack(packNumber: Int): List<BackupChunkEntity>
 
     @Query("SELECT c.*, p.packNumber, p.partNumber FROM backup_chunks c JOIN backup_parts p ON p.id = c.backupPartId WHERE c.backupFileId = :fileId ORDER BY p.packNumber ASC, p.partNumber ASC, c.fileOffset ASC")
@@ -303,6 +331,12 @@ interface BackupFileStatusDao {
     @Query("SELECT * FROM backup_file_status_view WHERE state = 0 AND size > 0 ORDER BY id ASC")
     suspend fun getPendingFiles(): List<BackupFileStatusView>
 
+    // Unplanned = no header chunk. Every planned file has exactly one chunk
+    // with fileOffset = 0, including size-0 files (header-only chunk), so the
+    // anti-join yields at most one row per file and NULL means never planned.
+    @Query("SELECT v.* FROM backup_file_status_view v LEFT JOIN backup_chunks c ON c.backupFileId = v.id AND c.fileOffset = 0 WHERE c.id IS NULL ORDER BY v.id ASC")
+    suspend fun getUnplannedFiles(): List<BackupFileStatusView>
+
     @Query("SELECT MAX(s.packNumber) FROM backup_pack_sealed s")
     suspend fun maxSealedPack(): Int?
 }
@@ -365,12 +399,25 @@ class BackupStateRepository @Inject constructor(
     suspend fun persistOpenPack(pack: BackupOpenPackEntity) = backupOpenPackDao.put(pack)
     suspend fun getOpenPack(): BackupOpenPackEntity? = backupOpenPackDao.get()
 
-    suspend fun insertPackPlan(parts: List<BackupPartEntity>, chunks: List<BackupChunkEntity>) {
+    /**
+     * Insert a plan. Chunk part references are indices into [parts], or
+     * TAIL_PART_REF for the pre-existing tail part being extended, in which
+     * case [tailPartId] must be its real row id.
+     */
+    suspend fun insertPackPlan(
+        parts: List<BackupPartEntity>,
+        chunks: List<BackupChunkEntity>,
+        tailPartId: Long? = null,
+    ) {
         inTransaction {
             parts.map { it.packNumber }.distinct().forEach { ensurePack(it) }
             val partIds = backupPartDao.insertAll(parts)
             val resolvedChunks = chunks.map { chunk ->
-                chunk.copy(backupPartId = partIds[chunk.backupPartId.toInt()])
+                val resolved =
+                    if (chunk.backupPartId == TAIL_PART_REF)
+                        requireNotNull(tailPartId) { "plan references tail part but tailPartId is null" }
+                    else partIds[chunk.backupPartId.toInt()]
+                chunk.copy(backupPartId = resolved)
             }
             backupChunkDao.insertAll(resolvedChunks)
         }
@@ -403,6 +450,7 @@ class BackupStateRepository @Inject constructor(
     suspend fun getFirstPendingPart(): BackupPartEntity? = backupPartDao.getFirstPending()
     suspend fun getNextPendingPart(packNumber: Int, partNumber: Int): BackupPartEntity? = backupPartDao.getNextPending(packNumber, partNumber)
     suspend fun getUploadedPartsForPack(packNumber: Int): List<BackupPartEntity> = backupPartDao.getUploadedForPack(packNumber)
+    suspend fun getTailPart(): TailPartInfo? = backupPartDao.getTailPart()
     suspend fun getEtagsForPack(packNumber: Int): List<PartEtag> = backupPartEtagDao.getEtagsForPack(packNumber)
     suspend fun getChunksForPart(packNumber: Int, partNumber: Int): List<BackupChunkEntity> = backupChunkDao.getForPart(packNumber, partNumber)
     suspend fun getChunksForFileInPack(fileId: Long, packNumber: Int): List<Pair<BackupChunkEntity, Int>> {
@@ -423,6 +471,7 @@ class BackupStateRepository @Inject constructor(
     suspend fun getFileById(id: Long): BackupFileEntity? = backupFileDao.getById(id)
     suspend fun insertScannedFiles(files: List<BackupFileEntity>) = backupFileDao.insertAll(files)
     suspend fun getPendingFiles(): List<BackupFileStatusView> = backupFileStatusDao.getPendingFiles()
+    suspend fun getUnplannedFiles(): List<BackupFileStatusView> = backupFileStatusDao.getUnplannedFiles()
     suspend fun maxSealedPack(): Int? = backupFileStatusDao.maxSealedPack()
     fun observeFolders(): Flow<List<BackupFolderEntity>> = backupFolderDao.observeAll()
     suspend fun countDefaultFolders(): Int = backupFolderDao.countDefaults()
