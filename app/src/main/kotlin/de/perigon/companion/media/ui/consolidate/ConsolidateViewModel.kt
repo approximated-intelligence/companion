@@ -18,6 +18,7 @@ import de.perigon.companion.media.data.ConsolidateRepository
 import de.perigon.companion.media.data.SafeToDeleteView
 import de.perigon.companion.media.worker.ConsolidateWorker
 import de.perigon.companion.util.FileHasher
+import de.perigon.companion.util.HashKey
 import de.perigon.companion.util.saf.ScannedFile
 import de.perigon.companion.util.saf.collectFileNames
 import de.perigon.companion.util.saf.listSubfolder
@@ -401,6 +402,12 @@ class ConsolidateViewModel @Inject constructor(
         }
     }
 
+    private data class BackfillMatch(
+        val camera: ScannedFile,
+        val consolidatedName: String,
+        val key: HashKey,
+    )
+
     private suspend fun scanAndBackfill(): Int {
         val dcimUri = appPrefs.dcimTreeUri() ?: return 0
         val treeUri = Uri.parse(dcimUri)
@@ -431,27 +438,33 @@ class ConsolidateViewModel @Inject constructor(
 
         if (matched.isEmpty()) return 0
 
-        // Hash each matched camera file via the shared cache. Files that fail
-        // to hash are skipped — they'll be retried on the next scan.
-        val now = System.currentTimeMillis()
-        val hashed = mutableListOf<Triple<ScannedFile, String, String>>() // (file, sha256, consolidatedName)
-        for ((camera, consolidatedName) in matched) {
-            val dcimPath = "DCIM/${camera.path}"
-            val sha = hasher.hashOrCached(dcimPath, camera.mtime, camera.size) {
-                ctx.contentResolver.openInputStream(Uri.parse(camera.uri))
-                    ?: error("openInputStream returned null")
-            } ?: continue
-            hashed += Triple(camera, sha, consolidatedName)
+        // Batch-hash via the shared cache: one lookup pass, only misses are
+        // read. Files with unknown size or that fail to hash are skipped —
+        // they'll be retried on the next backfill or scan.
+        val byKey = LinkedHashMap<HashKey, ScannedFile>()
+        val entries = matched.mapNotNull { (camera, consolidatedName) ->
+            val size = camera.size ?: return@mapNotNull null
+            val key = HashKey("DCIM/${camera.path}", camera.mtime, size)
+            byKey.putIfAbsent(key, camera)
+            BackfillMatch(camera, consolidatedName, key)
+        }
+        if (entries.isEmpty()) return 0
+
+        val hashes = hasher.hashAllOrCached(byKey.keys.toList()) { key ->
+            ctx.contentResolver.openInputStream(Uri.parse(byKey.getValue(key).uri))
+                ?: error("openInputStream returned null")
         }
 
+        val hashed = entries.mapNotNull { m -> hashes[m.key]?.let { sha -> m to sha } }
         if (hashed.isEmpty()) return 0
 
-        val entities = hashed.map { (camera, sha, _) ->
+        val now = System.currentTimeMillis()
+        val entities = hashed.map { (m, sha) ->
             ConsolidateFileEntity(
-                path = "DCIM/${camera.path}",
-                uri = camera.uri,
-                mtime = camera.mtime,
-                size = camera.size,
+                path = m.key.path,
+                uri = m.camera.uri,
+                mtime = m.key.mtime,
+                size = m.key.size,
                 sha256 = sha,
                 createdAt = now,
             )
@@ -459,9 +472,9 @@ class ConsolidateViewModel @Inject constructor(
         consolidateRepo.insertScannedFiles(entities)
 
         var count = 0
-        for ((camera, sha, consolidatedName) in hashed) {
-            val entity = consolidateRepo.findByPathSha256("DCIM/${camera.path}", sha) ?: continue
-            consolidateRepo.markDone(entity.id, consolidatedName)
+        for ((m, sha) in hashed) {
+            val entity = consolidateRepo.findByPathSha256(m.key.path, sha) ?: continue
+            consolidateRepo.markDone(entity.id, m.consolidatedName)
             count++
         }
 

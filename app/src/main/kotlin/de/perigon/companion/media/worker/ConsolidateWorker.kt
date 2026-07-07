@@ -186,7 +186,10 @@ class ConsolidateWorker @AssistedInject constructor(
      * Scan DCIM/Camera via SAF and insert new source files into consolidate_files.
      * Hashing is batched through the shared [FileHasher] cache (one lookup pass,
      * misses only are read) so backup and consolidate share cached digests.
-     * Files that can't be opened/hashed are silently skipped — next scan retries.
+     *
+     * Skipped: files already consolidated, empty files (nothing to transform),
+     * files with unknown size, and files that can't be opened/hashed — the
+     * latter two are retried on the next scan.
      */
     private suspend fun scanAndPersistSourceFiles(dcimTreeUri: Uri): Int {
         val consolidatedNames = collectFileNames(ctx, dcimTreeUri, CONSOLIDATED_SUBFOLDER)
@@ -194,19 +197,17 @@ class ConsolidateWorker @AssistedInject constructor(
         val cameraFiles = walkCameraSubfolder(dcimTreeUri)
         if (cameraFiles.isEmpty()) return 0
 
-        val candidates = cameraFiles.filter { sf ->
-            if (sf.size == 0L) return@filter false
+        val byKey = LinkedHashMap<HashKey, ScannedFile>(cameraFiles.size)
+        for (sf in cameraFiles) {
+            val size = sf.size ?: continue
+            if (size == 0L) continue
             val stem = sf.path.substringAfterLast('/').substringBeforeLast('.')
             val isVideo = sf.path.endsWith(".mp4", ignoreCase = true)
             val outName = if (isVideo) "${stem}_s.mp4" else "${stem}_s.jpg"
-            outName !in consolidatedNames
+            if (outName in consolidatedNames) continue
+            byKey.putIfAbsent(HashKey(sf.path, sf.mtime, size), sf)
         }
-        if (candidates.isEmpty()) return 0
-
-        val byKey = LinkedHashMap<HashKey, ScannedFile>(candidates.size)
-        for (sf in candidates) {
-            byKey.putIfAbsent(HashKey(sf.path, sf.mtime, sf.size), sf)
-        }
+        if (byKey.isEmpty()) return 0
 
         val hashes = hasher.hashAllOrCached(byKey.keys.toList()) { key ->
             ctx.contentResolver.openInputStream(Uri.parse(byKey.getValue(key).uri))
@@ -221,7 +222,7 @@ class ConsolidateWorker @AssistedInject constructor(
             hashes[key]?.let { sha ->
                 ConsolidateFileEntity(
                     path = sf.path, uri = sf.uri,
-                    mtime = sf.mtime, size = sf.size,
+                    mtime = key.mtime, size = key.size,
                     sha256 = sha, createdAt = now,
                 )
             }
