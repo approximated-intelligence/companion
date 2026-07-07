@@ -19,6 +19,10 @@ import java.nio.charset.StandardCharsets
  * Where <len> is the decimal length of the entire record including <len> itself,
  * the space, key=value, and the trailing newline.
  *
+ * Pad entries (see buildPadEntry) carry only realsize/offset/sha256 — no path,
+ * no mtime — with an all-zero sha256. This contract is shared with
+ * python-tools/restore.py (is_pad_entry) and must not change.
+ *
  * No I/O - all functions return ByteArrays.
  */
 object BackupPaxWriter {
@@ -26,6 +30,8 @@ object BackupPaxWriter {
     const val BLOCK = 512
     const val MAX_PATH = 256
     private val MAGIC = "PX2\n".toByteArray(StandardCharsets.US_ASCII)
+
+    private val PAD_SHA256 = "0".repeat(64)
 
     fun buildEntry(
         path: String,
@@ -69,6 +75,20 @@ object BackupPaxWriter {
         val text = String(block, MAGIC.size, BLOCK - MAGIC.size, StandardCharsets.UTF_8)
         val fields = parseRecords(text)
 
+        // Pad entry (contract shared with python-tools/restore.py): no "path"
+        // record and an all-zero sha256. Only realsize/offset are on the wire;
+        // parse it as an empty-path entry so readers can skip BLOCK + realSize.
+        if ("path" !in fields && fields["sha256"] == PAD_SHA256) {
+            val padSize = fields["realsize"]?.toLongOrNull() ?: return null
+            return PaxEntry(
+                path = "",
+                realSize = padSize,
+                offset = 0L,
+                mtime = 0L,
+                sha256 = PAD_SHA256,
+            )
+        }
+
         val path = fields["path"] ?: return null
         val realSize = fields["realsize"]?.toLongOrNull() ?: return null
         val offset = fields["offset"]?.toLongOrNull() ?: return null
@@ -86,7 +106,7 @@ object BackupPaxWriter {
         val records = buildRecords(
             "realsize" to padDataSize.toString(),
             "offset" to "0",
-            "sha256" to "0".repeat(64),
+            "sha256" to PAD_SHA256,
         )
 
         val payloadSize = MAGIC.size + records.size
@@ -97,7 +117,7 @@ object BackupPaxWriter {
         records.copyInto(block, MAGIC.size)
         return block
     }
-       
+
     fun entryOverhead(): Long = BLOCK.toLong()
 
     private fun buildRecords(vararg entries: Pair<String, String>): ByteArray {
