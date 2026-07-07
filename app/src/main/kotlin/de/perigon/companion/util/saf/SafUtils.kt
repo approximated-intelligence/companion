@@ -71,13 +71,16 @@ fun dcimPickerInitialUri(): Uri {
 
 /**
  * One child entry of a directory, fully populated from a single cursor row.
+ * [size] is null when the provider does not report a size; 0 is a genuinely
+ * empty file. [mtime] falls back to 0 when unreported (self-corrects via the
+ * hash cache; a wrong size would corrupt a backup, hence the distinction).
  */
 data class ChildDoc(
     val documentId: String,
     val name: String,
     val mimeType: String,
     val mtime: Long,
-    val size: Long,
+    val size: Long?,
 ) {
     val isDirectory: Boolean
         get() = mimeType == DocumentsContract.Document.MIME_TYPE_DIR
@@ -115,7 +118,7 @@ fun queryChildren(
             val name = c.getString(1) ?: continue
             val mime = c.getString(2) ?: ""
             val mtime = if (c.isNull(3)) 0L else c.getLong(3)
-            val size = if (c.isNull(4)) 0L else c.getLong(4)
+            val size = if (c.isNull(4)) null else c.getLong(4)
             results += ChildDoc(docId, name, mime, mtime, size)
         }
     }
@@ -175,16 +178,22 @@ private fun queryDisplayName(context: Context, treeUri: Uri, documentId: String)
 // Tree walking
 // ---------------------------------------------------------------------------
 
+/**
+ * A file found while walking a tree. [size] is null when the provider does
+ * not report one; 0 means a genuinely empty file (e.g. .nomedia), which is
+ * a valid backup candidate.
+ */
 data class ScannedFile(
     val path: String,
     val uri: String,
     val mtime: Long,
-    val size: Long,
+    val size: Long?,
 )
 
 /**
- * Recursively walk a SAF document tree, collecting all files.
- * [prefix] is prepended to build logical paths (e.g. "DCIM/Camera/").
+ * Recursively walk a SAF document tree, collecting all files (including
+ * empty ones). [prefix] is prepended to build logical paths
+ * (e.g. "DCIM/Camera/").
  *
  * Cost: one ContentResolver query per directory.
  */
@@ -211,7 +220,6 @@ fun walkDocumentTree(
                 stack.addLast(child.documentId to childPath)
                 continue
             }
-            if (child.name == ".nomedia") continue
             results += ScannedFile(
                 path = childPath,
                 uri = documentUriInTree(treeUri, child.documentId).toString(),
