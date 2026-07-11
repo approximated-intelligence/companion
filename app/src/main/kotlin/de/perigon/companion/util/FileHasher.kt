@@ -74,6 +74,9 @@ class FileHasher @Inject constructor(
 
         // Stay under SQLite's 999 bound-variable limit per statement.
         private const val SQL_CHUNK = 900
+
+        // Minimum interval between progress callbacks while hashing misses.
+        private const val PROGRESS_INTERVAL_MS = 2_000L
     }
 
     /** Cache lookup only — no I/O on the source. */
@@ -103,18 +106,33 @@ class FileHasher @Inject constructor(
      * batched upsert of freshly computed digests. [open] is invoked lazily
      * per miss. Keys whose source fails to open/read are absent from the
      * result — callers drop those files and retry next scan.
+     *
+     * [onProgress] fires on the hashing thread before each miss is read, at
+     * most every 2 seconds (plus a final emission), with (hashed, misses,
+     * current). Cache hits cost no I/O and report no progress; a healthy
+     * steady-state scan should therefore report ~0 misses — a large miss
+     * count on an unchanged tree indicates a broken cache key.
      */
     suspend fun hashAllOrCached(
         keys: List<HashKey>,
+        onProgress: suspend (hashed: Int, misses: Int, current: HashKey) -> Unit = { _, _, _ -> },
         open: (HashKey) -> InputStream,
     ): Map<HashKey, String> {
         if (keys.isEmpty()) return emptyMap()
         val result = lookupAll(keys).toMutableMap()
 
+        val missKeys = keys.filter { it !in result }
         val fresh = mutableListOf<FileContentHashEntity>()
         val now = System.currentTimeMillis()
-        for (key in keys) {
-            if (key in result) continue
+        var lastEmit = 0L
+
+        for ((index, key) in missKeys.withIndex()) {
+            val clock = System.currentTimeMillis()
+            if (clock - lastEmit >= PROGRESS_INTERVAL_MS || index == 0 || index == missKeys.lastIndex) {
+                onProgress(index, missKeys.size, key)
+                lastEmit = clock
+            }
+
             val digest = try {
                 open(key).use { stream -> streamSha256(stream) }
             } catch (_: Exception) {
