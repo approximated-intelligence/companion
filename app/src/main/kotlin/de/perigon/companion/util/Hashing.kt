@@ -3,7 +3,7 @@ package de.perigon.companion.util
 import java.io.InputStream
 import java.security.MessageDigest
 
-private const val IO_BUF = 8192
+private const val IO_BUF = 64 * 1024
 
 /** Full SHA-256 hex digest of an input stream. Caller must close the stream. */
 fun sha256Hex(stream: InputStream): String {
@@ -14,6 +14,22 @@ fun sha256Hex(stream: InputStream): String {
         digest.update(buf, 0, n)
     }
     return digest.digest().toHex()
+}
+
+/**
+ * Full SHA-256 hex digest of an input stream, plus the number of bytes read.
+ * Caller must close the stream.
+ */
+fun sha256HexWithSize(stream: InputStream): Pair<String, Long> {
+    val digest = MessageDigest.getInstance("SHA-256")
+    val buf = ByteArray(IO_BUF)
+    var size = 0L
+    var n: Int
+    while (stream.read(buf).also { n = it } != -1) {
+        digest.update(buf, 0, n)
+        size += n
+    }
+    return digest.digest().toHex() to size
 }
 
 /** Full SHA-256 hex digest of a byte array. */
@@ -42,4 +58,3 @@ fun gitBlobSha1(content: String): String =
 fun String.fromHex(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
 fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
-
