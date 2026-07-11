@@ -153,6 +153,20 @@ class BackupWorker @AssistedInject constructor(
             setForeground(notifier.foregroundInfo(label))
         }
 
+        override suspend fun onScanProgress(currentFile: String, hashed: Int, misses: Int) {
+            // Hash-phase progress: fires (throttled to ~2s) per newly hashed
+            // file. Steady-state scans have ~0 misses and stay in "Scanning…".
+            trackedFile       = currentFile
+            trackedFileIndex  = hashed
+            trackedFilesTotal = misses
+            trackedPackState  = STATE_PLANNING
+            emitProgress()
+            setForeground(notifier.foregroundInfo(
+                "Hashing $hashed / $misses",
+                currentFile.substringAfterLast('/'),
+            ))
+        }
+
         override suspend fun onFileProgress(packNumber: Int, file: String, fileIdx: Int, totalFiles: Int) {
             if (trackedPackPosition != packNumber) {
                 trackedPartNumber  = 0
