@@ -6,7 +6,6 @@ import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import java.io.InputStream
-import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -16,6 +15,9 @@ import javax.inject.Singleton
  * Pure optimisation: dropping it only costs re-hashing. The key is what we
  * already trust to identify unchanged file content — if mtime or size changed,
  * the file changed and gets a fresh sha256.
+ *
+ * Digest computation is shared with util/Hashing.kt (sha256Hex /
+ * sha256HexWithSize) — no duplicated hashing loops.
  */
 
 @Entity(
@@ -70,8 +72,6 @@ class FileHasher @Inject constructor(
     private val dao: FileContentHashDao,
 ) {
     companion object {
-        private const val IO_BUF = 64 * 1024
-
         // Stay under SQLite's 999 bound-variable limit per statement.
         private const val SQL_CHUNK = 900
 
@@ -134,7 +134,7 @@ class FileHasher @Inject constructor(
             }
 
             val digest = try {
-                open(key).use { stream -> streamSha256(stream) }
+                open(key).use { stream -> sha256Hex(stream) }
             } catch (_: Exception) {
                 continue
             }
@@ -163,7 +163,7 @@ class FileHasher @Inject constructor(
     ): String? {
         dao.lookup(path, mtime, size)?.let { return it }
         val digest = try {
-            open().use { stream -> streamSha256(stream) }
+            open().use { stream -> sha256Hex(stream) }
         } catch (_: Exception) {
             return null
         }
@@ -185,7 +185,7 @@ class FileHasher @Inject constructor(
         open: () -> InputStream,
     ): Pair<String, Long>? {
         val (hex, actualSize) = try {
-            open().use { stream -> streamSha256WithSize(stream) }
+            open().use { stream -> sha256HexWithSize(stream) }
         } catch (_: Exception) {
             return null
         }
@@ -195,31 +195,4 @@ class FileHasher @Inject constructor(
         ))
         return hex to actualSize
     }
-
-    private fun streamSha256(stream: InputStream): String {
-        val md = MessageDigest.getInstance("SHA-256")
-        val buf = ByteArray(IO_BUF)
-        while (true) {
-            val n = stream.read(buf)
-            if (n <= 0) break
-            md.update(buf, 0, n)
-        }
-        return bytesToHex(md.digest())
-    }
-
-    private fun streamSha256WithSize(stream: InputStream): Pair<String, Long> {
-        val md = MessageDigest.getInstance("SHA-256")
-        val buf = ByteArray(IO_BUF)
-        var size = 0L
-        while (true) {
-            val n = stream.read(buf)
-            if (n <= 0) break
-            md.update(buf, 0, n)
-            size += n
-        }
-        return bytesToHex(md.digest()) to size
-    }
-
-    private fun bytesToHex(bytes: ByteArray): String =
-        bytes.joinToString("") { "%02x".format(it) }
 }
