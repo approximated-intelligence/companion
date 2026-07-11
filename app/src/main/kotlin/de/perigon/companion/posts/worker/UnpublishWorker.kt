@@ -68,39 +68,18 @@ class UnpublishWorker @AssistedInject constructor(
 
         val github = githubClient() ?: return fail("GitHub credentials not configured")
 
-        val postPath = "_posts/$localDate-$slug.md"
+        val postPath    = "_posts/$localDate-$slug.md"
         val mediaPrefix = "static/$slug/"
 
-        // Collect all paths to delete from the tree
-        val deletions = mutableSetOf<String>()
-
-        try {
-            val tree = github.getTree()
-
-            // Post markdown file
-            if (tree.any { it.path == postPath }) {
-                deletions += postPath
-            }
-
-            // All media under static/slug/
-            tree.filter { it.path.startsWith(mediaPrefix) }
-                .forEach { deletions += it.path }
-        } catch (e: Exception) {
-            // If we can't fetch the tree, fall back to just the post path
-            // and hope for the best — better than failing entirely
-            deletions += postPath
-        }
-
-        if (deletions.isEmpty()) {
-            // Nothing to delete — post wasn't on GitHub
-            updateLocalState(postId, deleteLocal)
-            return Result.success()
-        }
-
+        // One delta commit: the post markdown plus everything under
+        // static/slug/. commitTree resolves both against the current tree
+        // (single fetch), skips paths that aren't there, and is a clean
+        // no-op returning HEAD when the post was never on GitHub.
         try {
             github.commitTree(
-                message   = "Unpublish: $slug",
-                deletions = deletions,
+                message     = "Unpublish: $slug",
+                deletions   = setOf(postPath),
+                stalePrefix = mediaPrefix,
             )
         } catch (e: Exception) {
             if (postId != -1L) {
