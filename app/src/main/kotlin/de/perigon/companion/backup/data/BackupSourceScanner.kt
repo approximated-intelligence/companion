@@ -28,7 +28,8 @@ data class BackupScannedFile(
  * so it's included automatically. Custom SAF folders can be added by the user.
  *
  * Hashing is batched through [FileHasher]: one cache lookup pass for the whole
- * scan, only misses (new/changed files) are read and hashed.
+ * scan, only misses (new/changed files) are read and hashed. [onProgress]
+ * relays FileHasher's throttled per-miss progress to the caller.
  *
  * Empty files (size 0, e.g. .nomedia) are valid backup candidates. Files with
  * unknown size (provider reported none) are dropped — planning them could
@@ -48,7 +49,9 @@ class BackupSourceScanner @Inject constructor(
         )
     }
 
-    suspend fun scan(): List<BackupScannedFile> {
+    suspend fun scan(
+        onProgress: suspend (hashed: Int, misses: Int, current: HashKey) -> Unit = { _, _, _ -> },
+    ): List<BackupScannedFile> {
         val enabled = backupFolderDao.getEnabled()
 
         val raw = enabled.flatMap { folder ->
@@ -73,7 +76,7 @@ class BackupSourceScanner @Inject constructor(
         }
         if (unknownSize > 0) Log.w(TAG, "dropped $unknownSize file(s) with unknown size")
 
-        val hashes = hasher.hashAllOrCached(byKey.keys.toList()) { key ->
+        val hashes = hasher.hashAllOrCached(byKey.keys.toList(), onProgress) { key ->
             context.contentResolver.openInputStream(Uri.parse(byKey.getValue(key).uri))
                 ?: error("openInputStream returned null")
         }
