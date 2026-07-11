@@ -53,7 +53,7 @@ fun gitBlobSha1(content: ByteArray): String {
 fun gitBlobSha1(content: String): String =
     gitBlobSha1(content.toByteArray(Charsets.UTF_8))
 
-// --- Merged from HexExt.kt ---
+// ---- Hex conversions ----
 
 fun String.fromHex(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
