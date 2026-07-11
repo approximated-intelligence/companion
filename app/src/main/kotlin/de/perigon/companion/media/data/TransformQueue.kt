@@ -7,28 +7,25 @@ import android.os.HandlerThread
 import android.provider.MediaStore
 import android.util.Log
 import androidx.core.net.toUri
+import androidx.room.withTransaction
+import de.perigon.companion.core.db.AppDatabase
 import de.perigon.companion.util.media.ImageTransformParams
 import de.perigon.companion.util.media.ImageTransformer
 import de.perigon.companion.util.media.VideoProbe
 import de.perigon.companion.util.media.VideoTransformParams
 import de.perigon.companion.util.media.VideoTransformer
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 private const val TAG = "TransformQueue"
 
@@ -42,6 +39,7 @@ private const val TAG = "TransformQueue"
 @Singleton
 class TransformQueue @Inject constructor(
     @param:ApplicationContext private val context: Context,
+    private val db: AppDatabase,
     private val dao: TransformJobDao,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -99,6 +97,37 @@ class TransformQueue @Inject constructor(
             callerTag           = callerTag,
         )
         val id = dao.insert(entity)
+        wakeSignal.trySend(Unit)
+        return id
+    }
+
+    /**
+     * Submit a job unless an active (PENDING/RUNNING) job with the same
+     * (callerTag, displayName) already exists; returns the existing or new id.
+     * Check-and-insert run in one transaction, so concurrent submitters for
+     * the same output slot cannot race into duplicate jobs.
+     */
+    suspend fun submitIfAbsent(
+        sourceUri: Uri,
+        displayName: String,
+        mediaType: String,
+        boxPx: Int = DEFAULT_BOX_PX,
+        quality: Int = DEFAULT_QUALITY,
+        callerTag: String,
+    ): Long {
+        val id = db.withTransaction {
+            val existing = dao.findActiveByTag(callerTag)
+                .firstOrNull { it.displayName == displayName }
+            existing?.id ?: dao.insert(TransformJobEntity(
+                sourceUri   = sourceUri.toString(),
+                displayName = displayName,
+                mediaType   = mediaType,
+                status      = TransformJobStatus.PENDING,
+                boxPx       = boxPx,
+                quality     = quality,
+                callerTag   = callerTag,
+            ))
+        }
         wakeSignal.trySend(Unit)
         return id
     }
