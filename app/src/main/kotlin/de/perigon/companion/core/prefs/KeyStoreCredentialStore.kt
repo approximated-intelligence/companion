@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.security.KeyStore
 import javax.crypto.Cipher
@@ -19,6 +20,8 @@ class KeyStoreCredentialStore @Inject constructor(
 ) : CredentialStore {
 
     companion object {
+        private const val TAG = "CredentialStore"
+
         private const val KEYSTORE_ALIAS = "companion_cred_key"
         private const val PREFS_NAME = "encrypted_creds"
         private const val LEGACY_PREFS_NAME = "backup_creds"
@@ -120,7 +123,12 @@ class KeyStoreCredentialStore @Inject constructor(
             val spec = GCMParameterSpec(GCM_TAG_LENGTH, iv)
             cipher.init(Cipher.DECRYPT_MODE, (getKey() as KeyStore.SecretKeyEntry).secretKey, spec)
             String(cipher.doFinal(ciphertext), Charsets.UTF_8)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            // Stored value exists but cannot be decrypted: the Keystore key
+            // was invalidated (OS update, security settings change) or the
+            // data is corrupt. Callers see "not configured"; this log is the
+            // only trace of the real cause.
+            Log.e(TAG, "decrypt failed for '$key' — Keystore key invalidated or data corrupt; re-enter this credential", e)
             null
         }
     }
@@ -152,6 +160,13 @@ class KeyStoreCredentialStore @Inject constructor(
         }
 
         editor.apply()
+
+        // The legacy prefs held these secrets in PLAINTEXT. Once migrated
+        // (or confirmed already present), purge them from disk.
+        legacy.edit().clear().apply()
+        if (!legacyFile.delete()) {
+            Log.w(TAG, "could not delete legacy plaintext credential file")
+        }
     }
 }
 
