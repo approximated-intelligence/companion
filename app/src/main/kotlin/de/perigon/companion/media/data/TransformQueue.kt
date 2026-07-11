@@ -171,12 +171,13 @@ class TransformQueue @Inject constructor(
 
     private suspend fun processJob(job: TransformJobEntity) {
         dao.updateStatus(job.id, TransformJobStatus.RUNNING)
-        try {
-            val sourceUri = job.sourceUri.toUri()
-            val ext       = if (job.mediaType == "VIDEO") "mp4" else "jpg"
-            val stem      = job.displayName.substringBeforeLast('.')
-            val tempFile  = File(context.cacheDir, "tq_${job.id}_$stem.$ext")
 
+        val sourceUri = job.sourceUri.toUri()
+        val ext       = if (job.mediaType == "VIDEO") "mp4" else "jpg"
+        val stem      = job.displayName.substringBeforeLast('.')
+        val tempFile  = File(context.cacheDir, "tq_${job.id}_$stem.$ext")
+
+        try {
             if (!job.hasAnyTransform && isAlreadyProcessed(sourceUri)) {
                 context.contentResolver.openInputStream(sourceUri)!!.use { input ->
                     tempFile.outputStream().use { input.copyTo(it) }
@@ -199,6 +200,7 @@ class TransformQueue @Inject constructor(
             Log.d(TAG, "Completed ${job.id} exists=${tempFile.exists()} size=${tempFile.length()}")
         } catch (e: Exception) {
             Log.e(TAG, "Job ${job.id} failed: ${job.displayName}", e)
+            tempFile.delete() // half-written output — don't leak into cacheDir
             dao.updateStatus(job.id, TransformJobStatus.FAILED, error = e.message)
         }
     }
