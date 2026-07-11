@@ -170,6 +170,7 @@ class BackupOrchestrator(
 
     interface ProgressListener {
         suspend fun onPackStateChange(state: String, packNumber: Int)
+        suspend fun onScanProgress(currentFile: String, hashed: Int, misses: Int)
         suspend fun onFileProgress(packNumber: Int, file: String, fileIdx: Int, totalFiles: Int)
         suspend fun onPartUploaded(partsDone: Int, partsTotal: Int)
     }
@@ -188,7 +189,9 @@ class BackupOrchestrator(
 
     suspend fun run(listener: ProgressListener) {
         listener.onPackStateChange("PLANNING", 0)
-        val scanned = scanner.scan()
+        val scanned = scanner.scan(onProgress = { hashed, misses, key ->
+            listener.onScanProgress(key.path, hashed, misses)
+        })
         if (scanned.isNotEmpty()) {
             val now = System.currentTimeMillis()
             stateRepo.insertScannedFiles(scanned.map { sf ->
@@ -311,16 +314,19 @@ class BackupOrchestrator(
                 currentPackNumber = part.packNumber
                 listener.onPackStateChange("UPLOADING", currentPackNumber)
 
-                stateRepo.inTransaction {
-                    val id = b2.createMultipart(packKey(currentPackNumber))
-                    currentUploadId = id
-                    persistOpenPack(BackupOpenPackEntity(
-                        packNumber = currentPackNumber,
-                        b2UploadId = id,
-                        numPartsTarget = partsPerPack,
-                        createdAt = System.currentTimeMillis(),
-                    ))
-                }
+                // Network first, persist second: a crash in between leaves an
+                // orphaned multipart on B2 (harmless; abort via lifecycle rule)
+                // and the DB never ahead of the remote. Never hold a Room
+                // transaction across a network call — it starves every other
+                // writer and freezes UI Flows.
+                val id = b2.createMultipart(packKey(currentPackNumber))
+                currentUploadId = id
+                stateRepo.persistOpenPack(BackupOpenPackEntity(
+                    packNumber = currentPackNumber,
+                    b2UploadId = id,
+                    numPartsTarget = partsPerPack,
+                    createdAt = System.currentTimeMillis(),
+                ))
             }
 
             val chunks = stateRepo.getChunksForPart(part.packNumber, part.partNumber)
@@ -433,10 +439,12 @@ class BackupOrchestrator(
             }
             val cipher = BackupPartEncryptor.seal(plaintext, serverPk, phoneSk, sodium)
 
-            stateRepo.inTransaction {
-                val etag = uploadWithRetry(packKey(currentPackNumber), currentUploadId!!, part.partNumber, cipher)
-                confirmPart(part.packNumber, part.partNumber, part.id, etag)
-            }
+            // Network first, then a single-row upsert. A crash in between
+            // leaves the part without an etag; it re-uploads next run and B2
+            // overwrites the part number (documented semantics). The stored
+            // etag therefore always matches the latest bytes on the remote.
+            val etag = uploadWithRetry(packKey(currentPackNumber), currentUploadId!!, part.partNumber, cipher)
+            stateRepo.confirmPart(part.packNumber, part.partNumber, part.id, etag)
 
             partsDone++
             listener.onPartUploaded(partsDone, totalParts)
@@ -453,10 +461,21 @@ class BackupOrchestrator(
         listener.onPackStateChange("COMPLETING", packNumber)
         val etags = stateRepo.getEtagsForPack(packNumber)
         val b2Parts = etags.map { S3Backend.Part(it.partNumber, it.etag) }
-        stateRepo.inTransaction {
+
+        // Network first, then seal locally (sealPack keeps its own internal
+        // transaction — those writes belong together). If a previous run
+        // completed the multipart but crashed before sealing, B2 answers
+        // NoSuchUpload for the finalized upload: treat that as already done.
+        try {
             b2.completeMultipart(packKey(packNumber), uploadId, b2Parts)
-            sealPack(packNumber)
+        } catch (e: Exception) {
+            if (e.message?.contains("NoSuchUpload", ignoreCase = true) == true) {
+                Log.i(TAG, "pack $packNumber multipart already completed remotely; sealing locally")
+            } else {
+                throw e
+            }
         }
+        stateRepo.sealPack(packNumber)
     }
 
     /**
