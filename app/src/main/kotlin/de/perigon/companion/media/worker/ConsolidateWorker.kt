@@ -17,7 +17,6 @@ import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.ui.NotificationChannels
 import de.perigon.companion.media.data.ConsolidateFileEntity
 import de.perigon.companion.media.data.ConsolidateRepository
-import de.perigon.companion.media.data.TransformJobDao
 import de.perigon.companion.media.data.TransformJobStatus
 import de.perigon.companion.media.data.TransformQueue
 import de.perigon.companion.util.FileHasher
@@ -43,7 +42,6 @@ class ConsolidateWorker @AssistedInject constructor(
     @Assisted private val ctx: Context,
     @Assisted params: WorkerParameters,
     private val transformQueue: TransformQueue,
-    private val transformJobDao: TransformJobDao,
     private val consolidateRepo: ConsolidateRepository,
     private val notificationDao: UserNotificationDao,
     private val appPrefs: AppPrefs,
@@ -89,9 +87,9 @@ class ConsolidateWorker @AssistedInject constructor(
 
         emitProgress(total = pending.size, processed = 0, failed = 0, currentFile = "Starting…")
 
-        val activeJobs = transformJobDao.findActiveByTag(CALLER_TAG)
-        val activeByName = activeJobs.associateBy { it.displayName }
-
+        // Submit (or adopt) one transform job per pending file. submitIfAbsent
+        // dedups on (callerTag, displayName) inside a single transaction, so a
+        // concurrent second trigger cannot create duplicate jobs.
         val pendingJobs = mutableMapOf<Long, ConsolidateFileEntity>()
 
         for (entity in pending) {
@@ -105,31 +103,37 @@ class ConsolidateWorker @AssistedInject constructor(
             val stem = entity.path.substringAfterLast('/').substringBeforeLast('.')
             val outName = if (isVideo) "${stem}_s.mp4" else "${stem}_s.jpg"
 
-            val existing = activeByName[outName]
-            if (existing != null) {
-                pendingJobs[existing.id] = entity
-            } else {
-                val mediaType = if (isVideo) "VIDEO" else "IMAGE"
-                val boxPx = if (isVideo) TransformQueue.DEFAULT_VIDEO_BOX_PX
-                            else TransformQueue.DEFAULT_BOX_PX
+            val mediaType = if (isVideo) "VIDEO" else "IMAGE"
+            val boxPx = if (isVideo) TransformQueue.DEFAULT_VIDEO_BOX_PX
+                        else TransformQueue.DEFAULT_BOX_PX
 
-                val transformId = transformQueue.submit(
-                    sourceUri = Uri.parse(entity.uri),
-                    displayName = outName,
-                    mediaType = mediaType,
-                    boxPx = boxPx,
-                    callerTag = CALLER_TAG,
-                )
-                pendingJobs[transformId] = entity
-            }
+            val transformId = transformQueue.submitIfAbsent(
+                sourceUri = Uri.parse(entity.uri),
+                displayName = outName,
+                mediaType = mediaType,
+                boxPx = boxPx,
+                callerTag = CALLER_TAG,
+            )
+            pendingJobs[transformId] = entity
         }
 
         var processed = 0
         var failed = 0
 
-        while (pendingJobs.isNotEmpty()) {
-            val allTransformJobs = transformQueue.jobs.first()
+        // Event-driven: each Room invalidation of transform_jobs delivers a
+        // snapshot; process completions as they land, report the RUNNING job
+        // as the current file, and return once all our jobs are settled.
+        transformQueue.jobs.first { allTransformJobs ->
+            // jobs deleted out from under us (e.g. UI "clear finished") count as failed
+            val visibleIds = allTransformJobs.map { it.id }.toSet()
+            val vanished = pendingJobs.keys.filter { it !in visibleIds }
+            vanished.forEach { pendingJobs.remove(it); failed++; processed++ }
+
             val ours = allTransformJobs.filter { it.id in pendingJobs }
+
+            ours.firstOrNull { it.status == TransformJobStatus.RUNNING }?.let { running ->
+                emitProgress(pending.size, processed, failed, running.displayName)
+            }
 
             for (tj in ours) {
                 when (tj.status) {
@@ -165,9 +169,7 @@ class ConsolidateWorker @AssistedInject constructor(
                 }
             }
 
-            if (pendingJobs.isNotEmpty()) {
-                kotlinx.coroutines.delay(500)
-            }
+            pendingJobs.isEmpty()
         }
 
         val message = "Consolidation complete: $processed processed" +
@@ -186,6 +188,7 @@ class ConsolidateWorker @AssistedInject constructor(
      * Scan DCIM/Camera via SAF and insert new source files into consolidate_files.
      * Hashing is batched through the shared [FileHasher] cache (one lookup pass,
      * misses only are read) so backup and consolidate share cached digests.
+     * Hash progress (throttled) is surfaced via notification and progress data.
      *
      * Skipped: files already consolidated, empty files (nothing to transform),
      * files with unknown size, and files that can't be opened/hashed — the
@@ -209,7 +212,14 @@ class ConsolidateWorker @AssistedInject constructor(
         }
         if (byKey.isEmpty()) return 0
 
-        val hashes = hasher.hashAllOrCached(byKey.keys.toList()) { key ->
+        val hashes = hasher.hashAllOrCached(
+            byKey.keys.toList(),
+            onProgress = { hashed, misses, key ->
+                val name = key.path.substringAfterLast('/')
+                emitProgress(total = 0, processed = 0, failed = 0, currentFile = name)
+                setForeground(foregroundInfo("Hashing $hashed / $misses"))
+            },
+        ) { key ->
             ctx.contentResolver.openInputStream(Uri.parse(byKey.getValue(key).uri))
                 ?: error("openInputStream returned null")
         }
