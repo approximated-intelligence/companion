@@ -5,6 +5,7 @@ import io.ktor.client.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Plain HTTP PUT media backend with Basic or Digest auth.
@@ -14,7 +15,10 @@ import io.ktor.http.*
  *   1. PUT → expect 401 with WWW-Authenticate: Digest
  *   2. Parse challenge, compute response
  *   3. Retry PUT with Authorization header
- *   Caches the last challenge/nonce to avoid extra round-trips.
+ *   Caches the last challenge (with its own nonce counter) to avoid extra
+ *   round-trips. Challenge and counter travel together in one immutable
+ *   session object behind a single volatile reference, so concurrent
+ *   putObject calls can never pair a counter with the wrong nonce.
  *
  * Basic flow: single PUT with Authorization: Basic header.
  */
@@ -26,10 +30,13 @@ class HttpMediaBackend(
     private val authType: String = "digest",
 ) : MediaBackend {
 
+    private class DigestSession(val challenge: DigestAuth.Challenge) {
+        private val counter = AtomicInteger(0)
+        fun nextNc(): Int = counter.incrementAndGet()
+    }
+
     @Volatile
-    private var cachedChallenge: DigestAuth.Challenge? = null
-    @Volatile
-    private var nc: Int = 0
+    private var session: DigestSession? = null
 
     override suspend fun putObject(key: String, data: ByteArray, contentType: String?) {
         when (authType) {
@@ -52,10 +59,10 @@ class HttpMediaBackend(
         val uri = "/${key.trimStart('/')}"
         val creds = DigestAuth.Credentials(user, password)
 
-        // Try with cached challenge first to avoid round-trip
-        val challenge = cachedChallenge
-        if (challenge != null) {
-            val authHeader = DigestAuth.authorize("PUT", uri, challenge, creds, nc = ++nc)
+        // Try with cached session first to avoid a round-trip
+        val cached = session
+        if (cached != null) {
+            val authHeader = DigestAuth.authorize("PUT", uri, cached.challenge, creds, nc = cached.nextNc())
             val resp = doPut(url, data, contentType, authHeader)
             if (resp.status != HttpStatusCode.Unauthorized) {
                 check(resp.status.isSuccess()) { "PUT $key failed: ${resp.status} - ${resp.bodyAsText()}" }
@@ -74,11 +81,10 @@ class HttpMediaBackend(
 
         val wwwAuth = initialResp.headers["WWW-Authenticate"]
             ?: error("PUT $key: 401 without WWW-Authenticate header")
-        val freshChallenge = DigestAuth.parseChallenge(wwwAuth)
-        cachedChallenge = freshChallenge
-        nc = 1
+        val fresh = DigestSession(DigestAuth.parseChallenge(wwwAuth))
+        session = fresh
 
-        val authHeader = DigestAuth.authorize("PUT", uri, freshChallenge, creds, nc = nc)
+        val authHeader = DigestAuth.authorize("PUT", uri, fresh.challenge, creds, nc = fresh.nextNc())
         val retryResp = doPut(url, data, contentType, authHeader)
         check(retryResp.status.isSuccess()) {
             "PUT $key failed after digest auth: ${retryResp.status} - ${retryResp.bodyAsText()}"
