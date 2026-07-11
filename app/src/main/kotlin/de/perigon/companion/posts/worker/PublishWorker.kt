@@ -179,12 +179,11 @@ class PublishWorker @AssistedInject constructor(
         }
 
         // ---- Phase 2: Upload media to external backend if configured ----
-        val backendPair   = mediaBackend()
-        val externalMedia = backendPair != null
-        val mediaBaseUrl  = backendPair?.second
+        val backendPair  = mediaBackend()
+        val mediaBaseUrl = backendPair?.second
 
-        if (externalMedia) {
-            val (backend, _) = backendPair!!
+        if (backendPair != null) {
+            val backend = backendPair.first
             emitProgress(stage = STAGE_UPLOADING_MEDIA, progress = 80)
             for ((index, pm) in prepared.withIndex()) {
                 if (pm.bytes.isEmpty()) continue
@@ -225,7 +224,7 @@ class PublishWorker @AssistedInject constructor(
         emitProgress(stage = STAGE_COMMITTING, progress = 85)
 
         try {
-            if (externalMedia) {
+            if (backendPair != null) {
                 // Media lives externally — just put the markdown file
                 val existingSha = github.getFileSha(postPath)
                 github.putFile(
@@ -235,7 +234,9 @@ class PublishWorker @AssistedInject constructor(
                     sha     = existingSha,
                 )
             } else {
-                // Media goes to GitHub — atomic tree commit
+                // Media goes to GitHub — delta tree commit. Stale media
+                // under static/slug/ is pruned inside the same commit,
+                // from the same tree snapshot (single tree fetch).
                 val treeFiles = mutableListOf<TreeFile>()
 
                 for (pm in prepared) {
@@ -252,14 +253,11 @@ class PublishWorker @AssistedInject constructor(
                     content = markdown.toByteArray(Charsets.UTF_8),
                 )
 
-                val currentFilenames = prepared.map { it.filename }.toSet()
-                val oldMediaPaths    = collectOldMediaPaths(github, post.slug, currentFilenames)
-
                 github.commitTree(
                     message       = "Publish: ${post.title}",
                     additions     = treeFiles,
-                    deletions     = oldMediaPaths,
-                    keepFilenames = currentFilenames,
+                    stalePrefix   = "static/${post.slug}/",
+                    keepFilenames = prepared.map { it.filename }.toSet(),
                 )
             }
         } catch (e: Exception) {
@@ -316,24 +314,6 @@ class PublishWorker @AssistedInject constructor(
         }
 
         return Result.success()
-    }
-
-    private suspend fun collectOldMediaPaths(
-        github:           GitHubClient,
-        slug:             String,
-        currentFilenames: Set<String>,
-    ): Set<String> {
-        val prefix = "static/$slug/"
-        return try {
-            github.getTree()
-                .filter { it.path.startsWith(prefix) }
-                .map { it.path }
-                .filter { path -> path.substringAfterLast('/') !in currentFilenames }
-                .toSet()
-        } catch (e: Exception) {
-            android.util.Log.e("PublishWorker", "collectOldMediaPaths failed", e)
-            emptySet()
-        }
     }
 
     private data class ProcessedMediaResult(val bytes: ByteArray, val warning: String? = null)
