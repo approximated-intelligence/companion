@@ -51,6 +51,19 @@ class S3BackendImpl(
         check(resp.status.isSuccess()) { "PUT $key failed: ${resp.status} - ${resp.bodyAsText()}" }
     }
 
+    /**
+     * DeleteObject. S3 semantics: deleting a nonexistent key is a success
+     * (204), which matches MediaBackend's "gone" contract directly.
+     */
+    override suspend fun deleteMedia(key: String): Boolean {
+        val ts      = SigV4.now()
+        val headers = SigV4.sign("DELETE", host, bucketPath(key), SigV4.EMPTY_HASH, ts, creds())
+        val resp    = http.delete("$endpoint/$bucket/$key") {
+            headers.forEach { (k, v) -> header(k, v) }
+        }
+        return resp.status.isSuccess() || resp.status == HttpStatusCode.NotFound
+    }
+
     override suspend fun headObject(key: String): Boolean {
         val ts      = SigV4.now()
         val headers = SigV4.sign("HEAD", host, bucketPath(key), SigV4.EMPTY_HASH, ts, creds())
@@ -153,12 +166,14 @@ class S3BackendImpl(
 /**
  * S3-compatible storage interface. Decouples backup engine and media upload
  * from the HTTP implementation. Extends [MediaBackend] so it can be used
- * as a media upload target by PublishWorker.
+ * as a media upload target by PublishWorker (and delete target by
+ * UnpublishWorker).
  */
 interface S3Backend : MediaBackend {
     data class Part(val number: Int, val etag: String)
 
     override suspend fun putObject(key: String, data: ByteArray, contentType: String?)
+    override suspend fun deleteMedia(key: String): Boolean
     suspend fun headObject(key: String): Boolean
     suspend fun createMultipart(key: String): String
     suspend fun uploadPart(key: String, uploadId: String, partNumber: Int, data: ByteArray): String
