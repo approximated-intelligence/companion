@@ -334,7 +334,12 @@ interface BackupFileStatusDao {
     // Unplanned = no header chunk. Every planned file has exactly one chunk
     // with fileOffset = 0, including size-0 files (header-only chunk), so the
     // anti-join yields at most one row per file and NULL means never planned.
-    @Query("SELECT v.* FROM backup_file_status_view v LEFT JOIN backup_chunks c ON c.backupFileId = v.id AND c.fileOffset = 0 WHERE c.id IS NULL ORDER BY v.id ASC")
+    //
+    // Ordered by (mtime, path): pack contents become deterministic and
+    // chronological regardless of SAF/readdir walk order — selective restore
+    // of a date range touches the fewest packs, and re-planning the same
+    // file set yields the same packs on any device.
+    @Query("SELECT v.* FROM backup_file_status_view v LEFT JOIN backup_chunks c ON c.backupFileId = v.id AND c.fileOffset = 0 WHERE c.id IS NULL ORDER BY v.mtime ASC, v.path ASC")
     suspend fun getUnplannedFiles(): List<BackupFileStatusView>
 
     @Query("SELECT MAX(s.packNumber) FROM backup_pack_sealed s")
