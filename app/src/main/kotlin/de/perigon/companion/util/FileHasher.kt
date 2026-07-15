@@ -16,6 +16,12 @@ import javax.inject.Singleton
  * already trust to identify unchanged file content — if mtime or size changed,
  * the file changed and gets a fresh sha256.
  *
+ * mtime is normalized to SECOND granularity for cache keys: writers observe
+ * the same file through APIs of different precision (SAF LAST_MODIFIED in
+ * millis, MediaStore DATE_MODIFIED in seconds), and sub-second disagreement
+ * caused spurious cache misses and duplicate rows. Existing rows carrying a
+ * sub-second remainder miss once and are re-hashed under the normalized key.
+ *
  * Digest computation is shared with util/Hashing.kt (sha256Hex /
  * sha256HexWithSize) — no duplicated hashing loops.
  */
@@ -77,25 +83,36 @@ class FileHasher @Inject constructor(
 
         // Minimum interval between progress callbacks while hashing misses.
         private const val PROGRESS_INTERVAL_MS = 2_000L
+
+        /** Second-granularity mtime for cache keys (see class doc). */
+        private fun normMtime(mtime: Long): Long = mtime - (mtime % 1000)
     }
 
     /** Cache lookup only — no I/O on the source. */
     suspend fun lookup(path: String, mtime: Long, size: Long): String? =
-        dao.lookup(path, mtime, size)
+        dao.lookup(path, normMtime(mtime), size)
 
     /**
      * Batched cache lookup. Returns sha256 for every key that hits the cache;
      * absent keys are misses. Chunked IN-queries, no per-file round-trips.
+     * Caller keys are matched via normalized mtime; the returned map uses the
+     * caller's original keys.
      */
     suspend fun lookupAll(keys: Collection<HashKey>): Map<HashKey, String> {
         if (keys.isEmpty()) return emptyMap()
-        val wanted = keys.toHashSet()
-        val result = HashMap<HashKey, String>(wanted.size)
-        val paths = wanted.map { it.path }.distinct()
+
+        // normalized key → original caller keys (usually 1:1)
+        val byNorm = HashMap<HashKey, MutableList<HashKey>>(keys.size)
+        for (key in keys) {
+            byNorm.getOrPut(key.copy(mtime = normMtime(key.mtime))) { mutableListOf() } += key
+        }
+
+        val result = HashMap<HashKey, String>(keys.size)
+        val paths = byNorm.keys.map { it.path }.distinct()
         for (batch in paths.chunked(SQL_CHUNK)) {
             for (row in dao.lookupByPaths(batch)) {
-                val key = HashKey(row.path, row.mtime, row.size)
-                if (key in wanted) result[key] = row.sha256
+                val normKey = HashKey(row.path, normMtime(row.mtime), row.size)
+                byNorm[normKey]?.forEach { original -> result[original] = row.sha256 }
             }
         }
         return result
@@ -107,11 +124,12 @@ class FileHasher @Inject constructor(
      * per miss. Keys whose source fails to open/read are absent from the
      * result — callers drop those files and retry next scan.
      *
-     * [onProgress] fires on the hashing thread before each miss is read, at
-     * most every 2 seconds (plus a final emission), with (hashed, misses,
-     * current). Cache hits cost no I/O and report no progress; a healthy
-     * steady-state scan should therefore report ~0 misses — a large miss
-     * count on an unchanged tree indicates a broken cache key.
+     * [onProgress] fires on the hashing thread as each miss is read (1-based:
+     * "n of m" means the n-th miss is being hashed), at most every 2 seconds
+     * plus the first and last miss. Cache hits cost no I/O and report no
+     * progress; a healthy steady-state scan should therefore report ~0
+     * misses — a large miss count on an unchanged tree indicates a broken
+     * cache key.
      */
     suspend fun hashAllOrCached(
         keys: List<HashKey>,
@@ -129,7 +147,7 @@ class FileHasher @Inject constructor(
         for ((index, key) in missKeys.withIndex()) {
             val clock = System.currentTimeMillis()
             if (clock - lastEmit >= PROGRESS_INTERVAL_MS || index == 0 || index == missKeys.lastIndex) {
-                onProgress(index, missKeys.size, key)
+                onProgress(index + 1, missKeys.size, key)
                 lastEmit = clock
             }
 
@@ -140,12 +158,15 @@ class FileHasher @Inject constructor(
             }
             result[key] = digest
             fresh += FileContentHashEntity(
-                path = key.path, mtime = key.mtime, size = key.size,
+                path = key.path, mtime = normMtime(key.mtime), size = key.size,
                 sha256 = digest, computedAt = now,
             )
         }
 
-        for (batch in fresh.chunked(SQL_CHUNK)) {
+        // Distinct by primary key: two caller keys differing only in
+        // sub-second mtime normalize to one row.
+        val distinctFresh = fresh.distinctBy { Triple(it.path, it.mtime, it.size) }
+        for (batch in distinctFresh.chunked(SQL_CHUNK)) {
             dao.upsertAll(batch)
         }
         return result
@@ -161,14 +182,14 @@ class FileHasher @Inject constructor(
         size: Long,
         open: () -> InputStream,
     ): String? {
-        dao.lookup(path, mtime, size)?.let { return it }
+        dao.lookup(path, normMtime(mtime), size)?.let { return it }
         val digest = try {
             open().use { stream -> sha256Hex(stream) }
         } catch (_: Exception) {
             return null
         }
         dao.upsert(FileContentHashEntity(
-            path = path, mtime = mtime, size = size,
+            path = path, mtime = normMtime(mtime), size = size,
             sha256 = digest, computedAt = System.currentTimeMillis(),
         ))
         return digest
@@ -190,7 +211,7 @@ class FileHasher @Inject constructor(
             return null
         }
         dao.upsert(FileContentHashEntity(
-            path = path, mtime = mtime, size = actualSize,
+            path = path, mtime = normMtime(mtime), size = actualSize,
             sha256 = hex, computedAt = System.currentTimeMillis(),
         ))
         return hex to actualSize
