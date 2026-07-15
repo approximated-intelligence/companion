@@ -57,6 +57,11 @@ class ConsolidateWorker @AssistedInject constructor(
         const val KEY_FAILED = "failed"
         const val KEY_CURRENT_FILE = "current_file"
 
+        // Hash-phase progress, distinct from transform-phase total/processed
+        // so no field ever changes meaning mid-run.
+        const val KEY_HASHED = "hashed"
+        const val KEY_MISSES = "misses"
+
         fun buildRequest(): OneTimeWorkRequest =
             OneTimeWorkRequestBuilder<ConsolidateWorker>()
                 .addTag(WORK_TAG)
@@ -216,7 +221,10 @@ class ConsolidateWorker @AssistedInject constructor(
             byKey.keys.toList(),
             onProgress = { hashed, misses, key ->
                 val name = key.path.substringAfterLast('/')
-                emitProgress(total = 0, processed = 0, failed = 0, currentFile = name)
+                emitProgress(
+                    total = 0, processed = 0, failed = 0, currentFile = name,
+                    hashed = hashed, misses = misses,
+                )
                 setForeground(foregroundInfo("Hashing $hashed / $misses"))
             },
         ) { key ->
@@ -276,12 +284,21 @@ class ConsolidateWorker @AssistedInject constructor(
         }
     }
 
-    private suspend fun emitProgress(total: Int, processed: Int, failed: Int, currentFile: String) {
+    private suspend fun emitProgress(
+        total: Int,
+        processed: Int,
+        failed: Int,
+        currentFile: String,
+        hashed: Int = 0,
+        misses: Int = 0,
+    ) {
         setProgress(workDataOf(
             KEY_TOTAL to total,
             KEY_PROCESSED to processed,
             KEY_FAILED to failed,
             KEY_CURRENT_FILE to currentFile,
+            KEY_HASHED to hashed,
+            KEY_MISSES to misses,
         ))
     }
 
