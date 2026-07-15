@@ -77,12 +77,17 @@ data class ConsolidateUiState(
     val selectedCount: Int get() = selectedIds.size
     val isDeleting: Boolean get() = deleteProgress != null
 
+    // Every comparator carries a path tiebreak: with degenerate sort keys
+    // (equal or missing mtimes, equal sizes) a stable sort would otherwise
+    // pass DB emission order — i.e. scan/walk order — through to the screen.
     val sortedSafeToDelete: List<SafeToDeleteView> get() {
         val comparator = when (sortField) {
-            SortField.NAME -> compareBy<SafeToDeleteView> { it.path.substringAfterLast('/').lowercase() }
-            SortField.MODIFIED -> compareBy { it.mtime }
-            SortField.SIZE -> compareBy { it.size }
-            SortField.TYPE -> compareBy { it.path.substringAfterLast('.').lowercase() }
+            SortField.NAME -> compareBy<SafeToDeleteView>(
+                { it.path.substringAfterLast('/').lowercase() }, { it.path })
+            SortField.MODIFIED -> compareBy({ it.mtime }, { it.path })
+            SortField.SIZE -> compareBy({ it.size }, { it.path })
+            SortField.TYPE -> compareBy(
+                { it.path.substringAfterLast('.').lowercase() }, { it.path })
         }
         return if (sortDirection == SortDirection.ASC) safeToDelete.sortedWith(comparator)
                else safeToDelete.sortedWith(comparator.reversed())
