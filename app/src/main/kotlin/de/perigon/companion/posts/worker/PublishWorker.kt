@@ -17,6 +17,7 @@ import de.perigon.companion.posts.data.PostMediaDao
 import de.perigon.companion.posts.data.PostMediaEntity
 import de.perigon.companion.posts.data.PostRepository
 import de.perigon.companion.posts.data.toDomain
+import de.perigon.companion.util.network.BlobAddition
 import de.perigon.companion.util.network.GitHubClient
 import de.perigon.companion.util.network.TreeFile
 import de.perigon.companion.util.network.MediaBackend
@@ -124,17 +125,27 @@ class PublishWorker @AssistedInject constructor(
             { it.position },
         ))
 
-        // ---- Phase 1: Process media and collect bytes ----
-        emitProgress(stage = STAGE_PROCESSING_MEDIA, progress = 0, filesTotal = sorted.size)
+        val backendPair  = mediaBackend()
+        val mediaBaseUrl = backendPair?.second
 
-        data class PreparedMedia(
-            val entity:   PostMediaEntity,
-            val bytes:    ByteArray,
+        // ---- Phase 1: process + upload per item; bytes freed each iteration ----
+        // Previously every media file's full bytes were held simultaneously
+        // through all phases — an OOM candidate for multi-video posts. Now
+        // each file is processed, measured, persisted, and shipped (external
+        // PUT or GitHub blob) before the next one is touched; only filenames,
+        // dimensions, and blob shas survive the iteration.
+
+        data class ShippedMedia(
             val filename: String,
             val mimeType: String,
+            val width: Int?,
+            val height: Int?,
+            val blobSha: String?, // GitHub path only
         )
 
-        val prepared      = mutableListOf<PreparedMedia>()
+        emitProgress(stage = STAGE_PROCESSING_MEDIA, progress = 0, filesTotal = sorted.size)
+
+        val shipped       = mutableListOf<ShippedMedia>()
         val mediaErrors   = mutableListOf<String>()
         val mediaWarnings = mutableListOf<String>()
         val uploadErrors  = mutableListOf<String>()
@@ -151,24 +162,62 @@ class PublishWorker @AssistedInject constructor(
                 currentFile = filename,
             )
 
+            val bytes: ByteArray
             try {
                 val result = processMediaWithIntent(media)
-                if (result != null) {
-                    if (result.warning != null) mediaWarnings += "$filename: ${result.warning}"
-                    val placement = persistToPostMedia(media, result.bytes, post.slug, index)
-                    if (placement != null) {
-                        postMediaDao.upsert(media.copy(mediaStoreUri = placement.uri))
-                    }
-                    prepared += PreparedMedia(media, result.bytes, filename, media.mimeType)
-                } else {
+                if (result == null) {
                     mediaErrors += "$filename: source file no longer accessible. Open the post and re-add this media."
+                    continue
+                }
+                if (result.warning != null) mediaWarnings += "$filename: ${result.warning}"
+                bytes = result.bytes
+
+                val placement = persistToPostMedia(media, bytes, post.slug, index)
+                if (placement != null) {
+                    postMediaDao.upsert(media.copy(mediaStoreUri = placement.uri))
                 }
             } catch (e: Exception) {
                 mediaErrors += "$filename: transform failed - ${e.message}"
+                continue
             }
+
+            val (w, h) = if (media.mimeType.startsWith("video")) {
+                videoDimensions(bytes) ?: (null to null)
+            } else {
+                imageDimensions(bytes) ?: (null to null)
+            }
+
+            var blobSha: String? = null
+            if (bytes.isNotEmpty()) {
+                emitProgress(
+                    stage       = STAGE_UPLOADING_MEDIA,
+                    progress    = index * 80 / sorted.size.coerceAtLeast(1),
+                    fileIndex   = index + 1,
+                    filesTotal  = sorted.size,
+                    currentFile = filename,
+                )
+                val key         = "static/${post.slug}/$filename"
+                val contentType = if (media.mimeType.startsWith("video")) "video/mp4" else "image/jpeg"
+                if (backendPair != null) {
+                    try {
+                        backendPair.first.putObject(key, bytes, contentType)
+                    } catch (e: Exception) {
+                        uploadErrors += "$filename: upload failed - ${e.message}"
+                    }
+                } else {
+                    try {
+                        blobSha = github.createBlob(bytes)
+                    } catch (e: Exception) {
+                        uploadErrors += "$filename: blob upload failed - ${e.message}"
+                    }
+                }
+            }
+
+            shipped += ShippedMedia(filename, media.mimeType, w, h, blobSha)
+            // bytes goes out of scope here — memory freed before next item
         }
 
-        if (prepared.isEmpty() && sorted.isNotEmpty()) {
+        if (shipped.isEmpty() && sorted.isNotEmpty()) {
             postDao.updatePublishState(postId, PostPublishState.NEEDS_FIXING)
             return fail(
                 postId,
@@ -178,40 +227,9 @@ class PublishWorker @AssistedInject constructor(
             )
         }
 
-        // ---- Phase 2: Upload media to external backend if configured ----
-        val backendPair  = mediaBackend()
-        val mediaBaseUrl = backendPair?.second
-
-        if (backendPair != null) {
-            val backend = backendPair.first
-            emitProgress(stage = STAGE_UPLOADING_MEDIA, progress = 80)
-            for ((index, pm) in prepared.withIndex()) {
-                if (pm.bytes.isEmpty()) continue
-                val key         = "static/${post.slug}/${pm.filename}"
-                val contentType = if (pm.mimeType.startsWith("video")) "video/mp4" else "image/jpeg"
-                try {
-                    backend.putObject(key, pm.bytes, contentType)
-                } catch (e: Exception) {
-                    uploadErrors += "${pm.filename}: upload failed - ${e.message}"
-                }
-                emitProgress(
-                    stage       = STAGE_UPLOADING_MEDIA,
-                    progress    = 80 + (index + 1) * 5 / prepared.size.coerceAtLeast(1),
-                    fileIndex   = index + 1,
-                    filesTotal  = prepared.size,
-                    currentFile = pm.filename,
-                )
-            }
-        }
-
-        // ---- Phase 3: Build post markdown ----
-        val mediaEntries = prepared.map { pm ->
-            val (w, h) = if (pm.mimeType.startsWith("video")) {
-                videoDimensions(pm.bytes) ?: (null to null)
-            } else {
-                imageDimensions(pm.bytes) ?: (null to null)
-            }
-            MediaEntry(filename = pm.filename, mimeType = pm.mimeType, width = w, height = h)
+        // ---- Phase 2: Build post markdown ----
+        val mediaEntries = shipped.map { sm ->
+            MediaEntry(filename = sm.filename, mimeType = sm.mimeType, width = sm.width, height = sm.height)
         }
 
         val tags       = post.tags.split(",").map { it.trim() }.filter { it.isNotBlank() }
@@ -220,7 +238,7 @@ class PublishWorker @AssistedInject constructor(
         val markdown   = JekyllPostBuilder.build(domainPost, mediaEntries, siteUrl, mediaBaseUrl)
         val postPath   = "_posts/${post.localDate}-${post.slug}.md"
 
-        // ---- Phase 4: Commit to GitHub ----
+        // ---- Phase 3: Commit to GitHub ----
         emitProgress(stage = STAGE_COMMITTING, progress = 85)
 
         try {
@@ -234,30 +252,17 @@ class PublishWorker @AssistedInject constructor(
                     sha     = existingSha,
                 )
             } else {
-                // Media goes to GitHub — delta tree commit. Stale media
-                // under static/slug/ is pruned inside the same commit,
-                // from the same tree snapshot (single tree fetch).
-                val treeFiles = mutableListOf<TreeFile>()
-
-                for (pm in prepared) {
-                    if (pm.bytes.isNotEmpty()) {
-                        treeFiles += TreeFile(
-                            path    = "static/${post.slug}/${pm.filename}",
-                            content = pm.bytes,
-                        )
-                    }
-                }
-
-                treeFiles += TreeFile(
-                    path    = postPath,
-                    content = markdown.toByteArray(Charsets.UTF_8),
-                )
-
+                // Media blobs are already on GitHub — one delta commit wires
+                // them in, adds the markdown, and prunes stale media under
+                // static/slug/ from the same tree snapshot.
                 github.commitTree(
                     message       = "Publish: ${post.title}",
-                    additions     = treeFiles,
+                    additions     = listOf(TreeFile(postPath, markdown.toByteArray(Charsets.UTF_8))),
+                    blobAdditions = shipped.mapNotNull { sm ->
+                        sm.blobSha?.let { BlobAddition("static/${post.slug}/${sm.filename}", it) }
+                    },
                     stalePrefix   = "static/${post.slug}/",
-                    keepFilenames = prepared.map { it.filename }.toSet(),
+                    keepFilenames = shipped.map { it.filename }.toSet(),
                 )
             }
         } catch (e: Exception) {
