@@ -15,12 +15,15 @@ import de.perigon.companion.util.media.VideoProbe
 import de.perigon.companion.util.media.VideoTransformParams
 import de.perigon.companion.util.media.VideoTransformer
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.io.File
@@ -146,9 +149,32 @@ class TransformQueue @Inject constructor(
         dao.delete(jobId)
     }
 
-    suspend fun clearCompleted() = dao.deleteByStatus(TransformJobStatus.DONE)
-    suspend fun clearFailed()    = dao.deleteByStatus(TransformJobStatus.FAILED)
-    suspend fun clearFinished()  = dao.deleteFinished()
+    // Bulk clears delete the rows' output files first — DAO-only deletion
+    // leaked finished jobs' temp files in cacheDir indefinitely.
+
+    suspend fun clearCompleted() {
+        deleteOutputFiles { it.status == TransformJobStatus.DONE }
+        dao.deleteByStatus(TransformJobStatus.DONE)
+    }
+
+    suspend fun clearFailed() {
+        deleteOutputFiles { it.status == TransformJobStatus.FAILED }
+        dao.deleteByStatus(TransformJobStatus.FAILED)
+    }
+
+    suspend fun clearFinished() {
+        deleteOutputFiles {
+            it.status == TransformJobStatus.DONE || it.status == TransformJobStatus.FAILED
+        }
+        dao.deleteFinished()
+    }
+
+    private suspend fun deleteOutputFiles(predicate: (TransformJobEntity) -> Boolean) {
+        jobs.first()
+            .filter(predicate)
+            .mapNotNull { it.outputPath }
+            .forEach { File(it).delete() }
+    }
 
     fun observeJob(jobId: Long): Flow<TransformJobEntity?> = dao.observeById(jobId)
 
@@ -158,14 +184,28 @@ class TransformQueue @Inject constructor(
 
     private suspend fun resetInterruptedJobs() = dao.resetRunningToPending()
 
+    /**
+     * Suspends on wakeSignal when idle (no polling). Guarded end-to-end:
+     * an exception outside processJob's own handling (DB error in
+     * nextPending, status update, even the channel) previously killed the
+     * loop silently, leaving all future jobs PENDING forever and hanging
+     * every worker waiting on them. Now: log, back off, keep serving.
+     */
     private suspend fun processLoop() {
         while (true) {
-            val next = dao.nextPending()
-            if (next == null) {
-                wakeSignal.receive()
-                continue
+            try {
+                val next = dao.nextPending()
+                if (next == null) {
+                    wakeSignal.receive()
+                    continue
+                }
+                processJob(next)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "process loop error; retrying", e)
+                delay(1_000)
             }
-            processJob(next)
         }
     }
 
