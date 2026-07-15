@@ -12,6 +12,9 @@ private const val TAG = "GitHubClient"
 
 data class TreeFile(val path: String, val content: ByteArray)
 
+/** A blob already uploaded via [GitHubClient.createBlob], referenced by sha. */
+data class BlobAddition(val path: String, val sha: String)
+
 /**
  * Minimal GitHub Contents API + Git Trees API client.
  *
@@ -36,23 +39,22 @@ class GitHubClient(
      * entries) and anything past a truncated tree listing are untouched by
      * construction.
      *
-     * [stalePrefix]: additionally delete every existing blob under this
-     * prefix whose filename is not in [keepFilenames] (stale media pruning).
+     * [additions] carry content (blobs are created here); [blobAdditions]
+     * reference blobs already created via [createBlob].
      *
-     * Deletions are resolved against the current tree; paths not present are
-     * silently skipped (GitHub 422s on deleting unknown paths). If nothing
-     * remains to add or delete, no commit is created and the current HEAD
-     * sha is returned.
+     * Deletion inputs, by strictness:
+     *  - [deletions]: explicit paths. Paths absent from the repo are skipped
+     *    (tolerant no-op), but ABSENCE MUST BE PROVEN: if GitHub truncates
+     *    the tree listing, each unresolved path is checked individually via
+     *    the Contents API rather than silently dropped — a missed explicit
+     *    deletion would leave content live while the caller believes it gone.
+     *  - [deleteWhere]: predicate over existing blob paths. Best-effort by
+     *    nature (can only match what the listing shows); truncation is logged.
+     *  - [stalePrefix]/[keepFilenames]: delete existing blobs under the prefix
+     *    whose filename is not kept. Best-effort, same as deleteWhere.
      *
-     * Flow:
-     *   1. GET ref/heads/:branch → HEAD sha
-     *   2. GET commits/:sha → base tree sha
-     *   3. GET trees/:sha?recursive=1 → tree listing (only if deletions or
-     *      stalePrefix require resolving paths)
-     *   4. POST blobs for each addition
-     *   5. POST trees with base_tree + delta entries (sha null = delete)
-     *   6. POST commits (parent = old HEAD)
-     *   7. PATCH ref/heads/:branch
+     * If nothing remains to add or delete, no commit is created and the
+     * current HEAD sha is returned.
      *
      * Returns the new commit sha (or HEAD on no-op).
      */
@@ -60,27 +62,28 @@ class GitHubClient(
         branch: String = "main",
         message: String,
         additions: List<TreeFile> = emptyList(),
+        blobAdditions: List<BlobAddition> = emptyList(),
         deletions: Set<String> = emptySet(),
+        deleteWhere: ((String) -> Boolean)? = null,
         stalePrefix: String? = null,
         keepFilenames: Set<String> = emptySet(),
     ): String {
-        require(additions.isNotEmpty() || deletions.isNotEmpty() || stalePrefix != null) {
-            "commitTree requires at least one addition, deletion, or a stalePrefix"
+        require(additions.isNotEmpty() || blobAdditions.isNotEmpty() ||
+                deletions.isNotEmpty() || deleteWhere != null || stalePrefix != null) {
+            "commitTree requires at least one addition, deletion, predicate, or a stalePrefix"
         }
 
-        // 1. + 2. Resolve HEAD and its tree
+        // Resolve HEAD and its tree
         val headSha = getRefSha(branch)
         val baseTreeSha = getCommitTreeSha(headSha)
 
-        // 3. Fetch the tree listing only when deletions must be resolved
-        val additionPaths = additions.map { it.path }.toSet()
+        // Fetch the tree listing only when deletions must be resolved
+        val additionPaths = (additions.map { it.path } + blobAdditions.map { it.path }).toSet()
         val resolvedDeletions: Set<String> =
-            if (deletions.isNotEmpty() || stalePrefix != null) {
+            if (deletions.isNotEmpty() || deleteWhere != null || stalePrefix != null) {
                 val (entries, truncated) = getFullTree(baseTreeSha)
                 if (truncated) {
-                    // Additions are unaffected; deletions can only be missed,
-                    // never wrongly applied — log and proceed.
-                    Log.w(TAG, "tree listing truncated by GitHub; stale pruning may be incomplete")
+                    Log.w(TAG, "tree listing truncated by GitHub; predicate/prefix pruning may be incomplete")
                 }
                 val existingBlobs = entries
                     .asSequence()
@@ -95,34 +98,61 @@ class GitHubClient(
                         .toSet()
                 } else emptySet()
 
-                (deletions + stale)
-                    .filter { it in existingBlobs }   // unknown path → 422; skip
+                val predicated = if (deleteWhere != null) {
+                    existingBlobs.filter(deleteWhere).toSet()
+                } else emptySet()
+
+                // Explicit deletions: resolve against the listing; when the
+                // listing is truncated, prove presence/absence per path.
+                val explicit = deletions.filter { path ->
+                    when {
+                        path in existingBlobs -> true
+                        !truncated            -> false          // provably absent
+                        else                  -> getFileSha(path) != null // truncated: ask directly
+                    }
+                }.toSet()
+
+                (explicit + predicated + stale)
                     .filter { it !in additionPaths }  // re-added in this commit → keep
                     .toSet()
             } else emptySet()
 
-        if (additions.isEmpty() && resolvedDeletions.isEmpty()) {
+        if (additions.isEmpty() && blobAdditions.isEmpty() && resolvedDeletions.isEmpty()) {
             return headSha // nothing to do; no empty commit
         }
 
-        // 4. Create blobs for additions
-        val additionEntries = additions.map { file ->
-            TreeEntry(
-                path = file.path,
-                mode = "100644",
-                type = "blob",
-                sha = createBlob(file.content),
-            )
-        }
+        // Create blobs for content additions; merge with pre-created blobs
+        val additionEntries =
+            additions.map { file ->
+                TreeEntry(path = file.path, mode = "100644", type = "blob", sha = createBlob(file.content))
+            } + blobAdditions.map { blob ->
+                TreeEntry(path = blob.path, mode = "100644", type = "blob", sha = blob.sha)
+            }
 
-        // 5. Delta tree: base_tree + additions + deletions (sha = null)
+        // Delta tree: base_tree + additions + deletions (sha = null)
         val newTreeSha = createDeltaTree(baseTreeSha, additionEntries, resolvedDeletions)
 
-        // 6. + 7. Commit and advance the branch
+        // Commit and advance the branch
         val newCommitSha = createCommit(message, newTreeSha, parentSha = headSha)
         updateRef(branch, newCommitSha)
 
         return newCommitSha
+    }
+
+    /**
+     * Upload one blob, returning its sha for later [commitTree] via
+     * [BlobAddition]. Lets callers stream large files without holding all
+     * content in memory until commit time.
+     */
+    suspend fun createBlob(content: ByteArray): String {
+        val body = buildJsonObject {
+            put("content", Base64.encodeToString(content, Base64.NO_WRAP))
+            put("encoding", "base64")
+        }.toString()
+
+        val response = post("$base/repos/$owner/$repo/git/blobs", body)
+        val json = Json.parseToJsonElement(response).jsonObject
+        return json["sha"]!!.jsonPrimitive.content
     }
 
     // ---- Git Trees API internals ----
@@ -154,17 +184,6 @@ class GitHubClient(
             )
         }
         return entries to truncated
-    }
-
-    private suspend fun createBlob(content: ByteArray): String {
-        val body = buildJsonObject {
-            put("content", Base64.encodeToString(content, Base64.NO_WRAP))
-            put("encoding", "base64")
-        }.toString()
-
-        val response = post("$base/repos/$owner/$repo/git/blobs", body)
-        val json = Json.parseToJsonElement(response).jsonObject
-        return json["sha"]!!.jsonPrimitive.content
     }
 
     private suspend fun createDeltaTree(
@@ -334,30 +353,30 @@ class GitHubClient(
         }
     }
 
+    /**
+     * Recursive blob listing for a branch. Cached process-wide by the
+     * branch's resolved commit sha: repeated syncs against an unchanged
+     * branch cost one small ref lookup instead of a full tree transfer.
+     */
     suspend fun getTree(branch: String = "main"): List<FileEntry> {
-        val response = http.get("$base/repos/$owner/$repo/git/trees/$branch?recursive=1") {
-            header(HttpHeaders.Authorization, "Bearer $token")
-            header(HttpHeaders.Accept, "application/vnd.github+json")
-            header("X-GitHub-Api-Version", "2022-11-28")
+        val headSha = try {
+            getRefSha(branch)
+        } catch (_: Exception) {
+            return emptyList() // branch/repo missing — match previous 404 behavior
         }
-        if (response.status == HttpStatusCode.NotFound) return emptyList()
-        check(response.status.isSuccess()) {
-            "GitHub GET tree failed: ${response.status}"
-        }
-        val json = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        if (json["truncated"]?.jsonPrimitive?.booleanOrNull == true) {
+
+        val cacheKey = "$owner/$repo/$branch@$headSha"
+        treeCache?.let { (key, entries) -> if (key == cacheKey) return entries }
+
+        val (entries, truncated) = getFullTree(headSha.let { getCommitTreeSha(it) })
+        if (truncated) {
             Log.w(TAG, "getTree: listing truncated by GitHub; results incomplete")
         }
-        val tree = json["tree"]?.jsonArray ?: return emptyList()
-        return tree.mapNotNull { node ->
-            val obj  = node.jsonObject
-            val type = obj["type"]?.jsonPrimitive?.content
-            if (type != "blob") return@mapNotNull null
-            FileEntry(
-                path = obj["path"]?.jsonPrimitive?.content ?: return@mapNotNull null,
-                sha  = obj["sha"]?.jsonPrimitive?.content  ?: return@mapNotNull null,
-            )
-        }
+        val files = entries
+            .filter { it.type == "blob" }
+            .map { FileEntry(it.path, it.sha) }
+        treeCache = cacheKey to files
+        return files
     }
 
     suspend fun deleteFile(path: String, sha: String, message: String) {
@@ -408,4 +427,10 @@ class GitHubClient(
     }
 
     data class FileEntry(val path: String, val sha: String)
+
+    companion object {
+        // Process-wide single-slot tree cache: (owner/repo/branch@sha) → blobs.
+        @Volatile
+        private var treeCache: Pair<String, List<FileEntry>>? = null
+    }
 }
