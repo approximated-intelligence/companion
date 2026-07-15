@@ -8,19 +8,17 @@ import io.ktor.http.*
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Plain HTTP PUT media backend with Basic or Digest auth.
- * Implements [MediaBackend].
+ * Plain HTTP media backend with Basic or Digest auth.
+ * Implements [MediaBackend] (PUT + DELETE).
  *
  * Digest flow per request:
- *   1. PUT → expect 401 with WWW-Authenticate: Digest
+ *   1. Request → expect 401 with WWW-Authenticate: Digest
  *   2. Parse challenge, compute response
- *   3. Retry PUT with Authorization header
+ *   3. Retry with Authorization header
  *   Caches the last challenge (with its own nonce counter) to avoid extra
  *   round-trips. Challenge and counter travel together in one immutable
  *   session object behind a single volatile reference, so concurrent
- *   putObject calls can never pair a counter with the wrong nonce.
- *
- * Basic flow: single PUT with Authorization: Basic header.
+ *   calls can never pair a counter with the wrong nonce.
  */
 class HttpMediaBackend(
     private val http:     HttpClient,
@@ -39,68 +37,83 @@ class HttpMediaBackend(
     private var session: DigestSession? = null
 
     override suspend fun putObject(key: String, data: ByteArray, contentType: String?) {
-        when (authType) {
-            "basic"  -> putBasic(key, data, contentType)
-            else     -> putDigest(key, data, contentType)
-        }
-    }
-
-    private suspend fun putBasic(key: String, data: ByteArray, contentType: String?) {
-        val url = "${endpoint.trimEnd('/')}/${key.trimStart('/')}"
-        val credentials = Base64.encodeToString(
-            "$user:$password".toByteArray(Charsets.UTF_8), Base64.NO_WRAP,
-        )
-        val resp = doPut(url, data, contentType, "Basic $credentials")
+        val resp = requestWithAuth(HttpMethod.Put, key, data, contentType)
         check(resp.status.isSuccess()) { "PUT $key failed: ${resp.status} - ${resp.bodyAsText()}" }
     }
 
-    private suspend fun putDigest(key: String, data: ByteArray, contentType: String?) {
-        val url = "${endpoint.trimEnd('/')}/${key.trimStart('/')}"
+    override suspend fun deleteMedia(key: String): Boolean {
+        val resp = requestWithAuth(HttpMethod.Delete, key, data = null, contentType = null)
+        // Already gone counts as deleted.
+        return resp.status.isSuccess() || resp.status == HttpStatusCode.NotFound
+    }
+
+    // ---- Auth orchestration ----
+
+    private suspend fun requestWithAuth(
+        method: HttpMethod,
+        key: String,
+        data: ByteArray?,
+        contentType: String?,
+    ): HttpResponse = when (authType) {
+        "basic" -> requestBasic(method, key, data, contentType)
+        else    -> requestDigest(method, key, data, contentType)
+    }
+
+    private suspend fun requestBasic(
+        method: HttpMethod,
+        key: String,
+        data: ByteArray?,
+        contentType: String?,
+    ): HttpResponse {
+        val credentials = Base64.encodeToString(
+            "$user:$password".toByteArray(Charsets.UTF_8), Base64.NO_WRAP,
+        )
+        return doRequest(method, key, data, contentType, "Basic $credentials")
+    }
+
+    private suspend fun requestDigest(
+        method: HttpMethod,
+        key: String,
+        data: ByteArray?,
+        contentType: String?,
+    ): HttpResponse {
         val uri = "/${key.trimStart('/')}"
         val creds = DigestAuth.Credentials(user, password)
 
         // Try with cached session first to avoid a round-trip
         val cached = session
         if (cached != null) {
-            val authHeader = DigestAuth.authorize("PUT", uri, cached.challenge, creds, nc = cached.nextNc())
-            val resp = doPut(url, data, contentType, authHeader)
-            if (resp.status != HttpStatusCode.Unauthorized) {
-                check(resp.status.isSuccess()) { "PUT $key failed: ${resp.status} - ${resp.bodyAsText()}" }
-                return
-            }
+            val authHeader = DigestAuth.authorize(method.value, uri, cached.challenge, creds, nc = cached.nextNc())
+            val resp = doRequest(method, key, data, contentType, authHeader)
+            if (resp.status != HttpStatusCode.Unauthorized) return resp
             // Nonce expired — fall through to fresh challenge
         }
 
-        // Initial request to get challenge
-        val initialResp = doPut(url, data, contentType, authHeader = null)
-        if (initialResp.status.isSuccess()) return // Server didn't require auth
-
-        check(initialResp.status == HttpStatusCode.Unauthorized) {
-            "PUT $key failed: expected 401, got ${initialResp.status} - ${initialResp.bodyAsText()}"
-        }
+        val initialResp = doRequest(method, key, data, contentType, authHeader = null)
+        if (initialResp.status != HttpStatusCode.Unauthorized) return initialResp
 
         val wwwAuth = initialResp.headers["WWW-Authenticate"]
-            ?: error("PUT $key: 401 without WWW-Authenticate header")
+            ?: error("${method.value} $key: 401 without WWW-Authenticate header")
         val fresh = DigestSession(DigestAuth.parseChallenge(wwwAuth))
         session = fresh
 
-        val authHeader = DigestAuth.authorize("PUT", uri, fresh.challenge, creds, nc = fresh.nextNc())
-        val retryResp = doPut(url, data, contentType, authHeader)
-        check(retryResp.status.isSuccess()) {
-            "PUT $key failed after digest auth: ${retryResp.status} - ${retryResp.bodyAsText()}"
-        }
+        val authHeader = DigestAuth.authorize(method.value, uri, fresh.challenge, creds, nc = fresh.nextNc())
+        return doRequest(method, key, data, contentType, authHeader)
     }
 
-    private suspend fun doPut(
-        url: String,
-        data: ByteArray,
+    private suspend fun doRequest(
+        method: HttpMethod,
+        key: String,
+        data: ByteArray?,
         contentType: String?,
         authHeader: String?,
     ): HttpResponse {
-        return http.put(url) {
+        val url = "${endpoint.trimEnd('/')}/${key.trimStart('/')}"
+        return http.request(url) {
+            this.method = method
             if (authHeader != null) header(HttpHeaders.Authorization, authHeader)
             if (contentType != null) header(HttpHeaders.ContentType, contentType)
-            setBody(data)
+            if (data != null) setBody(data)
         }
     }
 }
