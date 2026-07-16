@@ -3,10 +3,15 @@ package de.perigon.companion.posts.data
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.core.content.FileProvider
-import androidx.documentfile.provider.DocumentFile
 import de.perigon.companion.core.prefs.AppPrefs
+import de.perigon.companion.util.saf.findChildByName
+import de.perigon.companion.util.saf.findFile
 import de.perigon.companion.util.saf.navigateOrCreate
+import de.perigon.companion.util.saf.queryChildren
+import de.perigon.companion.util.saf.writeFile
+import de.perigon.companion.util.saf.writeFileFromStream
 import de.perigon.companion.util.sha256Hex
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -14,9 +19,6 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -30,6 +32,15 @@ data class ResolvedMedia(
 /**
  * Manages PostMedia files stored under DCIM/PostMedia/ via the app-wide DCIM SAF grant.
  * Falls back to app-private storage only when no DCIM grant exists (legacy/migration).
+ *
+ * Naming: "<processedHash>.<ext>" — the sha256 of the processed bytes, exactly
+ * mirroring the server key. Deterministic (republish overwrites instead of
+ * accumulating), content-addressed (identical processed content dedups across
+ * posts), and resolvable by exact name. Pulled files already used this
+ * convention; placed files now match. Legacy "POST_<ts>_<slug>_<pos>" files
+ * are orphans — delete them manually when convenient.
+ *
+ * The folder carries a .nomedia so processed copies never appear in galleries.
  */
 @Singleton
 class PostMediaFileStore @Inject constructor(
@@ -39,7 +50,11 @@ class PostMediaFileStore @Inject constructor(
     companion object {
         private const val SUBFOLDER = "PostMedia"
         private const val LEGACY_DIR_NAME = "PostMedia"
+        private const val NOMEDIA = ".nomedia"
     }
+
+    @Volatile
+    private var noMediaEnsured = false
 
     fun rootLabel(): String {
         val dcimLabel = appPrefs.dcimTreeLabel()
@@ -78,9 +93,45 @@ class PostMediaFileStore @Inject constructor(
 
     private fun dcimTreeUri(): Uri? = appPrefs.dcimTreeUri()?.let { Uri.parse(it) }
 
-    private fun postMediaFolder(): DocumentFile? {
-        val treeUri = dcimTreeUri() ?: return null
-        return navigateOrCreate(ctx, treeUri, listOf(SUBFOLDER))
+    /**
+     * Document id of the (created-if-needed) PostMedia folder, plus one-time
+     * .nomedia provisioning. Cursor-based lookups throughout — no per-file
+     * DocumentFile IPC.
+     */
+    private fun postMediaFolderId(treeUri: Uri): String? {
+        val rootId = try {
+            DocumentsContract.getTreeDocumentId(treeUri)
+        } catch (_: Exception) {
+            return null
+        }
+        val folderId = findChildByName(ctx, treeUri, rootId, SUBFOLDER)?.documentId
+            ?: try {
+                navigateOrCreate(ctx, treeUri, listOf(SUBFOLDER))
+                findChildByName(ctx, treeUri, rootId, SUBFOLDER)?.documentId
+            } catch (_: Exception) {
+                null
+            }
+            ?: return null
+
+        if (!noMediaEnsured) {
+            ensureNoMedia(treeUri, folderId)
+            noMediaEnsured = true
+        }
+        return folderId
+    }
+
+    /**
+     * Keep the folder gallery-hidden; the .nomedia is size 0 and therefore
+     * a valid backup candidate — a restored PostMedia stays hidden too.
+     * Self-heals if deleted (checked once per process).
+     */
+    private fun ensureNoMedia(treeUri: Uri, folderId: String) {
+        try {
+            if (findChildByName(ctx, treeUri, folderId, NOMEDIA) != null) return
+            writeFile(ctx, treeUri, listOf(SUBFOLDER), NOMEDIA, "application/octet-stream", ByteArray(0))
+        } catch (_: Exception) {
+            // best effort — worst case the gallery shows PostMedia files
+        }
     }
 
     private fun legacyDir(): File {
@@ -108,6 +159,9 @@ class PostMediaFileStore @Inject constructor(
 
     /**
      * Resolve the best available URI for display and report source.
+     * Tries the stored PostMedia copy, then the original source, then a
+     * hash-named PostMedia lookup (processedHash first, contentHash for
+     * legacy pulled files).
      */
     fun resolveDisplayMedia(entity: PostMediaEntity): ResolvedMedia {
         if (entity.mediaStoreUri.isNotBlank()) {
@@ -124,6 +178,11 @@ class PostMediaFileStore @Inject constructor(
                 }
             } catch (_: Exception) {}
         }
+        entity.processedHash?.let { hash ->
+            resolveUri(hash, entity.mimeType)?.let {
+                return ResolvedMedia(it, MediaSourceStatus.POST_MEDIA)
+            }
+        }
         resolveUri(entity.contentHash, entity.mimeType)?.let {
             return ResolvedMedia(it, MediaSourceStatus.POST_MEDIA)
         }
@@ -135,28 +194,19 @@ class PostMediaFileStore @Inject constructor(
 
     // ---- Write operations ----
 
-    suspend fun placeImageResult(
-        tempFile: File,
-        slug: String,
-        position: Int,
-    ): PostMediaPlacement? = withContext(Dispatchers.IO) {
-        val hash = FileInputStream(tempFile).use { sha256Hex(it) }
-        val displayName = buildDisplayName(slug, position, "jpg")
-        val uri = writeFile(displayName, tempFile)
-        tempFile.delete()
-        if (uri != null) PostMediaPlacement(hash, uri) else null
+    suspend fun placeImageResult(tempFile: File): PostMediaPlacement? = withContext(Dispatchers.IO) {
+        placeResult(tempFile, "jpg")
     }
 
-    suspend fun placeVideoResult(
-        tempFile: File,
-        slug: String,
-        position: Int,
-    ): PostMediaPlacement? = withContext(Dispatchers.IO) {
+    suspend fun placeVideoResult(tempFile: File): PostMediaPlacement? = withContext(Dispatchers.IO) {
+        placeResult(tempFile, "mp4")
+    }
+
+    private fun placeResult(tempFile: File, ext: String): PostMediaPlacement? {
         val hash = FileInputStream(tempFile).use { sha256Hex(it) }
-        val displayName = buildDisplayName(slug, position, "mp4")
-        val uri = writeFile(displayName, tempFile)
+        val uri = writeFile("$hash.$ext", tempFile)
         tempFile.delete()
-        if (uri != null) PostMediaPlacement(hash, uri) else null
+        return if (uri != null) PostMediaPlacement(hash, uri) else null
     }
 
     fun writeFromBytes(baseName: String, ext: String, bytes: ByteArray): String? {
@@ -171,9 +221,9 @@ class PostMediaFileStore @Inject constructor(
     }
 
     private fun writeFile(displayName: String, source: File): String? {
-        val folder = postMediaFolder()
-        return if (folder != null) {
-            writeToSafFolder(folder, displayName, source)
+        val treeUri = dcimTreeUri()
+        return if (treeUri != null && postMediaFolderId(treeUri) != null) {
+            writeToSafFolder(treeUri, displayName, source)
         } else {
             writeToLegacyDir(displayName, source)
         }
@@ -188,25 +238,31 @@ class PostMediaFileStore @Inject constructor(
         return Uri.fromFile(outFile).toString()
     }
 
-    private fun writeToSafFolder(folder: DocumentFile, displayName: String, source: File): String? {
+    private fun writeToSafFolder(treeUri: Uri, displayName: String, source: File): String? {
         val mimeType = if (displayName.endsWith(".mp4")) "video/mp4" else "image/jpeg"
-        folder.findFile(displayName)?.delete()
-        val doc = folder.createFile(mimeType, displayName.substringBeforeLast('.')) ?: return null
-        ctx.contentResolver.openOutputStream(doc.uri)?.use { output ->
-            source.inputStream().use { input -> input.copyTo(output) }
+        return try {
+            source.inputStream().use { input ->
+                writeFileFromStream(ctx, treeUri, listOf(SUBFOLDER), displayName, mimeType, input)
+            }.toString()
+        } catch (_: Exception) {
+            null
         }
-        return doc.uri.toString()
     }
 
     // ---- Read / resolve ----
 
-    fun resolveUri(contentHash: String, mimeType: String): Uri? {
+    /**
+     * Exact-name lookup: files are "<hash>.<ext>" — one cursor query.
+     * Legacy app-private locations checked as before.
+     */
+    fun resolveUri(hash: String, mimeType: String): Uri? {
+        if (hash.isBlank()) return null
         val ext = if (mimeType.startsWith("video")) "mp4" else "jpg"
-        // SAF PostMedia folder
-        findInSafPostMedia(contentHash)?.let { return it }
-        // Legacy app-private dirs
-        findInLegacyDir(contentHash, ext)?.let { return it }
-        val legacy = File(legacyMediaDir(), "$contentHash.$ext")
+        dcimTreeUri()?.let { treeUri ->
+            findFile(ctx, treeUri, listOf(SUBFOLDER), "$hash.$ext")?.let { return it.uri }
+        }
+        findInLegacyDir(hash, ext)?.let { return it }
+        val legacy = File(legacyMediaDir(), "$hash.$ext")
         if (legacy.exists()) return Uri.fromFile(legacy)
         return null
     }
@@ -223,42 +279,37 @@ class PostMediaFileStore @Inject constructor(
     }
 
     fun listFiles(): List<PostMediaFileInfo> {
-        val folder = postMediaFolder()
-        return if (folder != null) {
-            listSafPostMedia(folder)
+        val treeUri = dcimTreeUri()
+        val folderId = treeUri?.let { postMediaFolderId(it) }
+        return if (treeUri != null && folderId != null) {
+            listSafPostMedia(treeUri, folderId)
         } else {
             listLegacyDir()
         }
     }
 
-    // ---- SAF PostMedia operations ----
+    // ---- SAF PostMedia operations (cursor-based, one query per listing) ----
 
-    private fun findInSafPostMedia(contentHash: String): Uri? {
-        val folder = postMediaFolder() ?: return null
-        val match = folder.listFiles().firstOrNull { it.name?.contains(contentHash) == true }
-        return match?.uri
-    }
-
-    private fun listSafPostMedia(folder: DocumentFile): List<PostMediaFileInfo> {
-        return folder.listFiles().mapNotNull { file ->
-            if (file.isDirectory) return@mapNotNull null
-            val name = file.name ?: return@mapNotNull null
-            PostMediaFileInfo(
-                path = name,
-                uri = file.uri.toString(),
-                mtime = file.lastModified(),
-                size = file.length(),
-            )
-        }
+    private fun listSafPostMedia(treeUri: Uri, folderId: String): List<PostMediaFileInfo> {
+        return queryChildren(ctx, treeUri, folderId)
+            .filter { !it.isDirectory }
+            .map { child ->
+                PostMediaFileInfo(
+                    path = child.name,
+                    uri = DocumentsContract.buildDocumentUriUsingTree(treeUri, child.documentId).toString(),
+                    mtime = child.mtime,
+                    size = child.size ?: 0L,
+                )
+            }
     }
 
     // ---- Legacy dir operations ----
 
-    private fun findInLegacyDir(contentHash: String, ext: String): Uri? {
+    private fun findInLegacyDir(hash: String, ext: String): Uri? {
         val dir = legacyDir()
-        val match = dir.listFiles()?.firstOrNull { it.name.contains(contentHash) }
+        val match = dir.listFiles()?.firstOrNull { it.name.contains(hash) }
         if (match != null) return Uri.fromFile(match)
-        val byHash = File(dir, "$contentHash.$ext")
+        val byHash = File(dir, "$hash.$ext")
         if (byHash.exists()) return Uri.fromFile(byHash)
         return null
     }
@@ -274,18 +325,10 @@ class PostMediaFileStore @Inject constructor(
             )
         } ?: emptyList()
     }
-
-    // ---- Naming ----
-
-    private fun buildDisplayName(slug: String, position: Int, ext: String): String {
-        val ts = SimpleDateFormat("yyMMdd_HHmmss", Locale.US).format(Date())
-        val safeSlug = slug.ifBlank { "no-title" }.take(120)
-        return "POST_${ts}_${safeSlug}_%03d.${ext}".format(position + 1)
-    }
 }
 
 data class PostMediaPlacement(
-    val contentHash: String,
+    val processedHash: String,
     val uri: String,
 )
 

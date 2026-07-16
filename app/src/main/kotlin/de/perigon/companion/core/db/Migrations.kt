@@ -187,3 +187,12 @@ val MIGRATION_16_17 = object : Migration(16, 17) {
         db.execSQL("CREATE VIEW `safe_to_delete_view` AS SELECT cf.id, cf.path, cf.uri, cf.mtime, cf.size, d.destinationName, d.completedAt as consolidatedAt, CASE WHEN p.consolidateFileId IS NOT NULL THEN 1 ELSE 0 END as isProtected FROM consolidate_files cf JOIN consolidate_files_done d ON d.consolidateFileId = cf.id JOIN backup_files bf ON bf.path = cf.path AND bf.sha256 = cf.sha256 JOIN backup_files_done bd ON bd.backupFileId = bf.id LEFT JOIN consolidate_protected_files p ON p.consolidateFileId = cf.id")
     }
 }
+
+val MIGRATION_17_18 = object : Migration(17, 18) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE posts ADD COLUMN publishedPath TEXT")
+        db.execSQL("ALTER TABLE posts ADD COLUMN publishedMediaBase TEXT")
+        db.execSQL("ALTER TABLE posts ADD COLUMN mediaMigrated INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE post_media ADD COLUMN processedHash TEXT")
+    }
+}

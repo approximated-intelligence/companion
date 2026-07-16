@@ -105,15 +105,18 @@ class HttpMediaBackend(
         method: HttpMethod,
         key: String,
         data: ByteArray?,
-        contentType: String?,
+        contentTypeStr: String?,
         authHeader: String?,
     ): HttpResponse {
         val url = "${endpoint.trimEnd('/')}/${key.trimStart('/')}"
         return http.request(url) {
             this.method = method
             if (authHeader != null) header(HttpHeaders.Authorization, authHeader)
-            if (contentType != null) header(HttpHeaders.ContentType, contentType)
             if (data != null) setBody(data)
+            // Content-Type is an unsafe header in Ktor — setting it via
+            // header() throws UnsafeHeaderException. contentType() attaches
+            // it to the outgoing content instead.
+            if (contentTypeStr != null) contentType(ContentType.parse(contentTypeStr))
         }
     }
 }

@@ -89,20 +89,19 @@ class UnpublishWorker @AssistedInject constructor(
 
         val github = githubClient() ?: return fail("GitHub credentials not configured")
 
-        val postPath    = "_posts/$localDate-$slug.md"
+        val post        = if (postId != -1L) postDao.getById(postId) else null
+        val derivedPath = "_posts/$localDate-$slug.md"
         val mediaPrefix = "static/$slug/"
 
         // One delta commit removes the post and its media:
-        //  - deletions = exact expected path, STRICT: proven present (delete)
-        //    or proven absent (tolerant no-op) even under tree truncation.
-        //  - deleteWhere = any "_posts/*-$slug.md": catches the markdown when
-        //    the post's date changed after publishing (path drift).
-        //  - stalePrefix = everything under static/slug/ on GitHub.
-        // A post that was never on GitHub yields a clean no-op (HEAD).
+        //  - deletions: the RECORDED published path plus the derived one —
+        //    strict resolution (proven present or proven absent, truncation-safe).
+        //  - deleteWhere: any "_posts/*-$slug.md" — date drift belt.
+        //  - stalePrefix: everything under static/slug/ on GitHub.
         try {
             github.commitTree(
                 message     = "Unpublish: $slug",
-                deletions   = setOf(postPath),
+                deletions   = setOfNotNull(post?.publishedPath, derivedPath),
                 deleteWhere = { path -> path.startsWith("_posts/") && path.endsWith("-$slug.md") },
                 stalePrefix = mediaPrefix,
             )
@@ -113,24 +112,30 @@ class UnpublishWorker @AssistedInject constructor(
             return fail("Atomic unpublish failed: ${e.message}")
         }
 
-        // Media published to an external backend (S3/HTTP) is not touched
-        // by the GitHub commit — delete it best-effort. Failures and
-        // unsupported backends never fail the unpublish (the post is
-        // already down); undeleted keys are surfaced for manual cleanup.
         cleanupExternalMedia(postId, slug)
 
         updateLocalState(postId, deleteLocal)
         return Result.success()
     }
 
+    /**
+     * Media on an external backend (S3/HTTP) is untouched by the GitHub
+     * commit — delete best-effort under both naming schemes. Failures and
+     * unsupported backends never fail the unpublish; undeleted keys are
+     * surfaced for manual cleanup.
+     */
     private suspend fun cleanupExternalMedia(postId: Long, slug: String) {
-        val backend = mediaBackend() ?: return // no external backend configured
+        val backend = mediaBackend() ?: return
 
         val keys: List<String> = if (postId != -1L) {
-            postMediaDao.getForPost(postId).map { media ->
+            postMediaDao.getForPost(postId).flatMap { media ->
                 val ext = if (media.mimeType.startsWith("video")) "mp4" else "jpg"
-                "static/$slug/${media.contentHash}.$ext"
-            }
+                listOfNotNull(
+                    media.processedHash?.let { "static/$slug/$it.$ext" },
+                    // TODO(media-migration): remove after all repos are migrated.
+                    "static/$slug/${media.contentHash}.$ext",
+                )
+            }.distinct()
         } else emptyList()
 
         if (keys.isEmpty()) {
@@ -169,6 +174,7 @@ class UnpublishWorker @AssistedInject constructor(
             postDao.delete(postId)
         } else {
             postDao.updatePublishState(postId, PostPublishState.DRAFT)
+            postDao.updatePublishedInfo(postId, null, null)
         }
     }
 

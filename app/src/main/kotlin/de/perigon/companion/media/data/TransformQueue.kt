@@ -19,6 +19,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -26,6 +27,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -186,8 +188,7 @@ class TransformQueue @Inject constructor(
 
     /**
      * Suspends on wakeSignal when idle (no polling). Guarded end-to-end:
-     * an exception outside processJob's own handling (DB error in
-     * nextPending, status update, even the channel) previously killed the
+     * an exception outside processJob's own handling previously killed the
      * loop silently, leaving all future jobs PENDING forever and hanging
      * every worker waiting on them. Now: log, back off, keep serving.
      */
@@ -210,34 +211,48 @@ class TransformQueue @Inject constructor(
     }
 
     private suspend fun processJob(job: TransformJobEntity) {
-        dao.updateStatus(job.id, TransformJobStatus.RUNNING)
-
         val sourceUri = job.sourceUri.toUri()
         val ext       = if (job.mediaType == "VIDEO") "mp4" else "jpg"
         val stem      = job.displayName.substringBeforeLast('.')
         val tempFile  = File(context.cacheDir, "tq_${job.id}_$stem.$ext")
 
         try {
-            if (!job.hasAnyTransform && isAlreadyProcessed(sourceUri)) {
-                context.contentResolver.openInputStream(sourceUri)!!.use { input ->
-                    tempFile.outputStream().use { input.copyTo(it) }
+            // RUNNING update inside the guarded region: if it throws, the
+            // job fails below instead of hot-retrying in the outer loop.
+            dao.updateStatus(job.id, TransformJobStatus.RUNNING)
+
+            // A transform that never completes would otherwise wedge the
+            // single serial loop forever (and be resurrected as PENDING on
+            // every restart): poison job. Bound it.
+            withTimeout(TRANSFORM_TIMEOUT_MS) {
+                if (!job.hasAnyTransform && isAlreadyProcessed(sourceUri)) {
+                    context.contentResolver.openInputStream(sourceUri)!!.use { input ->
+                        tempFile.outputStream().use { input.copyTo(it) }
+                    }
+                } else if (job.mediaType == "VIDEO") {
+                    val (srcW, srcH) = VideoProbe.displayDimensions(context, sourceUri)
+                    VideoTransformer.transform(
+                        context = context,
+                        sourceUri = sourceUri,
+                        outFile = tempFile,
+                        params = job.toVideoParams(sourceWidth = srcW, sourceHeight = srcH),
+                        handler = handler,
+                    )
+                } else {
+                    val bytes = processImage(sourceUri, job)
+                    tempFile.writeBytes(bytes)
                 }
-            } else if (job.mediaType == "VIDEO") {
-                val (srcW, srcH) = VideoProbe.displayDimensions(context, sourceUri)
-                VideoTransformer.transform(
-                    context = context,
-                    sourceUri = sourceUri,
-                    outFile = tempFile,
-                    params = job.toVideoParams(sourceWidth = srcW, sourceHeight = srcH),
-                    handler = handler,
-                )
-            } else {
-                val bytes = processImage(sourceUri, job)
-                tempFile.writeBytes(bytes)
             }
 
             dao.updateCompleted(job.id, tempFile.absolutePath)
             Log.d(TAG, "Completed ${job.id} exists=${tempFile.exists()} size=${tempFile.length()}")
+        } catch (e: TimeoutCancellationException) {
+            Log.e(TAG, "Job ${job.id} timed out: ${job.displayName}")
+            tempFile.delete()
+            dao.updateStatus(job.id, TransformJobStatus.FAILED, error = "Transform timed out")
+        } catch (e: CancellationException) {
+            tempFile.delete()
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Job ${job.id} failed: ${job.displayName}", e)
             tempFile.delete() // half-written output — don't leak into cacheDir
@@ -280,6 +295,8 @@ class TransformQueue @Inject constructor(
         const val DEFAULT_BOX_PX       = 1080
         const val DEFAULT_VIDEO_BOX_PX = 640
         const val DEFAULT_QUALITY      = 85
+
+        private const val TRANSFORM_TIMEOUT_MS = 15L * 60 * 1000
     }
 }
 

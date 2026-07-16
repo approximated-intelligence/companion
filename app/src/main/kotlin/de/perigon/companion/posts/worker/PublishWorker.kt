@@ -25,9 +25,9 @@ import de.perigon.companion.util.network.S3BackendFactory
 import de.perigon.companion.util.network.HttpMediaBackendFactory
 import de.perigon.companion.posts.domain.PostPublishState
 import de.perigon.companion.posts.data.PostMediaFileStore
-import de.perigon.companion.posts.data.PostMediaPlacement
 import de.perigon.companion.posts.domain.JekyllPostBuilder
 import de.perigon.companion.posts.domain.MediaEntry
+import de.perigon.companion.util.sha256Hex
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import io.ktor.client.*
@@ -86,20 +86,13 @@ class PublishWorker @AssistedInject constructor(
         return GitHubClient(http, token, owner, repo)
     }
 
-    /**
-     * Returns the active external media backend (S3 or HTTP), or null if
-     * media should go through GitHub (commitTree path).
-     * Also returns the static base URL for media references in markdown.
-     */
     private fun mediaBackend(): Pair<MediaBackend, String>? {
-        // S3
         val s3Config   = appPrefs.s3MediaConfig()
         val s3Secret   = credentialStore.s3SecretKey()
         if (s3Config != null && s3Secret != null) {
             val backend = s3Factory.create(s3Config.endpoint, s3Config.bucket, s3Config.keyId, s3Secret, s3Config.region)
             return backend to s3Config.staticUrl.trimEnd('/')
         }
-        // HTTP digest
         val httpConfig = appPrefs.httpMediaConfig()
         val httpPass   = credentialStore.httpMediaPassword()
         if (httpConfig != null && httpPass != null) {
@@ -128,12 +121,8 @@ class PublishWorker @AssistedInject constructor(
         val backendPair  = mediaBackend()
         val mediaBaseUrl = backendPair?.second
 
-        // ---- Phase 1: process + upload per item; bytes freed each iteration ----
-        // Previously every media file's full bytes were held simultaneously
-        // through all phases — an OOM candidate for multi-video posts. Now
-        // each file is processed, measured, persisted, and shipped (external
-        // PUT or GitHub blob) before the next one is touched; only filenames,
-        // dimensions, and blob shas survive the iteration.
+        // ---- Phase 1: process + upload per item; bytes freed each iteration.
+        // Every name is "<processedHash>.<ext>" — the media's published identity.
 
         data class ShippedMedia(
             val filename: String,
@@ -151,35 +140,43 @@ class PublishWorker @AssistedInject constructor(
         val uploadErrors  = mutableListOf<String>()
 
         for ((index, media) in sorted.withIndex()) {
-            val ext      = if (media.mimeType.startsWith("video")) "mp4" else "jpg"
-            val filename = "${media.contentHash}.$ext"
+            val ext = if (media.mimeType.startsWith("video")) "mp4" else "jpg"
 
             emitProgress(
                 stage       = STAGE_PROCESSING_MEDIA,
                 progress    = index * 80 / sorted.size.coerceAtLeast(1),
                 fileIndex   = index + 1,
                 filesTotal  = sorted.size,
-                currentFile = filename,
+                currentFile = "${media.contentHash.take(12)}….$ext",
             )
 
             val bytes: ByteArray
+            var warning: String? = null
             try {
                 val result = processMediaWithIntent(media)
                 if (result == null) {
-                    mediaErrors += "$filename: source file no longer accessible. Open the post and re-add this media."
+                    mediaErrors += "${media.contentHash.take(12)}….$ext: source file no longer accessible. Open the post and re-add this media."
                     continue
                 }
-                if (result.warning != null) mediaWarnings += "$filename: ${result.warning}"
+                warning = result.warning
                 bytes = result.bytes
-
-                val placement = persistToPostMedia(media, bytes, post.slug, index)
-                if (placement != null) {
-                    postMediaDao.upsert(media.copy(mediaStoreUri = placement.uri))
-                }
             } catch (e: Exception) {
-                mediaErrors += "$filename: transform failed - ${e.message}"
+                mediaErrors += "${media.contentHash.take(12)}….$ext: transform failed - ${e.message}"
                 continue
             }
+            if (warning != null) mediaWarnings += warning
+
+            // Local placement under the processed hash; hash exists even if
+            // placement fails (compute from bytes directly).
+            val placement = persistToPostMedia(media, bytes)
+            val processedHash = placement?.processedHash ?: sha256Hex(bytes)
+            val previousHash = media.processedHash
+            postMediaDao.upsert(media.copy(
+                mediaStoreUri = placement?.uri ?: media.mediaStoreUri,
+                processedHash = processedHash,
+            ))
+
+            val filename = "$processedHash.$ext"
 
             val (w, h) = if (media.mimeType.startsWith("video")) {
                 videoDimensions(bytes) ?: (null to null)
@@ -201,6 +198,15 @@ class PublishWorker @AssistedInject constructor(
                 if (backendPair != null) {
                     try {
                         backendPair.first.putObject(key, bytes, contentType)
+                        // Content changed → previous rendering is stale; the
+                        // legacy contentHash-named key likewise.
+                        if (previousHash != null && previousHash != processedHash) {
+                            runCatching { backendPair.first.deleteMedia("static/${post.slug}/$previousHash.$ext") }
+                        }
+                        // TODO(media-migration): remove after all repos are migrated.
+                        if (previousHash == null) {
+                            runCatching { backendPair.first.deleteMedia("static/${post.slug}/${media.contentHash}.$ext") }
+                        }
                     } catch (e: Exception) {
                         uploadErrors += "$filename: upload failed - ${e.message}"
                     }
@@ -243,7 +249,6 @@ class PublishWorker @AssistedInject constructor(
 
         try {
             if (backendPair != null) {
-                // Media lives externally — just put the markdown file
                 val existingSha = github.getFileSha(postPath)
                 github.putFile(
                     path    = postPath,
@@ -251,16 +256,23 @@ class PublishWorker @AssistedInject constructor(
                     message = "Publish: ${post.title}",
                     sha     = existingSha,
                 )
+                // If the path drifted since last publish, remove the old markdown.
+                val previousPath = post.publishedPath
+                if (previousPath != null && previousPath != postPath) {
+                    runCatching {
+                        github.getFileSha(previousPath)?.let { sha ->
+                            github.deleteFile(previousPath, sha, "Publish: ${post.title} (moved)")
+                        }
+                    }
+                }
             } else {
-                // Media blobs are already on GitHub — one delta commit wires
-                // them in, adds the markdown, and prunes stale media under
-                // static/slug/ from the same tree snapshot.
                 github.commitTree(
                     message       = "Publish: ${post.title}",
                     additions     = listOf(TreeFile(postPath, markdown.toByteArray(Charsets.UTF_8))),
                     blobAdditions = shipped.mapNotNull { sm ->
                         sm.blobSha?.let { BlobAddition("static/${post.slug}/${sm.filename}", it) }
                     },
+                    deletions     = setOfNotNull(post.publishedPath?.takeIf { it != postPath }),
                     stalePrefix   = "static/${post.slug}/",
                     keepFilenames = shipped.map { it.filename }.toSet(),
                 )
@@ -269,6 +281,11 @@ class PublishWorker @AssistedInject constructor(
             postDao.updatePublishState(postId, PostPublishState.NEEDS_FIXING)
             return fail(postId, "Git commit failed: ${e.message}")
         }
+
+        // The live markdown is now at postPath, media named by processedHash.
+        postDao.updatePublishedInfo(postId, postPath, mediaBaseUrl)
+        // TODO(media-migration): remove after all repos are migrated.
+        postDao.setMediaMigrated(postId, true)
 
         // ---- Done ----
         emitProgress(stage = STAGE_DONE, progress = 100)
@@ -374,17 +391,15 @@ class PublishWorker @AssistedInject constructor(
     }
 
     private suspend fun persistToPostMedia(
-        media:    PostMediaEntity,
-        bytes:    ByteArray,
-        slug:     String,
-        position: Int,
-    ): PostMediaPlacement? {
+        media: PostMediaEntity,
+        bytes: ByteArray,
+    ): de.perigon.companion.posts.data.PostMediaPlacement? {
         val isVideo  = media.mimeType.startsWith("video")
         val tempFile = File(applicationContext.cacheDir, "pub_${media.id}.${if (isVideo) "mp4" else "jpg"}")
         return try {
             tempFile.writeBytes(bytes)
-            if (isVideo) mediaStore.placeVideoResult(tempFile, slug, position)
-            else         mediaStore.placeImageResult(tempFile, slug, position)
+            if (isVideo) mediaStore.placeVideoResult(tempFile)
+            else         mediaStore.placeImageResult(tempFile)
         } catch (e: Exception) {
             android.util.Log.e("PublishWorker", "persistToPostMedia failed", e)
             tempFile.delete()

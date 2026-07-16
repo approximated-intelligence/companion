@@ -105,7 +105,7 @@ class CurrentTrackStateConverter {
         SafeToDeleteView::class,
         TrackPointRow::class,
     ],
-    version = 17,
+    version = 18,
     exportSchema = true,
 )
 @TypeConverters(

@@ -6,6 +6,9 @@ import android.content.Intent
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.ExistingWorkPolicy
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.prefs.CredentialStore
@@ -21,11 +24,14 @@ import de.perigon.companion.posts.data.PostRepository
 import de.perigon.companion.posts.data.PublishResult
 import de.perigon.companion.posts.domain.PostPublishState
 import de.perigon.companion.posts.domain.PostShareIntentBuilder
+import de.perigon.companion.posts.worker.MediaMigrationWorker
 import de.perigon.companion.util.network.GitHubClient
 import de.perigon.companion.core.ui.SnackbarChannel
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.ktor.client.HttpClient
+import io.ktor.client.request.head
+import io.ktor.http.isSuccess
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,6 +41,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -53,6 +60,7 @@ class PostListViewModel @Inject constructor(
     private val resolutionCache: MediaResolutionCache,
     private val previewCache: TransformPreviewCache,
     private val notificationDao: UserNotificationDao,
+    private val workManager: WorkManager,
 ) : ViewModel() {
 
     val posts: StateFlow<List<PostEntity>> =
@@ -89,6 +97,18 @@ class PostListViewModel @Inject constructor(
     val needsPermission: SharedFlow<Long> = _needsPermission.asSharedFlow()
 
     val notifications: UserNotificationDao get() = notificationDao
+
+    // TODO(media-migration): remove after all repos are migrated.
+    val unmigratedCount: StateFlow<Int> =
+        posts.map { list ->
+            list.count { it.publishState == PostPublishState.PUBLISHED && !it.mediaMigrated }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
+    // TODO(media-migration): remove after all repos are migrated.
+    val migrationRunning: StateFlow<Boolean> =
+        workManager.getWorkInfosForUniqueWorkFlow(MediaMigrationWorker.WORK_NAME)
+            .map { infos -> infos.any { it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED } }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     init {
         // Prime caches when lead media set changes.
@@ -133,6 +153,22 @@ class PostListViewModel @Inject constructor(
         viewModelScope.launch { postRepository.deletePostAndUnpublish(post) }
     }
 
+    // TODO(media-migration): remove after all repos are migrated.
+    fun migrateLegacyMedia() {
+        workManager.enqueueUniqueWork(
+            MediaMigrationWorker.WORK_NAME,
+            ExistingWorkPolicy.KEEP,
+            MediaMigrationWorker.buildRequest(),
+        )
+    }
+
+    /**
+     * Verify against what readers actually see: the post is markdown at its
+     * recorded (or derived) GitHub path; a media file EXISTS when it is
+     * fetchable at any URL the published markdown could reference —
+     * recorded/current static base or GitHub — regardless of upload
+     * mechanism. Names probed: processedHash, then legacy contentHash.
+     */
     fun verifyPost(post: PostEntity) {
         val github = githubClient() ?: run {
             snackbar.send("GitHub credentials not configured")
@@ -141,14 +177,28 @@ class PostListViewModel @Inject constructor(
         viewModelScope.launch {
             _verifying.update { it + post.id }
             try {
-                val postPath = "_posts/${post.localDate}-${post.slug}.md"
+                val postPath = post.publishedPath ?: "_posts/${post.localDate}-${post.slug}.md"
                 val postSha = github.getFileSha(postPath)
+
+                val bases = listOfNotNull(
+                    post.publishedMediaBase?.trimEnd('/'),
+                    appPrefs.s3MediaConfig()?.staticUrl?.trimEnd('/'),
+                    appPrefs.httpMediaConfig()?.staticUrl?.trimEnd('/'),
+                ).distinct()
 
                 val mediaList = postRepository.getMediaForPost(post.id)
                 val missingMedia = mediaList.count { media ->
                     val ext = if (media.mimeType.startsWith("video")) "mp4" else "jpg"
-                    val repoPath = "static/${post.slug}/${media.contentHash}.$ext"
-                    github.getFileSha(repoPath) == null
+                    val names = listOfNotNull(
+                        media.processedHash,
+                        // TODO(media-migration): remove fallback after all repos are migrated.
+                        media.contentHash,
+                    ).map { "$it.$ext" }
+                    val present = names.any { name ->
+                        bases.any { base -> headOk("$base/static/${post.slug}/$name") } ||
+                            runCatching { github.getFileSha("static/${post.slug}/$name") != null }.getOrDefault(false)
+                    }
+                    !present
                 }
 
                 val newState = when {
@@ -171,6 +221,12 @@ class PostListViewModel @Inject constructor(
                 _verifying.update { it - post.id }
             }
         }
+    }
+
+    private suspend fun headOk(url: String): Boolean = try {
+        http.head(url).status.isSuccess()
+    } catch (_: Exception) {
+        false
     }
 
     fun buildShareIntent(post: PostEntity) {
