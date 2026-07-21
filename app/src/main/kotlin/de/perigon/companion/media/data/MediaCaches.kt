@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.util.LruCache
 import dagger.hilt.android.qualifiers.ApplicationContext
+import de.perigon.companion.core.di.ApplicationScope
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.media.domain.TransformPreviewGenerator
 import de.perigon.companion.media.domain.toTransformIntent
@@ -15,7 +16,6 @@ import de.perigon.companion.posts.data.ResolvedMedia
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -63,14 +64,16 @@ private fun PostMediaEntity.key(slug: String?) =
 class MediaResolutionCache @Inject constructor(
     private val mediaFileStore: PostMediaFileStore,
     private val appPrefs: AppPrefs,
+    @ApplicationScope private val scope: CoroutineScope,
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
     private val _resolved = MutableStateFlow<Map<Long, ResolvedMedia>>(emptyMap())
     val resolved: StateFlow<Map<Long, ResolvedMedia>> = _resolved.asStateFlow()
 
-    private val keys = mutableMapOf<Long, ResolutionKey>()
-    private val keysLock = Mutex()
+    // ConcurrentHashMap: get() reads this on the caller thread while IO
+    // workers write it. The previous plain HashMap was read outside its
+    // Mutex, wrapped in runCatching — papering over a real data race
+    // (a concurrent read during rehash can throw or loop).
+    private val keys = ConcurrentHashMap<Long, ResolutionKey>()
 
     private val inFlight = mutableMapOf<Long, Deferred<ResolvedMedia>>()
     private val inFlightLock = Mutex()
@@ -79,7 +82,7 @@ class MediaResolutionCache @Inject constructor(
     fun get(entity: PostMediaEntity, slug: String? = null): ResolvedMedia {
         val currentKey = entity.key(slug)
         val cached = _resolved.value[entity.id]
-        val cachedKey = runCatching { keys[entity.id] }.getOrNull()
+        val cachedKey = keys[entity.id]
 
         if (cached != null && cachedKey == currentKey) return cached
 
@@ -95,7 +98,7 @@ class MediaResolutionCache @Inject constructor(
 
     fun invalidate(mediaId: Long) {
         _resolved.update { it - mediaId }
-        scope.launch { keysLock.withLock { keys.remove(mediaId) } }
+        keys.remove(mediaId)
     }
 
     private suspend fun resolveAsync(entity: PostMediaEntity, slug: String?): ResolvedMedia {
@@ -106,7 +109,7 @@ class MediaResolutionCache @Inject constructor(
             val d = scope.async {
                 val result = withContext(Dispatchers.IO) { resolve(entity, slug) }
                 _resolved.update { it + (entity.id to result) }
-                keysLock.withLock { keys[entity.id] = currentKey }
+                keys[entity.id] = currentKey
                 result
             }
             inFlight[entity.id] = d
@@ -168,9 +171,8 @@ private fun PostMediaEntity.previewKey() = PreviewKey(id, toTransformIntent().ha
 class TransformPreviewCache @Inject constructor(
     @param:ApplicationContext private val ctx: Context,
     private val generator: TransformPreviewGenerator,
+    @ApplicationScope private val scope: CoroutineScope,
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
     private val lru = object : LruCache<PreviewKey, Bitmap>(PREVIEW_CACHE_BYTES) {
         override fun sizeOf(key: PreviewKey, value: Bitmap): Int = value.byteCount
     }

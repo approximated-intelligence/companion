@@ -35,11 +35,11 @@ fun queryUnifiedMedia(context: Context): List<UnifiedMediaItem> {
     // Consolidated derivatives - only _s suffix now, no _thumb
     queryCollection(context, IMAGE_COLLECTION, CONSOLIDATED_PATH) { id, name, _ ->
         val builder = map[stem(name)] ?: return@queryCollection
-        if (name.contains("_s")) builder.consolidatedUri = contentUri(IMAGE_COLLECTION, id)
+        if (isConsolidatedName(name)) builder.consolidatedUri = contentUri(IMAGE_COLLECTION, id)
     }
     queryCollection(context, VIDEO_COLLECTION, CONSOLIDATED_PATH) { id, name, _ ->
         val builder = map[stem(name)] ?: return@queryCollection
-        if (name.contains("_s")) builder.consolidatedUri = contentUri(VIDEO_COLLECTION, id)
+        if (isConsolidatedName(name)) builder.consolidatedUri = contentUri(VIDEO_COLLECTION, id)
     }
 
     return map.values.mapNotNull { it.build() }.sortedByDescending { it.dateTaken }
@@ -69,6 +69,13 @@ private fun queryCollection(
 
 private fun contentUri(collection: Uri, id: Long): Uri =
     Uri.withAppendedPath(collection, id.toString())
+
+/**
+ * A consolidated output is named exactly "<stem>_s.<ext>". The previous
+ * name.contains("_s") also matched e.g. "IMG_sunset.jpg".
+ */
+private fun isConsolidatedName(displayName: String): Boolean =
+    displayName.substringBeforeLast('.', missingDelimiterValue = "").endsWith("_s")
 
 // Strip extension, then _s suffix. No _thumb - that's gone.
 private fun stem(displayName: String): String =
