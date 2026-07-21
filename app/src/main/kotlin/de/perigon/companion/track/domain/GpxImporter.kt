@@ -35,8 +35,10 @@ object GpxImporter {
         var inTrkPt = false
         var inExtensions = false
 
-        var ptLat = 0.0f
-        var ptLon = 0.0f
+        // Nullable: a trkpt with missing/malformed lat|lon is skipped instead
+        // of crashing the whole import with an NPE/NumberFormatException.
+        var ptLat: Float? = null
+        var ptLon: Float? = null
         var ptEle: Float? = null
         var ptTime: Long? = null
         var ptAccuracy: Float? = null
@@ -54,8 +56,8 @@ object GpxImporter {
                         }
                         "trkpt" -> {
                             inTrkPt = true
-                            ptLat = parser.getAttributeValue(null, "lat").toFloat()
-                            ptLon = parser.getAttributeValue(null, "lon").toFloat()
+                            ptLat = parser.getAttributeValue(null, "lat")?.toFloatOrNull()
+                            ptLon = parser.getAttributeValue(null, "lon")?.toFloatOrNull()
                             ptEle = null
                             ptTime = null
                             ptAccuracy = null
@@ -79,7 +81,11 @@ object GpxImporter {
                 XmlPullParser.END_TAG -> {
                     when (parser.name) {
                         "trkpt" -> {
-                            currentPoints.add(ImportedPoint(ptLat, ptLon, ptEle, ptTime, ptAccuracy))
+                            val lat = ptLat
+                            val lon = ptLon
+                            if (lat != null && lon != null) {
+                                currentPoints.add(ImportedPoint(lat, lon, ptEle, ptTime, ptAccuracy))
+                            }
                             inTrkPt = false
                         }
                         "trkseg" -> {

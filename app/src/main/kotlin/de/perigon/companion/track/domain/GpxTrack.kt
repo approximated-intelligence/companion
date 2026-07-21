@@ -2,6 +2,7 @@ package de.perigon.companion.track.domain
 
 import de.perigon.companion.track.data.TrackPointEntity
 import java.io.InputStream
+import javax.xml.XMLConstants
 import javax.xml.parsers.SAXParserFactory
 import org.xml.sax.Attributes
 import org.xml.sax.helpers.DefaultHandler
@@ -55,14 +56,31 @@ private fun haversine(a: LatLon, b: LatLon): Double {
 
 fun parseGpx(stream: InputStream): GpxTrack {
     val handler = GpxHandler()
-    SAXParserFactory.newInstance().also { it.isNamespaceAware = false }
-        .newSAXParser()
-        .parse(stream, handler)
+    val factory = SAXParserFactory.newInstance().apply {
+        isNamespaceAware = false
+        // Files arrive via ACTION_SEND from arbitrary apps — kill DOCTYPE /
+        // entity processing (XXE, billion-laughs). Feature support varies by
+        // parser, so each is set best-effort; secure-processing is the
+        // backstop where the explicit features are unrecognized.
+        setFeatureQuietly(XMLConstants.FEATURE_SECURE_PROCESSING, true)
+        setFeatureQuietly("http://apache.org/xml/features/disallow-doctype-decl", true)
+        setFeatureQuietly("http://xml.org/sax/features/external-general-entities", false)
+        setFeatureQuietly("http://xml.org/sax/features/external-parameter-entities", false)
+    }
+    factory.newSAXParser().parse(stream, handler)
     return GpxTrack(
         points = handler.points,
         name = handler.name,
         firstTimestamp = handler.firstTimestamp,
     )
+}
+
+private fun SAXParserFactory.setFeatureQuietly(feature: String, value: Boolean) {
+    try {
+        setFeature(feature, value)
+    } catch (_: Exception) {
+        // Parser doesn't know this feature — the others still apply.
+    }
 }
 
 private class GpxHandler : DefaultHandler() {

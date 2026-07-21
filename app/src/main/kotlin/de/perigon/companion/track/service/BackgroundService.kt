@@ -253,12 +253,35 @@ class BackgroundService : Service() {
             ACTION_PAUSE       -> pauseRecording()
             ACTION_NEW_SEGMENT -> newSegment()
             ACTION_FLUSH       -> flushBuffer()
-            ACTION_FIX_DUE     -> dispatchFixEvent(FixEvent.StartCycle)
+            ACTION_FIX_DUE     -> onFixDue()
         }
         return START_STICKY
     }
 
     // ---- Core state machine ----
+
+    /**
+     * FIX_DUE arrives from [FixAlarmReceiver] via startForegroundService.
+     * If nothing is recording (process was recycled and a stale alarm slipped
+     * past both the receiver guard and the cancel), we still MUST honor the
+     * startForeground contract before stopping — silently returning here left
+     * the obligation unmet and the system raised
+     * ForegroundServiceDidNotStartInTimeException. Recovery of an interrupted
+     * recording is owned by CompanionApp.resumeBackground(), not this path.
+     */
+    private fun onFixDue() {
+        if (recording) {
+            dispatchFixEvent(FixEvent.StartCycle)
+            return
+        }
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+        } catch (e: Exception) {
+            Log.w(TAG, "FIX_DUE foreground handshake failed while idle", e)
+        }
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
 
     private fun dispatchFixEvent(event: FixEvent) {
         if (!recording && event !is FixEvent.Cancel) return

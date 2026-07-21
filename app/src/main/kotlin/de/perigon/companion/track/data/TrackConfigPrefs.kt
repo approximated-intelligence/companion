@@ -4,7 +4,12 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
+import de.perigon.companion.core.di.ApplicationScope
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -44,25 +49,47 @@ private fun Preferences.toTrackConfig() = TrackConfigEntity(
     autoSegmentGapMs       = this[Keys.AUTO_SEGMENT_GAP_MS]     ?: TrackConfigEntity.DEFAULT.autoSegmentGapMs,
 )
 
+/**
+ * Sync-read facade over the track-config DataStore.
+ *
+ * The snapshot is warmed ASYNCHRONOUSLY at construction (previously a
+ * runBlocking disk read during Hilt graph construction on the main thread —
+ * one of four such seeds serialized into cold start). [get] keeps its
+ * synchronous signature for existing callers; it only blocks in the unlikely
+ * window before the warm-up lands, and never returns defaults for stored
+ * values, so [update]'s read-modify-write cannot clobber persisted config.
+ */
 @Singleton
 class TrackConfigPrefs @Inject constructor(
     @param:ApplicationContext private val ctx: Context,
+    @ApplicationScope appScope: CoroutineScope,
 ) {
     private val ds: DataStore<Preferences> = ctx.trackConfigDataStore
 
     @Volatile
-    private var cache: Preferences = runBlocking { ds.data.first() }
+    private var cache: Preferences? = null
+
+    private val seed: Deferred<Preferences> = appScope.async(Dispatchers.IO) {
+        ds.data.first().also { snapshot ->
+            // An edit() completing before the seed already installed a newer
+            // snapshot — never replace it with the older read.
+            if (cache == null) cache = snapshot
+        }
+    }
 
     private suspend fun edit(block: MutablePreferences.() -> Unit) {
         cache = ds.edit(block)
     }
 
-    fun get(): TrackConfigEntity = cache.toTrackConfig()
+    private suspend fun awaitPrefs(): Preferences = cache ?: seed.await()
+
+    fun get(): TrackConfigEntity =
+        (cache ?: runBlocking { seed.await() }).toTrackConfig()
 
     fun observe(): Flow<TrackConfigEntity> = ds.data.map { it.toTrackConfig() }
 
     suspend fun update(transform: (TrackConfigEntity) -> TrackConfigEntity) {
-        val updated = transform(get())
+        val updated = transform(awaitPrefs().toTrackConfig())
         edit {
             set(Keys.MODE,                    updated.mode)
             set(Keys.INTERVAL_MS,             updated.intervalMs)

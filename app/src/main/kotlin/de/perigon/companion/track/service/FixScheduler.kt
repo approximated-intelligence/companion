@@ -75,6 +75,17 @@ class FixScheduler(
 
 class FixAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
+        // Only forward the alarm into a LIVE recording session. If the process
+        // died mid-recording, waking it for this broadcast already triggered
+        // CompanionApp.resumeBackground(), which restarts the service via
+        // ACTION_START — starting an FGS here as well would reach a service
+        // with recording == false, which then never calls startForeground and
+        // crashes with ForegroundServiceDidNotStartInTimeException. If the
+        // recording ended normally, the alarm was cancelled; a stale fire that
+        // races the cancel is safe to drop (the service-side FIX_DUE guard is
+        // the belt to this suspender).
+        if (!BackgroundService.status.value.isRecording) return
+
         val serviceIntent = Intent(context, BackgroundService::class.java).apply {
             action = BackgroundService.ACTION_FIX_DUE
         }
