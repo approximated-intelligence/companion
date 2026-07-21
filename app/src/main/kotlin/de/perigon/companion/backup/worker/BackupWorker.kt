@@ -118,9 +118,11 @@ class BackupWorker @AssistedInject constructor(
             emitProgress(packState = STATE_DONE)
             UserNotifications.success(notificationDao, "backup", "Backup complete")
             Result.success()
-        } catch (_: CancellationException) {
+        } catch (e: CancellationException) {
+            // Rethrow: swallowing CE recorded a user cancel as SUCCEEDED,
+            // which observers (Consolidate screen) treated as a clean run.
             android.util.Log.i("BackupWorker", "Backup cancelled")
-            Result.success()
+            throw e
         } catch (e: Exception) {
             android.util.Log.e("BackupWorker", "Backup failed", e)
             fail(ERR_B2_ERROR, e.message ?: "Unknown error")

@@ -87,9 +87,11 @@ class RestoreWorker @AssistedInject constructor(
                 MODE_REBUILD_AND_RESTORE -> doRebuildAndRestore(b2, senderPk, recipientSk, packPrefix)
                 else                     -> fail(RestoreNotifier.ERR_IO_ERROR, "Unknown mode: $mode")
             }
-        } catch (_: CancellationException) {
+        } catch (e: CancellationException) {
+            // Rethrow: cancel mid-rebuild previously yielded an "Index
+            // rebuilt" success notification and a SUCCEEDED work record.
             Log.i(TAG, "Restore cancelled")
-            Result.success()
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Restore failed", e)
             fail(RestoreNotifier.ERR_IO_ERROR, e.message ?: "Unknown error")
@@ -328,16 +330,14 @@ class RestoreWorker @AssistedInject constructor(
             }
 
             partNum++
-            wire = try {
-                retryWithBackoff {
-                    val from = (partNum - 1).toLong() * BackupOrchestrator.PART_WIRE_SIZE
-                    val to   = partNum.toLong()       * BackupOrchestrator.PART_WIRE_SIZE - 1
-                    b2.getRange(packKey, from, to)
-                }
-            } catch (e: Exception) {
-                Log.d(TAG, "part $partNum not found — end of pack $packPos")
-                break
-            }
+            val from = (partNum - 1).toLong() * BackupOrchestrator.PART_WIRE_SIZE
+            val to   = partNum.toLong()       * BackupOrchestrator.PART_WIRE_SIZE - 1
+            // null = provably past the end (404/416). Transport failures now
+            // THROW out of scanPack after retries — previously they were
+            // indistinguishable from end-of-pack and silently truncated the
+            // restore while reporting success. An abandoned .tmp accum is
+            // cleaned by openFileAccum on the next run.
+            wire = retryWithBackoff { b2.getRangeOrNull(packKey, from, to) } ?: break
         }
 
         currentFile?.let { acc ->
@@ -382,6 +382,8 @@ class RestoreWorker @AssistedInject constructor(
         trackedState = RestoreNotifier.STATE_COUNTING
         emitProgress()
         setForeground(notifier.foregroundInfo("Counting packs…"))
+        // headObject now throws on transport/auth errors (only 404 → false),
+        // so a flaky HEAD fails the run instead of silently undercounting.
         var count = 0
         while (retryWithBackoff { b2.headObject("$packPrefix/%010d".format(count)) }) count++
         return count
@@ -390,7 +392,9 @@ class RestoreWorker @AssistedInject constructor(
     private suspend fun <T> retryWithBackoff(block: suspend () -> T): T {
         var lastError: Exception? = null
         repeat(3) { attempt ->
-            try { return block() } catch (e: Exception) {
+            try { return block() } catch (e: CancellationException) {
+                throw e // cancellation is not a retryable failure
+            } catch (e: Exception) {
                 lastError = e
                 Log.w(TAG, "attempt $attempt failed: ${e.message}")
                 delay(1000L * (1 shl attempt))

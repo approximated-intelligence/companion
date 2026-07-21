@@ -17,11 +17,16 @@ import kotlinx.coroutines.withContext
 import java.io.OutputStream
 import java.security.DigestOutputStream
 import java.security.MessageDigest
+import kotlin.coroutines.cancellation.CancellationException
 
 private const val TAG = "Restore"
 
 // ---------------------------------------------------------------------------
 // RestoreIndex
+// ---------------------------------------------------------------------------
+// DELETE CANDIDATE: near copy-paste of RestoreWorker.scanPack; only the
+// worker path appears live. Run  grep -rn "RestoreIndex" app/src/  — if it
+// only hits this file, remove this class and RestoreIndexResult.
 // ---------------------------------------------------------------------------
 
 class RestoreIndex(
@@ -121,6 +126,8 @@ class RestoreIndex(
             val to   = partNum.toLong()       * BackupOrchestrator.PART_WIRE_SIZE - 1
             wireData = try {
                 b2.getRange(packKey, from, to)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.d(TAG, "  part $partNum not found — end of pack $packPos")
                 break
@@ -334,6 +341,8 @@ suspend fun restoreSelectedFiles(
 
         val wireData = try {
             retryWithBackoff { b2.getRange(packKey, from, to) }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Failed to fetch pack=$packNumber part=$partNumber: ${e.message}")
             currentAccum?.let { it.doc.delete(); errors += "${it.path}: abandoned due to fetch failure" }
@@ -440,7 +449,9 @@ suspend fun restoreSelectedFiles(
 private suspend fun <T> retryWithBackoff(block: suspend () -> T): T {
     var lastError: Exception? = null
     repeat(3) { attempt ->
-        try { return block() } catch (e: Exception) {
+        try { return block() } catch (e: CancellationException) {
+            throw e // cancellation is not a retryable failure
+        } catch (e: Exception) {
             lastError = e
             Log.w(TAG, "attempt $attempt failed: ${e.message}")
             kotlinx.coroutines.delay(1000L * (1 shl attempt))

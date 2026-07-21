@@ -18,6 +18,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import java.io.InputStream
 import java.security.SecureRandom
+import kotlin.coroutines.cancellation.CancellationException
 
 interface BackupFileSource {
     fun open(uri: String): InputStream
@@ -404,6 +405,8 @@ class BackupOrchestrator(
                             remaining -= n
                         }
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Log.w(TAG, "Error streaming ${file.path}: ${e.message}")
                 }
@@ -468,6 +471,8 @@ class BackupOrchestrator(
         // NoSuchUpload for the finalized upload: treat that as already done.
         try {
             b2.completeMultipart(packKey(packNumber), uploadId, b2Parts)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             if (e.message?.contains("NoSuchUpload", ignoreCase = true) == true) {
                 Log.i(TAG, "pack $packNumber multipart already completed remotely; sealing locally")
@@ -503,6 +508,8 @@ class BackupOrchestrator(
         repeat(3) { attempt ->
             try {
                 return b2.uploadPart(key, uploadId, partNumber, data)
+            } catch (e: CancellationException) {
+                throw e // cancellation is not a retryable failure
             } catch (e: Exception) {
                 lastError = e
                 Log.w(TAG, "uploadPart $partNumber attempt $attempt failed: ${e.message}")

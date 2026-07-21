@@ -1,14 +1,17 @@
 package de.perigon.companion.backup.data
 
 import android.content.Context
-import androidx.datastore.core.DataMigration
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
+import de.perigon.companion.core.di.ApplicationScope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
-import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -38,39 +41,52 @@ interface BackupSchedulePrefs {
     }
 }
 
+/**
+ * Sync-read facade; snapshot warmed asynchronously at construction
+ * (previously a runBlocking disk read during Hilt graph construction on the
+ * main thread). Same pattern as TrackConfigPrefs / AudioConfigPrefs.
+ */
 @Singleton
 class BackupSchedulePrefsImpl @Inject constructor(
     @param:ApplicationContext private val ctx: Context,
+    @ApplicationScope appScope: CoroutineScope,
 ) : BackupSchedulePrefs {
 
     private val ds: DataStore<Preferences> = ctx.backupScheduleDataStore
 
     @Volatile
-    private var cache: Preferences = runBlocking { ds.data.first() }
+    private var cache: Preferences? = null
+
+    private val seed: Deferred<Preferences> = appScope.async(Dispatchers.IO) {
+        ds.data.first().also { snapshot ->
+            if (cache == null) cache = snapshot
+        }
+    }
+
+    private fun snapshot(): Preferences = cache ?: runBlocking { seed.await() }
 
     private suspend fun edit(block: MutablePreferences.() -> Unit) {
         cache = ds.edit(block)
     }
 
     override fun autoEnabled(): Boolean =
-        cache[Keys.AUTO_ENABLED] ?: false
+        snapshot()[Keys.AUTO_ENABLED] ?: false
 
     override suspend fun setAutoEnabled(value: Boolean) {
         edit { set(Keys.AUTO_ENABLED, value) }
     }
 
     override fun intervalHours(): Int =
-        cache[Keys.INTERVAL_HOURS]?.toInt() ?: BackupSchedulePrefs.DEFAULT_INTERVAL_HOURS
+        snapshot()[Keys.INTERVAL_HOURS]?.toInt() ?: BackupSchedulePrefs.DEFAULT_INTERVAL_HOURS
 
     override suspend fun setIntervalHours(value: Int) {
         edit { set(Keys.INTERVAL_HOURS, value.toLong()) }
     }
 
     override fun numPartsPerPack(): Int =
-        cache[Keys.NUM_PARTS_PER_PACK]?.toInt() ?: BackupSchedulePrefs.DEFAULT_NUM_PARTS
+        snapshot()[Keys.NUM_PARTS_PER_PACK]?.toInt() ?: BackupSchedulePrefs.DEFAULT_NUM_PARTS
 
     override suspend fun setNumPartsPerPack(value: Int) {
         edit { set(Keys.NUM_PARTS_PER_PACK, value.toLong()) }
     }
 }
-
