@@ -3,6 +3,11 @@
     Data extraction rules for Android 12+ (minSdk 31).
     Cloud backup: only when encrypted (SeedVault, encrypted Google backup).
     Device transfer: same rules - credentials are device-bound.
+
+    Config lives in DataStore under files/datastore/ (the legacy
+    app_prefs.xml SharedPreferences file is deleted after migration) —
+    without the file-domain include below, backups carried the database
+    but silently dropped all journey/B2/GitHub/site configuration.
 -->
 <data-extraction-rules>
     <cloud-backup disableIfNoEncryptionCapabilities="true">
@@ -11,10 +16,11 @@
         <include domain="database" path="companion.db-wal" />
         <include domain="database" path="companion.db-shm" />
 
-        <!-- Non-secret config (journey, B2 addressing, GitHub repo, NaCl pubkey, site URL) -->
-        <include domain="sharedpref" path="app_prefs.xml" />
+        <!-- Non-secret config: DataStore (journey, B2 addressing, GitHub repo,
+             NaCl pubkey, site URL, track/audio/backup settings) -->
+        <include domain="file" path="datastore/" />
 
-        <!-- Backup schedule (non-secret) -->
+        <!-- Remaining shared prefs (library-owned, non-secret) -->
         <include domain="sharedpref" path="." />
 
         <!-- Exclude device-bound encrypted secrets -->
@@ -28,6 +34,7 @@
         <include domain="database" path="companion.db" />
         <include domain="database" path="companion.db-wal" />
         <include domain="database" path="companion.db-shm" />
+        <include domain="file" path="datastore/" />
         <include domain="sharedpref" path="." />
         <exclude domain="sharedpref" path="encrypted_creds.xml" />
         <exclude domain="sharedpref" path="backup_creds.xml" />
