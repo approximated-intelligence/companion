@@ -37,6 +37,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.android.Android
+import io.ktor.client.plugins.HttpTimeout
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -62,8 +63,22 @@ object AppModule {
 
     @Provides fun provideFileContentHashDao(db: AppDatabase): FileContentHashDao = db.fileContentHashDao()
 
+    /**
+     * Shared client for B2/S3, HTTP media, GitHub, tile-free fetches.
+     *
+     * Timeouts: connect bounds dead endpoints; socket (idle between packets)
+     * unwedges stalled transfers — previously a dying connection could hang a
+     * backup worker for the full dataSync FGS budget. No request-level cap:
+     * an 8 MB part upload on a slow uplink is legitimately minutes long, and
+     * the socket timeout already catches true stalls.
+     */
     @Provides @Singleton
-    fun provideHttpClient(): HttpClient = HttpClient(Android)
+    fun provideHttpClient(): HttpClient = HttpClient(Android) {
+        install(HttpTimeout) {
+            connectTimeoutMillis = 30_000
+            socketTimeoutMillis  = 120_000
+        }
+    }
 
     @Provides @Singleton
     fun provideWorkManager(@ApplicationContext ctx: Context): WorkManager =

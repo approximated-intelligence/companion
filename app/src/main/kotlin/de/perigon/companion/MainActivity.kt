@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
+import androidx.core.content.IntentCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.rememberNavController
 import de.perigon.companion.audio.service.AudioRecordingService
@@ -85,7 +86,8 @@ private fun parseIntent(intent: Intent): ParsedIntent {
 
     return when (action) {
         Intent.ACTION_SEND -> {
-            val uri = intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+            // IntentCompat: the (String, Class) overloads are API 33+, minSdk is 31.
+            val uri = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
             when {
                 mime.contains("gpx") || mime.contains("octet") ->
                     ParsedIntent(Route.TrackRender, listOfNotNull(uri))
@@ -94,7 +96,7 @@ private fun parseIntent(intent: Intent): ParsedIntent {
             }
         }
         Intent.ACTION_SEND_MULTIPLE -> {
-            val uris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+            val uris = IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
                 ?: emptyList<Uri>()
             val mime2 = intent.type ?: ""
             if (mime2.contains("gpx") || mime2.contains("octet")) {
