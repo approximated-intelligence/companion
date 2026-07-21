@@ -10,10 +10,24 @@ import kotlinx.serialization.json.*
 
 private const val TAG = "GitHubClient"
 
-data class TreeFile(val path: String, val content: ByteArray)
+class TreeFile(val path: String, val content: ByteArray) {
+    override fun equals(other: Any?): Boolean =
+        other is TreeFile && path == other.path && content.contentEquals(other.content)
+
+    override fun hashCode(): Int = 31 * path.hashCode() + content.contentHashCode()
+}
 
 /** A blob already uploaded via [GitHubClient.createBlob], referenced by sha. */
 data class BlobAddition(val path: String, val sha: String)
+
+/** Extract a required string field or fail with a diagnosable message. */
+private fun JsonObject.requireString(key: String, context: String): String =
+    this[key]?.jsonPrimitive?.content
+        ?: error("GitHub response missing '$key' ($context)")
+
+private fun JsonObject.requireObject(key: String, context: String): JsonObject =
+    this[key]?.jsonObject
+        ?: error("GitHub response missing '$key' object ($context)")
 
 /**
  * Minimal GitHub Contents API + Git Trees API client.
@@ -151,22 +165,24 @@ class GitHubClient(
         }.toString()
 
         val response = post("$base/repos/$owner/$repo/git/blobs", body)
-        val json = Json.parseToJsonElement(response).jsonObject
-        return json["sha"]!!.jsonPrimitive.content
+        return Json.parseToJsonElement(response).jsonObject
+            .requireString("sha", "createBlob")
     }
 
     // ---- Git Trees API internals ----
 
     private suspend fun getRefSha(branch: String): String {
         val response = get("$base/repos/$owner/$repo/git/ref/heads/$branch")
-        val json = Json.parseToJsonElement(response).jsonObject
-        return json["object"]!!.jsonObject["sha"]!!.jsonPrimitive.content
+        return Json.parseToJsonElement(response).jsonObject
+            .requireObject("object", "getRefSha $branch")
+            .requireString("sha", "getRefSha $branch")
     }
 
     private suspend fun getCommitTreeSha(commitSha: String): String {
         val response = get("$base/repos/$owner/$repo/git/commits/$commitSha")
-        val json = Json.parseToJsonElement(response).jsonObject
-        return json["tree"]!!.jsonObject["sha"]!!.jsonPrimitive.content
+        return Json.parseToJsonElement(response).jsonObject
+            .requireObject("tree", "getCommitTreeSha $commitSha")
+            .requireString("sha", "getCommitTreeSha $commitSha")
     }
 
     private suspend fun getFullTree(treeSha: String): Pair<List<TreeEntry>, Boolean> {
@@ -177,10 +193,10 @@ class GitHubClient(
         val entries = tree.map { node ->
             val obj = node.jsonObject
             TreeEntry(
-                path = obj["path"]!!.jsonPrimitive.content,
-                mode = obj["mode"]!!.jsonPrimitive.content,
-                type = obj["type"]!!.jsonPrimitive.content,
-                sha = obj["sha"]!!.jsonPrimitive.content,
+                path = obj.requireString("path", "tree entry"),
+                mode = obj.requireString("mode", "tree entry"),
+                type = obj.requireString("type", "tree entry"),
+                sha = obj.requireString("sha", "tree entry"),
             )
         }
         return entries to truncated
@@ -214,8 +230,8 @@ class GitHubClient(
         }.toString()
 
         val response = post("$base/repos/$owner/$repo/git/trees", body)
-        val json = Json.parseToJsonElement(response).jsonObject
-        return json["sha"]!!.jsonPrimitive.content
+        return Json.parseToJsonElement(response).jsonObject
+            .requireString("sha", "createDeltaTree")
     }
 
     private suspend fun createCommit(
@@ -230,8 +246,8 @@ class GitHubClient(
         }.toString()
 
         val response = post("$base/repos/$owner/$repo/git/commits", body)
-        val json = Json.parseToJsonElement(response).jsonObject
-        return json["sha"]!!.jsonPrimitive.content
+        return Json.parseToJsonElement(response).jsonObject
+            .requireString("sha", "createCommit")
     }
 
     private suspend fun updateRef(branch: String, commitSha: String) {

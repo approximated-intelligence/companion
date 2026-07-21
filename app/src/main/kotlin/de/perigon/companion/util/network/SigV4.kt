@@ -11,6 +11,16 @@ import javax.crypto.spec.SecretKeySpec
 /**
  * Pure AWS Signature V4 signer. No I/O, no state.
  * Consumed by S3BackendImpl (backup + media upload).
+ *
+ * Canonicalization contract (matches how S3BackendImpl builds requests):
+ *  - the PATH part of [sign]'s bucketPath arrives RAW and is AWS-URI-encoded
+ *    here (unreserved chars + '/' pass through, everything else %XX). For the
+ *    key charset this app produces the encoding is the identity, so canonical
+ *    strings are unchanged; keys with exotic chars now sign correctly instead
+ *    of mismatching what the HTTP layer sends.
+ *  - the QUERY part arrives ALREADY percent-encoded exactly as sent on the
+ *    wire (uploadId is encodeURLParameter'd by the caller). It is therefore
+ *    only split and SORTED here, never re-encoded.
  */
 object SigV4 {
 
@@ -37,7 +47,8 @@ object SigV4 {
      *
      * @param method       HTTP method (GET, PUT, POST, HEAD, DELETE)
      * @param host         Host header value (no scheme)
-     * @param bucketPath   "/{bucket}/{key}" or "/{bucket}?query"
+     * @param bucketPath   "/{bucket}/{key}" or "/{bucket}?query" — path raw,
+     *                     query pre-encoded (see canonicalization contract)
      * @param payloadHash  SHA-256 hex of request body (use [EMPTY_HASH] for empty)
      * @param ts           Timestamp from [now]
      * @param creds        AWS credentials + region
@@ -53,9 +64,12 @@ object SigV4 {
         creds:         Credentials,
         extraHeaders:  Map<String, String> = emptyMap(),
     ): Map<String, String> {
-        val (path, query) = if ("?" in bucketPath)
+        val (rawPath, rawQuery) = if ("?" in bucketPath)
             bucketPath.substringBefore("?") to bucketPath.substringAfter("?")
         else bucketPath to ""
+
+        val path  = awsEncodePath(rawPath)
+        val query = canonicalQuery(rawQuery)
 
         val hdrs = (sortedMapOf(
             "host"                 to host,
@@ -90,4 +104,36 @@ object SigV4 {
         Mac.getInstance("HmacSHA256")
             .apply { init(SecretKeySpec(key, "HmacSHA256")) }
             .doFinal(data.toByteArray())
+
+    // ---- Canonicalization ----
+
+    private const val UNRESERVED =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"
+
+    /** AWS URI-encode a raw path: unreserved and '/' pass through, rest %XX (UTF-8). */
+    private fun awsEncodePath(raw: String): String = buildString(raw.length) {
+        for (byte in raw.toByteArray(Charsets.UTF_8)) {
+            val i = byte.toInt() and 0xFF
+            val c = i.toChar()
+            if (c == '/' || c in UNRESERVED) append(c)
+            else append('%').append("%02X".format(i))
+        }
+    }
+
+    /**
+     * Sort an already-wire-encoded query string into canonical param order
+     * (by name, then value). Values are preserved byte-for-byte; a param
+     * without '=' canonicalizes to "name=" (e.g. "uploads=").
+     */
+    private fun canonicalQuery(encoded: String): String {
+        if (encoded.isEmpty()) return ""
+        return encoded.split('&')
+            .filter { it.isNotEmpty() }
+            .map { param ->
+                val eq = param.indexOf('=')
+                if (eq < 0) param to "" else param.substring(0, eq) to param.substring(eq + 1)
+            }
+            .sortedWith(compareBy({ it.first }, { it.second }))
+            .joinToString("&") { (name, value) -> "$name=$value" }
+    }
 }

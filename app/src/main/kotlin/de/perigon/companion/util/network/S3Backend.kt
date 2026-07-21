@@ -43,7 +43,6 @@ class S3BackendImpl(
         val hash    = SigV4.sha256hex(data)
         val extra   = if (contentType != null) mapOf("content-type" to contentType) else emptyMap()
         val headers = SigV4.sign("PUT", host, bucketPath(key), hash, ts, creds(), extra)
-        android.util.Log.d("S3Sign", "putObject auth: " + headers["Authorization"]?.take(120))
         val resp    = http.put("$endpoint/$bucket/$key") {
             headers.forEach { (k, v) -> header(k, v) }
             setBody(data)
@@ -64,6 +63,13 @@ class S3BackendImpl(
         return resp.status.isSuccess() || resp.status == HttpStatusCode.NotFound
     }
 
+    /**
+     * HeadObject. Returns true if the object exists, false if it provably
+     * does not (404). Any other status THROWS — a 5xx or auth failure must
+     * never be interpreted as "absent": callers count packs / check
+     * existence with this, and folding transport errors into `false` used
+     * to silently truncate restores.
+     */
     override suspend fun headObject(key: String): Boolean {
         val ts      = SigV4.now()
         val headers = SigV4.sign("HEAD", host, bucketPath(key), SigV4.EMPTY_HASH, ts, creds())
@@ -71,7 +77,9 @@ class S3BackendImpl(
             method = HttpMethod.Head
             headers.forEach { (k, v) -> header(k, v) }
         }
-        return resp.status.isSuccess()
+        if (resp.status == HttpStatusCode.NotFound) return false
+        check(resp.status.isSuccess()) { "HEAD $key failed: ${resp.status}" }
+        return true
     }
 
     override suspend fun createMultipart(key: String): String {
@@ -133,10 +141,21 @@ class S3BackendImpl(
         val resp    = http.get("$endpoint/$bucket/$key?$qp") {
             headers.forEach { (k, v) -> header(k, v) }
         }
-        val body    = resp.bodyAsText()
-        val numbers = Regex("<PartNumber>(\\d+)</PartNumber>").findAll(body).map { it.groupValues[1].toInt() }
-        val etags   = Regex("<ETag>\"?([^<\"]+)\"?</ETag>").findAll(body).map { it.groupValues[1] }
-        return numbers.zip(etags).map { (n, e) -> S3Backend.Part(n, e) }.toList()
+        val body = resp.bodyAsText()
+        // Parse number and etag out of the SAME <Part> element — zipping two
+        // independent findAll streams can silently misalign if the response
+        // ever contains extra tags of either kind.
+        return Regex("<Part>(.*?)</Part>", RegexOption.DOT_MATCHES_ALL)
+            .findAll(body)
+            .mapNotNull { part ->
+                val block  = part.groupValues[1]
+                val number = Regex("<PartNumber>(\\d+)</PartNumber>").find(block)
+                    ?.groupValues?.get(1)?.toIntOrNull() ?: return@mapNotNull null
+                val etag   = Regex("<ETag>\"?([^<\"]+)\"?</ETag>").find(block)
+                    ?.groupValues?.get(1) ?: return@mapNotNull null
+                S3Backend.Part(number, etag)
+            }
+            .toList()
     }
 
     override suspend fun listObjects(prefix: String, maxKeys: Int): List<String> {
@@ -153,11 +172,30 @@ class S3BackendImpl(
     override suspend fun getRange(key: String, from: Long, to: Long): ByteArray {
         val ts      = SigV4.now()
         val headers = SigV4.sign("GET", host, bucketPath(key), SigV4.EMPTY_HASH, ts, creds())
-        android.util.Log.d("S3Sign", "getRange auth: " + headers["Authorization"]?.take(120))
         val resp    = http.get("$endpoint/$bucket/$key") {
             headers.forEach { (k, v) -> header(k, v) }
             header("Range", "bytes=$from-$to")
         }
+        check(resp.status.isSuccess()) { "getRange $key [$from-$to] failed: ${resp.status} - ${resp.bodyAsText()}" }
+        return resp.readRawBytes()
+    }
+
+    /**
+     * Like [getRange] but returns null when the object or range provably
+     * does not exist (404 / 416), and throws on anything else. Restore's
+     * sequential pack/part walk needs "definitely past the end" to be
+     * distinguishable from "network hiccup" — treating the two the same
+     * silently truncated restores.
+     */
+    override suspend fun getRangeOrNull(key: String, from: Long, to: Long): ByteArray? {
+        val ts      = SigV4.now()
+        val headers = SigV4.sign("GET", host, bucketPath(key), SigV4.EMPTY_HASH, ts, creds())
+        val resp    = http.get("$endpoint/$bucket/$key") {
+            headers.forEach { (k, v) -> header(k, v) }
+            header("Range", "bytes=$from-$to")
+        }
+        if (resp.status == HttpStatusCode.NotFound ||
+            resp.status == HttpStatusCode.RequestedRangeNotSatisfiable) return null
         check(resp.status.isSuccess()) { "getRange $key [$from-$to] failed: ${resp.status} - ${resp.bodyAsText()}" }
         return resp.readRawBytes()
     }
@@ -182,6 +220,7 @@ interface S3Backend : MediaBackend {
     suspend fun listParts(key: String, uploadId: String): List<Part>
     suspend fun listObjects(prefix: String = "", maxKeys: Int = 1000): List<String>
     suspend fun getRange(key: String, from: Long, to: Long): ByteArray
+    suspend fun getRangeOrNull(key: String, from: Long, to: Long): ByteArray?
 }
 
 interface S3BackendFactory {
