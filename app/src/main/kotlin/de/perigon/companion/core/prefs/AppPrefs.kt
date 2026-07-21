@@ -5,6 +5,11 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
+import de.perigon.companion.core.di.ApplicationScope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -112,9 +117,12 @@ interface AppPrefs {
     suspend fun setMediaPickerMode(mode: String)
 
     // ---- Observe ----
+    // Implemented against the impl's private Keys — the previous interface
+    // defaults re-declared raw key strings, disconnected from Keys.
     fun observeAll(): Flow<Preferences>
-    fun observeBackgroundGps(): Flow<Boolean> = observeAll().map { it[booleanPreferencesKey("background_gps")] ?: false }
-    fun observeDcimTreeUri(): Flow<String?> = observeAll().map { it[stringPreferencesKey("dcim_tree_uri")] }
+    fun observeBackgroundGps(): Flow<Boolean>
+    fun observeDcimTreeUri(): Flow<String?>
+    fun observeGpxExportFolder(): Flow<Pair<String?, String?>>
 
     // ---- Bulk ----
     suspend fun clearAll()
@@ -193,20 +201,36 @@ interface AppPrefs {
 @Singleton
 class AppPrefsImpl @Inject constructor(
     @param:ApplicationContext private val ctx: Context,
+    @ApplicationScope appScope: CoroutineScope,
 ) : AppPrefs {
 
     private val ds: DataStore<Preferences> = ctx.appDataStore
 
     @Volatile
-    private var cache: Preferences = runBlocking { ds.data.first() }
+    private var cache: Preferences? = null
 
-    init {
+    /**
+     * Warmed off-main. Previously: runBlocking disk read PLUS a legacy
+     * SharedPreferences scan + migration edit, all during Hilt graph
+     * construction on the main thread at cold start. Migration runs before
+     * the snapshot is installed, so no reader ever sees pre-migration state.
+     * [snapshot] keeps the synchronous getter contract and only blocks in the
+     * unlikely window before the warm-up lands.
+     */
+    private val seed: Deferred<Preferences> = appScope.async(Dispatchers.IO) {
         migrateLegacyIfNeeded()
+        ds.data.first().also { snapshot ->
+            // An edit() completing first already installed a newer snapshot —
+            // never replace it with the older read.
+            if (cache == null) cache = snapshot
+        }
     }
 
-    private fun getString(key: Preferences.Key<String>): String? = cache[key]
-    private fun getLong(key: Preferences.Key<Long>, default: Long): Long = cache[key] ?: default
-    private fun getBoolean(key: Preferences.Key<Boolean>, default: Boolean): Boolean = cache[key] ?: default
+    private fun snapshot(): Preferences = cache ?: runBlocking { seed.await() }
+
+    private fun getString(key: Preferences.Key<String>): String? = snapshot()[key]
+    private fun getLong(key: Preferences.Key<Long>, default: Long): Long = snapshot()[key] ?: default
+    private fun getBoolean(key: Preferences.Key<Boolean>, default: Boolean): Boolean = snapshot()[key] ?: default
 
     private suspend fun edit(block: MutablePreferences.() -> Unit) {
         cache = ds.edit(block)
@@ -444,13 +468,19 @@ class AppPrefsImpl @Inject constructor(
 
     // ---- Observe ----
     override fun observeAll(): Flow<Preferences> = ds.data
+    override fun observeBackgroundGps(): Flow<Boolean> =
+        ds.data.map { it[Keys.BACKGROUND_GPS] ?: false }
+    override fun observeDcimTreeUri(): Flow<String?> =
+        ds.data.map { it[Keys.DCIM_TREE_URI] }
+    override fun observeGpxExportFolder(): Flow<Pair<String?, String?>> =
+        ds.data.map { it[Keys.GPX_EXPORT_URI] to it[Keys.GPX_EXPORT_LABEL] }
 
     // ---- Bulk ----
     override suspend fun clearAll() { edit { clear() } }
 
     // ---- Legacy migration ----
 
-    private fun migrateLegacyIfNeeded() {
+    private suspend fun migrateLegacyIfNeeded() {
         val legacyFile = File(ctx.applicationInfo.dataDir, "shared_prefs/app_prefs.xml")
         if (!legacyFile.exists()) return
 
@@ -461,16 +491,14 @@ class AppPrefsImpl @Inject constructor(
             return
         }
 
-        runBlocking {
-            edit {
-                legacyAll.forEach { (key, value) ->
-                    when (value) {
-                        is String  -> set(stringPreferencesKey(key), value)
-                        is Boolean -> set(booleanPreferencesKey(key), value)
-                        is Long    -> set(longPreferencesKey(key), value)
-                        is Int     -> set(intPreferencesKey(key), value)
-                        is Float   -> set(floatPreferencesKey(key), value)
-                    }
+        edit {
+            legacyAll.forEach { (key, value) ->
+                when (value) {
+                    is String  -> set(stringPreferencesKey(key), value)
+                    is Boolean -> set(booleanPreferencesKey(key), value)
+                    is Long    -> set(longPreferencesKey(key), value)
+                    is Int     -> set(intPreferencesKey(key), value)
+                    is Float   -> set(floatPreferencesKey(key), value)
                 }
             }
         }
