@@ -7,6 +7,7 @@ import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.*
 import de.perigon.companion.backup.data.BackupSchedulePrefs
 import de.perigon.companion.backup.worker.BackupWorker
+import de.perigon.companion.core.di.ApplicationScope
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.ui.NotificationChannels
 import de.perigon.companion.track.data.TrackConfigPrefs
@@ -14,8 +15,6 @@ import de.perigon.companion.track.service.AutoScheduler
 import de.perigon.companion.track.service.BackgroundService
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -29,7 +28,9 @@ class CompanionApp : Application(), Configuration.Provider {
     @Inject lateinit var trackConfigPrefs: TrackConfigPrefs
     @Inject lateinit var appPrefs: AppPrefs
 
-    private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // One application scope. Previously a second private
+    // CoroutineScope(SupervisorJob() + Dispatchers.IO) shadowed the DI one.
+    @Inject @ApplicationScope lateinit var appScope: CoroutineScope
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()

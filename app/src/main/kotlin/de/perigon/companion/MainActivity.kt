@@ -7,6 +7,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.core.content.IntentCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -19,11 +20,19 @@ import de.perigon.companion.core.ui.Route
 import de.perigon.companion.core.ui.theme.CompanionTheme
 import de.perigon.companion.track.service.BackgroundService
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.flow.MutableStateFlow
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
     @Inject lateinit var appPrefs: AppPrefs
+
+    /**
+     * In-place navigation requests from [onNewIntent] (notification taps).
+     * Previously handled with recreate(), which rebuilt the whole activity —
+     * and destroyed every screen's UI state — just to switch route.
+     */
+    private val navigateTo = MutableStateFlow<Any?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -35,6 +44,14 @@ class MainActivity : ComponentActivity() {
                     val navController = rememberNavController()
                     val backgroundGps by appPrefs.observeBackgroundGps()
                         .collectAsStateWithLifecycle(false)
+
+                    val pending by navigateTo.collectAsStateWithLifecycle()
+                    LaunchedEffect(pending) {
+                        val route = pending ?: return@LaunchedEffect
+                        navigateTo.value = null
+                        navController.navigate(route) { launchSingleTop = true }
+                    }
+
                     NavGraph(
                         navController = navController,
                         startRoute    = parsed.startRoute,
@@ -48,11 +65,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        val navigateTo = intent.getStringExtra(BackgroundService.EXTRA_NAVIGATE_TO)
+        val target = intent.getStringExtra(BackgroundService.EXTRA_NAVIGATE_TO)
             ?: intent.getStringExtra(EXTRA_NAVIGATE_TO)
-        if (navigateTo != null) {
+        if (target != null) {
             setIntent(intent)
-            recreate()
+            navigateTo.value = routeFor(target)
         }
     }
 
@@ -66,19 +83,20 @@ data class ParsedIntent(
     val uris: List<Uri>,
 )
 
+private fun routeFor(navigateTo: String): Any = when (navigateTo) {
+    BackgroundService.NAV_RECORDING  -> Route.Recording
+    AudioRecordingService.NAV_AUDIO  -> Route.Audio
+    "Backup"                         -> Route.Backup
+    "Consolidate"                    -> Route.Consolidate
+    "Posts"                          -> Route.Posts
+    else                             -> Route.Consolidate
+}
+
 private fun parseIntent(intent: Intent): ParsedIntent {
     val navigateTo = intent.getStringExtra(BackgroundService.EXTRA_NAVIGATE_TO)
         ?: intent.getStringExtra(MainActivity.EXTRA_NAVIGATE_TO)
     if (navigateTo != null) {
-        val route = when (navigateTo) {
-            BackgroundService.NAV_RECORDING  -> Route.Recording
-            AudioRecordingService.NAV_AUDIO  -> Route.Audio
-            "Backup"                         -> Route.Backup
-            "Consolidate"                    -> Route.Consolidate
-            "Posts"                          -> Route.Posts
-            else                             -> Route.Consolidate
-        }
-        return ParsedIntent(route, emptyList())
+        return ParsedIntent(routeFor(navigateTo), emptyList())
     }
 
     val action = intent.action
@@ -105,13 +123,7 @@ private fun parseIntent(intent: Intent): ParsedIntent {
                 ParsedIntent(Route.MediaPrep(), uris)
             }
         }
-        Intent.ACTION_VIEW -> {
-            val uri = intent.data
-            if (uri?.scheme == "companion" && uri.host == "oauth")
-                ParsedIntent(Route.Settings, emptyList())
-            else
-                ParsedIntent(Route.Consolidate, emptyList())
-        }
+        // ACTION_VIEW branch removed with the companion://oauth deep link.
         else -> ParsedIntent(Route.Consolidate, emptyList())
     }
 }
