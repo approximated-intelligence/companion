@@ -226,9 +226,9 @@ class TransformQueue @Inject constructor(
             // every restart): poison job. Bound it.
             withTimeout(TRANSFORM_TIMEOUT_MS) {
                 if (!job.hasAnyTransform && isAlreadyProcessed(sourceUri)) {
-                    context.contentResolver.openInputStream(sourceUri)!!.use { input ->
-                        tempFile.outputStream().use { input.copyTo(it) }
-                    }
+                    val input = context.contentResolver.openInputStream(sourceUri)
+                        ?: error("Cannot open input stream for $sourceUri")
+                    input.use { tempFile.outputStream().use { out -> it.copyTo(out) } }
                 } else if (job.mediaType == "VIDEO") {
                     val (srcW, srcH) = VideoProbe.displayDimensions(context, sourceUri)
                     VideoTransformer.transform(
@@ -262,13 +262,17 @@ class TransformQueue @Inject constructor(
 
     private fun processImage(sourceUri: Uri, job: TransformJobEntity): ByteArray {
         val resolver = context.contentResolver
-        val exifOrientation = resolver.openInputStream(sourceUri)!!.use { stream ->
+        val exifStream = resolver.openInputStream(sourceUri)
+            ?: error("Cannot open input stream for EXIF: $sourceUri")
+        val exifOrientation = exifStream.use { stream ->
             androidx.exifinterface.media.ExifInterface(stream).getAttributeInt(
                 androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION,
                 androidx.exifinterface.media.ExifInterface.ORIENTATION_NORMAL,
             )
         }
-        return resolver.openInputStream(sourceUri)!!.use { stream ->
+        val pixelStream = resolver.openInputStream(sourceUri)
+            ?: error("Cannot open input stream for decode: $sourceUri")
+        return pixelStream.use { stream ->
             ImageTransformer.transformWithExif(stream, exifOrientation, job.toImageParams())
         }
     }

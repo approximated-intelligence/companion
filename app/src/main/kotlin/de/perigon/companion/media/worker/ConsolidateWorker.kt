@@ -33,7 +33,9 @@ import java.io.File
 private const val TAG = "ConsolidateWorker"
 private const val CONSOLIDATED_SUBFOLDER = "Consolidated"
 private const val CAMERA_SUBFOLDER = "Camera"
-private const val NOTIF_ID = 43
+// Unique app-wide: 43 belongs to RestoreNotifier — sharing it let concurrent
+// restore + consolidate runs clobber each other's foreground notifications.
+private const val NOTIF_ID = 4030
 private const val CONTENT_REQUEST_CODE = 9022
 private const val CALLER_TAG = "consolidate"
 

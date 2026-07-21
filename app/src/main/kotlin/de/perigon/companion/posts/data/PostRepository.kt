@@ -112,10 +112,16 @@ class PostRepository @Inject constructor(
         if (media != null) unprotectSourceIfNeeded(media)
     }
 
+    /**
+     * Reorder atomically: a crash mid-loop previously left a half-applied
+     * ordering (duplicate/skipped positions) that the UI then re-read.
+     */
     suspend fun updateMediaPositions(items: List<PostMediaEntity>) {
-        for (item in items) {
-            if (item.id != 0L) {
-                postMediaDao.updatePosition(item.id, item.position)
+        db.withTransaction {
+            for (item in items) {
+                if (item.id != 0L) {
+                    postMediaDao.updatePosition(item.id, item.position)
+                }
             }
         }
     }

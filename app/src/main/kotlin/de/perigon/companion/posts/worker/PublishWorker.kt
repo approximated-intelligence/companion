@@ -3,6 +3,7 @@ package de.perigon.companion.posts.worker
 import android.content.Context
 import android.net.Uri
 import android.graphics.BitmapFactory
+import android.media.MediaDataSource
 import android.media.MediaMetadataRetriever
 import androidx.hilt.work.HiltWorker
 import androidx.work.*
@@ -31,6 +32,7 @@ import de.perigon.companion.util.sha256Hex
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import io.ktor.client.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import java.io.File
@@ -160,6 +162,8 @@ class PublishWorker @AssistedInject constructor(
                 }
                 warning = result.warning
                 bytes = result.bytes
+            } catch (e: CancellationException) {
+                throw e // cancel must not be recorded as a media failure
             } catch (e: Exception) {
                 mediaErrors += "${media.contentHash.take(12)}….$ext: transform failed - ${e.message}"
                 continue
@@ -207,12 +211,16 @@ class PublishWorker @AssistedInject constructor(
                         if (previousHash == null) {
                             runCatching { backendPair.first.deleteMedia("static/${post.slug}/${media.contentHash}.$ext") }
                         }
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         uploadErrors += "$filename: upload failed - ${e.message}"
                     }
                 } else {
                     try {
                         blobSha = github.createBlob(bytes)
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         uploadErrors += "$filename: blob upload failed - ${e.message}"
                     }
@@ -277,6 +285,10 @@ class PublishWorker @AssistedInject constructor(
                     keepFilenames = shipped.map { it.filename }.toSet(),
                 )
             }
+        } catch (e: CancellationException) {
+            // State on the server is unknown but a re-publish is idempotent;
+            // leaving QUEUED intact is correct — do not mark NEEDS_FIXING.
+            throw e
         } catch (e: Exception) {
             postDao.updatePublishState(postId, PostPublishState.NEEDS_FIXING)
             return fail(postId, "Git commit failed: ${e.message}")
@@ -400,6 +412,9 @@ class PublishWorker @AssistedInject constructor(
             tempFile.writeBytes(bytes)
             if (isVideo) mediaStore.placeVideoResult(tempFile)
             else         mediaStore.placeImageResult(tempFile)
+        } catch (e: CancellationException) {
+            tempFile.delete()
+            throw e
         } catch (e: Exception) {
             android.util.Log.e("PublishWorker", "persistToPostMedia failed", e)
             tempFile.delete()
@@ -458,20 +473,34 @@ fun imageDimensions(bytes: ByteArray): Pair<Int, Int>? {
     return opts.outWidth to opts.outHeight
 }
 
-fun videoDimensions(bytes: ByteArray): Pair<Int, Int>? {
-    val tmp = File.createTempFile("vdim", ".mp4")
-    return try {
-        tmp.writeBytes(bytes)
-        val retriever = MediaMetadataRetriever()
-        try {
-            retriever.setDataSource(tmp.absolutePath)
-            val w = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
-            val h = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
-            if (w != null && h != null) w to h else null
-        } finally {
-            retriever.release()
-        }
-    } finally {
-        tmp.delete()
+/**
+ * Read-only [MediaDataSource] over an in-memory byte array — lets
+ * MediaMetadataRetriever probe video bytes directly instead of the previous
+ * write-to-temp-file round trip.
+ */
+private class BytesDataSource(private val data: ByteArray) : MediaDataSource() {
+    override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
+        if (position < 0 || position >= data.size) return -1
+        val toRead = minOf(size, (data.size - position).toInt())
+        System.arraycopy(data, position.toInt(), buffer, offset, toRead)
+        return toRead
     }
+
+    override fun getSize(): Long = data.size.toLong()
+
+    override fun close() { /* nothing to release */ }
+}
+
+fun videoDimensions(bytes: ByteArray): Pair<Int, Int>? = try {
+    val retriever = MediaMetadataRetriever()
+    try {
+        retriever.setDataSource(BytesDataSource(bytes))
+        val w = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
+        val h = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
+        if (w != null && h != null) w to h else null
+    } finally {
+        retriever.release()
+    }
+} catch (e: Exception) {
+    null // unprobeable video — callers already treat dimensions as optional
 }
