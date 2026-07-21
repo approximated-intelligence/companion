@@ -5,6 +5,11 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
+import de.perigon.companion.core.di.ApplicationScope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -45,25 +50,44 @@ private fun Preferences.toAudioConfig(): AudioConfigEntity {
     )
 }
 
+/**
+ * Sync-read facade over the audio-config DataStore. Snapshot warmed
+ * asynchronously at construction — previously a runBlocking disk read during
+ * Hilt graph construction on the main thread (one of four such seeds
+ * serialized into cold start). Same pattern as TrackConfigPrefs.
+ */
 @Singleton
 class AudioConfigPrefs @Inject constructor(
     @param:ApplicationContext private val ctx: Context,
+    @ApplicationScope appScope: CoroutineScope,
 ) {
     private val ds: DataStore<Preferences> = ctx.audioConfigDataStore
 
     @Volatile
-    private var cache: Preferences = runBlocking { ds.data.first() }
+    private var cache: Preferences? = null
+
+    private val seed: Deferred<Preferences> = appScope.async(Dispatchers.IO) {
+        ds.data.first().also { snapshot ->
+            // An edit() completing first already installed a newer snapshot —
+            // never replace it with the older read.
+            if (cache == null) cache = snapshot
+        }
+    }
+
+    private fun snapshot(): Preferences = cache ?: runBlocking { seed.await() }
+
+    private suspend fun awaitPrefs(): Preferences = cache ?: seed.await()
 
     private suspend fun edit(block: MutablePreferences.() -> Unit) {
         cache = ds.edit(block)
     }
 
-    fun get(): AudioConfigEntity = cache.toAudioConfig()
+    fun get(): AudioConfigEntity = snapshot().toAudioConfig()
 
     fun observe(): Flow<AudioConfigEntity> = ds.data.map { it.toAudioConfig() }
 
     suspend fun update(transform: (AudioConfigEntity) -> AudioConfigEntity) {
-        val updated = transform(get())
+        val updated = transform(awaitPrefs().toAudioConfig())
         edit {
             set(Keys.PRESET,               updated.preset.name)
             set(Keys.FORMAT,               updated.format.name)
@@ -75,8 +99,8 @@ class AudioConfigPrefs @Inject constructor(
         }
     }
 
-    fun folderUri(): String?   = cache[Keys.FOLDER_URI]
-    fun folderLabel(): String? = cache[Keys.FOLDER_LABEL]
+    fun folderUri(): String?   = snapshot()[Keys.FOLDER_URI]
+    fun folderLabel(): String? = snapshot()[Keys.FOLDER_LABEL]
 
     suspend fun setFolder(uri: String, label: String) {
         edit {
@@ -93,4 +117,8 @@ class AudioConfigPrefs @Inject constructor(
     }
 
     fun observeFolderUri(): Flow<String?> = ds.data.map { it[Keys.FOLDER_URI] }
+
+    /** Uri + label together — combine source for AudioRecordingViewModel. */
+    fun observeFolder(): Flow<Pair<String?, String?>> =
+        ds.data.map { it[Keys.FOLDER_URI] to it[Keys.FOLDER_LABEL] }
 }

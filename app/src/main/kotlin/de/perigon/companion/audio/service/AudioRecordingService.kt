@@ -149,7 +149,9 @@ class AudioRecordingService : Service() {
             startForeground(NOTIFICATION_ID, buildNotification(cfg), ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
 
             try {
-                recorder = buildRecorder(cfg, parcelFd.fileDescriptor).also { it.start() }
+                recorder = withContext(Dispatchers.IO) {
+                    buildRecorder(cfg, parcelFd.fileDescriptor).also { it.start() }
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "MediaRecorder start failed", e)
                 cleanupRecorderState()
@@ -188,26 +190,33 @@ class AudioRecordingService : Service() {
         val rec = recorder ?: run { stopSelf(); return }
         tickJob?.cancel(); tickJob = null
 
-        try { rec.stop() } catch (e: Exception) { Log.w(TAG, "MediaRecorder.stop failed: ${e.message}") }
-        detachEffects()
-        try { rec.release() } catch (_: Exception) {}
+        // Detach state synchronously so a second STOP / the tick loop can't
+        // touch the recorder while it finalizes.
         recorder = null
-
-        try { pfd?.close() } catch (_: Exception) {}
-        pfd = null
-
-        val durationMs = computeElapsed()
-        val capturedUri = fileUri
-        val capturedId = recordingId
-
-        fileUri = null
-        recordingId = 0L
+        val capturedPfd = pfd; pfd = null
+        val durationMs  = computeElapsed()
+        val capturedUri = fileUri; fileUri = null
+        val capturedId  = recordingId; recordingId = 0L
         recordingName = ""
 
+        detachEffects()
+
+        _status.value = AudioRecordingStatus()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+
+        // MediaRecorder.stop() blocks while the muxer finalizes (moov atom) —
+        // previously on the main thread. App scope, not service scope: this
+        // must outlive stopSelf(), and the DB finalize depends on stop()
+        // having flushed the file (size + orphan-recovery sentinel).
+        val resolver = applicationContext.contentResolver
         appScope.launch(Dispatchers.IO) {
+            try { rec.stop() } catch (e: Exception) { Log.w(TAG, "MediaRecorder.stop failed: ${e.message}") }
+            try { rec.release() } catch (_: Exception) {}
+            try { capturedPfd?.close() } catch (_: Exception) {}
+
             val sizeBytes = capturedUri?.let { uri ->
                 try {
-                    contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize }
+                    resolver.openFileDescriptor(uri, "r")?.use { it.statSize }
                 } catch (_: Exception) { null }
             } ?: 0L
             if (capturedId > 0L) {
@@ -215,8 +224,6 @@ class AudioRecordingService : Service() {
             }
         }
 
-        _status.value = AudioRecordingStatus()
-        stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
@@ -246,7 +253,6 @@ class AudioRecordingService : Service() {
     private fun startTickLoop() {
         tickJob?.cancel()
         tickJob = scope.launch {
-            var sinceLastLevelMs = 0L
             while (recorder != null) {
                 val rec = recorder ?: break
 
@@ -257,10 +263,8 @@ class AudioRecordingService : Service() {
                     val db = amplitudeToDb(amplitude)
                     _status.update { it.copy(amplitudeDb = db) }
                     delay(LEVEL_POLL_MS)
-                    sinceLastLevelMs = 0L
                 } else {
                     delay(ELAPSED_TICK_MS)
-                    sinceLastLevelMs += ELAPSED_TICK_MS
                 }
             }
         }
@@ -381,6 +385,7 @@ class AudioRecordingService : Service() {
 
     override fun onDestroy() {
         tickJob?.cancel()
+        // Best-effort teardown on system kill; the normal path is stopRecording().
         recorder?.let { r ->
             try { r.stop() } catch (_: Exception) {}
             try { r.release() } catch (_: Exception) {}
