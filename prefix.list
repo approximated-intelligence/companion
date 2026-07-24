@@ -1,0 +1,9 @@
+app/build.gradle.kts
+app/src/main/AndroidManifest.xml
+app/src/main/res/values/strings.xml
+app/src/main/res/values/themes.xml
+app/src/main/res/xml/data_extraction_rules.xml
+app/src/main/res/xml/file_provider_paths.xml
+build.gradle.kts
+settings.gradle.kts
+gradle/libs.versions.toml

@@ -1,0 +1,34 @@
+# Starter config, layered on detekt's default ruleset (buildUponDefaultConfig
+# in app/build.gradle.kts) -- only overrides what is specifically justified
+# for this codebase's own conventions, not a blanket loosening.
+#
+# No detekt-formatting/ktlint module is applied: this project's aligned-
+# column, non-standard-width formatting style would fight ktlint's rules
+# constantly, so raw style is deliberately left alone.
+#
+# No baseline exists yet. Run `./gradlew detektBaseline` once against a
+# clean checkout and commit config/detekt/baseline.xml -- same pattern as
+# the Android Lint baseline -- rather than guessing at overrides for
+# violations nobody has actually seen yet.
+
+complexity:
+  LongParameterList:
+    # Hilt constructor injection routinely runs past the default threshold
+    # (ConsolidateViewModel, BackupViewModel, PublishWorker, etc. all take
+    # 6-9 dependencies) -- that is the intended DI shape here, not a smell.
+    functionThreshold: 6
+    constructorThreshold: 10
+  TooManyFunctions:
+    # Feature-rich ViewModels expose many small, single-purpose public
+    # functions (one per UI action) by design -- the reviewed pattern, not
+    # god-classes.
+    thresholdInClasses: 25
+    thresholdInFiles: 25
+
+style:
+  MagicNumber:
+    # detekt already special-cases Compose dp/sp literals and this codebase
+    # already names most constants (NOTIF_ID, request codes, etc.) -- left at
+    # default severity to see what it actually flags before adding more
+    # exclusions.
+    active: true

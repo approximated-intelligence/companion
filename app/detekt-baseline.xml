@@ -1,0 +1,857 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>ComplexCondition:BackupPaxWriter.kt$BackupPaxWriter$block[0] != 'P'.code.toByte() || block[1] != 'X'.code.toByte() || block[2] != '2'.code.toByte() || block[3] != '\n'.code.toByte()</ID>
+    <ID>ComplexCondition:BackupWorker.kt$BackupWorker$b2Config == null || b2RwAppKey == null || serverPkHex == null || phoneSkHex == null || phonePkHex == null</ID>
+    <ID>ComplexCondition:RestoreViewModel.kt$RestoreViewModel$appPrefs.b2Config() == null || creds.b2RwAppKey() == null || appPrefs.naclPkHex() == null || creds.phoneSecretKey() == null || appPrefs.phonePkHex() == null</ID>
+    <ID>ComplexCondition:RestoreWorker.kt$RestoreWorker$b2Config == null || appKey == null || serverPkHex == null || phoneSkHex == null || phonePkHex == null</ID>
+    <ID>CyclomaticComplexMethod:AppScaffold.kt$private fun routeTitle(route: String)</ID>
+    <ID>CyclomaticComplexMethod:AssetDiffViewModel.kt$internal fun computeDiff( oldLines: List&lt;String&gt;, newLines: List&lt;String&gt;, ): List&lt;DiffLine&gt;</ID>
+    <ID>CyclomaticComplexMethod:AssetRepository.kt$AssetRepository$suspend fun fetchServerShas(github: GitHubClient)</ID>
+    <ID>CyclomaticComplexMethod:AudioRecordingScreen.kt$@OptIn(ExperimentalFoundationApi::class) @Composable private fun RecordingRow( rec: AudioRecordingEntity, isActive: Boolean, isPaused: Boolean, elapsedMs: Long, amplitudeDb: Int?, isSelected: Boolean, selectionMode: Boolean, onToggleSelect: () -&gt; Unit, onPlay: () -&gt; Unit, onShare: () -&gt; Unit, onDelete: () -&gt; Unit, onRename: (String) -&gt; Unit, )</ID>
+    <ID>CyclomaticComplexMethod:AudioRecordingScreen.kt$@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class) @Composable fun AudioRecordingScreen( navController: NavController, vm: AudioRecordingViewModel = hiltViewModel(), )</ID>
+    <ID>CyclomaticComplexMethod:BackupOrchestrator.kt$BackupOrchestrator$private suspend fun execute(listener: ProgressListener)</ID>
+    <ID>CyclomaticComplexMethod:BackupPaxWriter.kt$BackupPaxWriter$fun parseEntry(block: ByteArray): PaxEntry?</ID>
+    <ID>CyclomaticComplexMethod:BackupScreen.kt$@Composable private fun BackupContent( state: BackupUiState, onCancelBackup: () -&gt; Unit, onStartBackup: () -&gt; Unit, onSetAutoEnabled: (Boolean) -&gt; Unit, onSetInterval: (Int) -&gt; Unit, onSetNumParts: (Int) -&gt; Unit, onToggleFolder: (Long, Boolean) -&gt; Unit, onRemoveFolder: (Long) -&gt; Unit, folderPicker: () -&gt; Unit, )</ID>
+    <ID>CyclomaticComplexMethod:ConsolidateViewModel.kt$ConsolidateViewModel$private fun observeBackupWorker()</ID>
+    <ID>CyclomaticComplexMethod:ConsolidateViewModel.kt$ConsolidateViewModel$private suspend fun scanAndBackfill(): Int</ID>
+    <ID>CyclomaticComplexMethod:ConsolidateWorker.kt$ConsolidateWorker$override suspend fun doWork(): Result</ID>
+    <ID>CyclomaticComplexMethod:ConsolidateWorker.kt$ConsolidateWorker$private suspend fun scanAndPersistSourceFiles(dcimTreeUri: Uri): Int</ID>
+    <ID>CyclomaticComplexMethod:CropGeometry.kt$fun applyCropDrag(rect: Rect, handle: CropHandle, delta: Offset, bounds: Rect, minSize: Float): Rect</ID>
+    <ID>CyclomaticComplexMethod:FixCycleStateMachine.kt$fun fixTransition( state: FixState, event: FixEvent, maxInaccuracyM: Float, isSingleFixMode: Boolean, maxAttempts: Int = 2, ): FixTransition</ID>
+    <ID>CyclomaticComplexMethod:GitHubClient.kt$GitHubClient$suspend fun commitTree( branch: String = "main", message: String, additions: List&lt;TreeFile&gt; = emptyList(), blobAdditions: List&lt;BlobAddition&gt; = emptyList(), deletions: Set&lt;String&gt; = emptySet(), deleteWhere: ((String) -&gt; Boolean)? = null, stalePrefix: String? = null, keepFilenames: Set&lt;String&gt; = emptySet(), ): String</ID>
+    <ID>CyclomaticComplexMethod:GitHubFileWorker.kt$GitHubFileWorker$override suspend fun doWork(): Result</ID>
+    <ID>CyclomaticComplexMethod:GpxExportWorker.kt$GpxExportWorker$override suspend fun doWork(): Result</ID>
+    <ID>CyclomaticComplexMethod:GpxImporter.kt$GpxImporter$fun import(input: InputStream): ImportedTrack</ID>
+    <ID>CyclomaticComplexMethod:MediaEditScreen.kt$@Composable fun MediaEditScreen( uri: Uri, mediaType: MediaType, initialIntent: TransformIntent = TransformIntent(), onConfirm: (TransformIntent) -&gt; Unit, onCancel: () -&gt; Unit, onFrameExtracted: (Uri) -&gt; Unit = {}, onError: (String) -&gt; Unit = {}, )</ID>
+    <ID>CyclomaticComplexMethod:MediaEditScreen.kt$@Composable private fun TrimStrip( frames: List&lt;Bitmap&gt;, startFraction: Float, endFraction: Float, playbackFraction: Float?, onStartChanged: (Float) -&gt; Unit, onEndChanged: (Float) -&gt; Unit, )</ID>
+    <ID>CyclomaticComplexMethod:MediaPrepScreen.kt$@Composable fun MediaPrepScreen( navController: NavController, postId: Long = 0L, incomingUris: List&lt;Uri&gt; = emptyList(), viewModel: MediaPrepViewModel = hiltViewModel(), )</ID>
+    <ID>CyclomaticComplexMethod:Post.kt$JekyllPostBuilder$fun build( post: Post, mediaEntries: List&lt;MediaEntry&gt;, siteUrl: String? = null, mediaBaseUrl: String? = null, ): String</ID>
+    <ID>CyclomaticComplexMethod:PostListScreen.kt$@Composable private fun PostRow( post: PostEntity, lead: PostMediaEntity?, leadStatus: MediaSourceStatus, editPreview: Bitmap?, resolveUri: (PostMediaEntity) -&gt; ResolvedMedia, isVerifying: Boolean, onClick: () -&gt; Unit, onPublish: () -&gt; Unit, onUnpublish: () -&gt; Unit, onDelete: () -&gt; Unit, onVerify: () -&gt; Unit, onShare: () -&gt; Unit, )</ID>
+    <ID>CyclomaticComplexMethod:PostListViewModel.kt$PostListViewModel$fun verifyPost(post: PostEntity)</ID>
+    <ID>CyclomaticComplexMethod:PostScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun PostScreen( navController: NavController, postId: Long = 0L, onNavigateBack: () -&gt; Unit, onPublished: () -&gt; Unit, vm: PostViewModel = hiltViewModel(), )</ID>
+    <ID>CyclomaticComplexMethod:PublishWorker.kt$PublishWorker$override suspend fun doWork(): Result</ID>
+    <ID>CyclomaticComplexMethod:RecordingScreen.kt$@OptIn(ExperimentalFoundationApi::class) @Composable private fun TrackRow( track: TrackSummary, isActive: Boolean, isPaused: Boolean, isSelected: Boolean, selectionMode: Boolean, livePointCount: Int, pendingPoints: Int, lastProvidedFix: TrackPointEntity?, lastAcceptedFix: TrackPointEntity?, gnssInfo: GnssInfo, onToggleSelection: () -&gt; Unit, onShare: () -&gt; Unit, onDelete: () -&gt; Unit, onDeleteActive: (restart: Boolean) -&gt; Unit, onShareGeo: () -&gt; Unit, onRename: (String) -&gt; Unit, onEnsureStats: () -&gt; Unit, )</ID>
+    <ID>CyclomaticComplexMethod:RecordingScreen.kt$@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class) @Composable fun RecordingScreen( navController: NavController, vm: RecordingViewModel = hiltViewModel(), )</ID>
+    <ID>CyclomaticComplexMethod:RestoreFileUseCase.kt$suspend fun restoreSelectedFiles( context: Context, b2: S3Backend, senderPk: ByteArray, recipientSk: ByteArray, sodium: com.goterl.lazysodium.LazySodiumAndroid, stateRepo: BackupStateRepository, packPrefix: String, selections: List&lt;RestoreSelectionEntity&gt;, dcimUri: String?, safGrants: Map&lt;String, Uri&gt;, listener: RestoreProgressListener, ): List&lt;String&gt;</ID>
+    <ID>CyclomaticComplexMethod:RestoreScreen.kt$@Composable private fun RestoreMainContent( state: RestoreUiState, vm: RestoreViewModel, )</ID>
+    <ID>CyclomaticComplexMethod:RestoreWorker.kt$RestoreWorker$private suspend fun scanPack( b2: S3Backend, senderPk: ByteArray, recipientSk: ByteArray, packPos: Int, packKey: String, firstPartWire: ByteArray, restoreInline: Boolean, dcimUri: String? = null, safGrants: Map&lt;String, Uri&gt; = emptyMap(), ): List&lt;String&gt;</ID>
+    <ID>CyclomaticComplexMethod:SettingsScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun SettingsScreen( navController: NavController, vm: SettingsViewModel = hiltViewModel(), )</ID>
+    <ID>CyclomaticComplexMethod:SettingsViewModel.kt$SettingsViewModel$private fun buildState(): SettingsState</ID>
+    <ID>CyclomaticComplexMethod:SettingsViewModel.kt$SettingsViewModel$private suspend fun applyBootstrap(raw: String)</ID>
+    <ID>EmptyFunctionBlock:BackgroundService.kt$BackgroundService.&lt;no name provided&gt;${}</ID>
+    <ID>FunctionNaming:AccessibilityGate.kt$@Composable fun AccessibilityGate(content: @Composable () -&gt; Unit)</ID>
+    <ID>FunctionNaming:AppScaffold.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun AppTopBar(navController: NavController)</ID>
+    <ID>FunctionNaming:AssetDiffScreen.kt$@Composable fun AssetDiffScreen( navController: NavController, assetId: Long, vm: AssetDiffViewModel = hiltViewModel(), )</ID>
+    <ID>FunctionNaming:AssetDiffScreen.kt$@Composable private fun DiffContent(lines: List&lt;DiffLine&gt;)</ID>
+    <ID>FunctionNaming:AssetDiffScreen.kt$@Composable private fun DiffLineRow(line: DiffLine, modifier: Modifier = Modifier)</ID>
+    <ID>FunctionNaming:AssetDiffScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable private fun DiffTopBar(path: String, onBack: () -&gt; Unit)</ID>
+    <ID>FunctionNaming:AssetEditScreen.kt$@Composable fun AssetEditScreen( navController: NavController, assetId: Long, vm: AssetEditViewModel = hiltViewModel(), )</ID>
+    <ID>FunctionNaming:AssetEditScreen.kt$@Composable private fun Editor( content: String, wrapLines: Boolean, matchRanges: List&lt;IntRange&gt;, currentMatchIndex: Int, onContent: (String) -&gt; Unit, )</ID>
+    <ID>FunctionNaming:AssetEditScreen.kt$@Composable private fun SearchReplaceBar( searchQuery: String, replaceText: String, matchCount: Int, currentIndex: Int, isReplaceOpen: Boolean, onSearchChange: (String) -&gt; Unit, onReplaceChange: (String) -&gt; Unit, onNext: () -&gt; Unit, onPrevious: () -&gt; Unit, onReplaceAll: () -&gt; Unit, onToggleReplace: () -&gt; Unit, onClose: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:AssetEditScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable private fun AssetEditTopBar( path: String, isDirty: Boolean, wrapLines: Boolean, isSearchOpen: Boolean, onBack: () -&gt; Unit, onSave: () -&gt; Unit, onToggleWrap: () -&gt; Unit, onToggleSearch: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:AssetListScreen.kt$@Composable fun AssetListScreen( navController: NavController, vm: AssetListViewModel = hiltViewModel(), )</ID>
+    <ID>FunctionNaming:AssetListScreen.kt$@Composable private fun AssetRow( asset: AssetEntity, onEdit: () -&gt; Unit, onDiff: () -&gt; Unit, onPush: () -&gt; Unit, onPull: () -&gt; Unit, onDelete: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:AssetListScreen.kt$@Composable private fun SyncStateBadge(asset: AssetEntity)</ID>
+    <ID>FunctionNaming:AudioRecordingScreen.kt$@Composable private fun AdvancedAudioProcessing( config: AudioConfigEntity, onSetNoiseSuppression: (Boolean) -&gt; Unit, onSetAutoGain: (Boolean) -&gt; Unit, )</ID>
+    <ID>FunctionNaming:AudioRecordingScreen.kt$@Composable private fun ControlsCard( state: AudioRecordingUiState, hasMicPermission: Boolean, onStart: () -&gt; Unit, onPause: () -&gt; Unit, onResume: () -&gt; Unit, onStop: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:AudioRecordingScreen.kt$@Composable private fun FolderRow(label: String?, onSelect: () -&gt; Unit, onClear: () -&gt; Unit)</ID>
+    <ID>FunctionNaming:AudioRecordingScreen.kt$@Composable private fun SelectionBottomBar( count: Int, allSelected: Boolean, onClear: () -&gt; Unit, onToggleAll: () -&gt; Unit, onDelete: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:AudioRecordingScreen.kt$@Composable private fun ToggleRow( title: String, subtitle: String, checked: Boolean, onCheckedChange: (Boolean) -&gt; Unit, enabled: Boolean = true, )</ID>
+    <ID>FunctionNaming:AudioRecordingScreen.kt$@OptIn(ExperimentalFoundationApi::class) @Composable private fun BitrateChips(current: Int, onSelect: (Int) -&gt; Unit)</ID>
+    <ID>FunctionNaming:AudioRecordingScreen.kt$@OptIn(ExperimentalFoundationApi::class) @Composable private fun FormatChips(current: AudioFormat, onSelect: (AudioFormat) -&gt; Unit)</ID>
+    <ID>FunctionNaming:AudioRecordingScreen.kt$@OptIn(ExperimentalFoundationApi::class) @Composable private fun PresetChips(current: AudioPreset, onSelect: (AudioPreset) -&gt; Unit)</ID>
+    <ID>FunctionNaming:AudioRecordingScreen.kt$@OptIn(ExperimentalFoundationApi::class) @Composable private fun RecordingRow( rec: AudioRecordingEntity, isActive: Boolean, isPaused: Boolean, elapsedMs: Long, amplitudeDb: Int?, isSelected: Boolean, selectionMode: Boolean, onToggleSelect: () -&gt; Unit, onPlay: () -&gt; Unit, onShare: () -&gt; Unit, onDelete: () -&gt; Unit, onRename: (String) -&gt; Unit, )</ID>
+    <ID>FunctionNaming:AudioRecordingScreen.kt$@OptIn(ExperimentalFoundationApi::class) @Composable private fun SampleRateChips(current: Int, onSelect: (Int) -&gt; Unit)</ID>
+    <ID>FunctionNaming:AudioRecordingScreen.kt$@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class) @Composable fun AudioRecordingScreen( navController: NavController, vm: AudioRecordingViewModel = hiltViewModel(), )</ID>
+    <ID>FunctionNaming:BackupScreen.kt$@Composable private fun BackupContent( state: BackupUiState, onCancelBackup: () -&gt; Unit, onStartBackup: () -&gt; Unit, onSetAutoEnabled: (Boolean) -&gt; Unit, onSetInterval: (Int) -&gt; Unit, onSetNumParts: (Int) -&gt; Unit, onToggleFolder: (Long, Boolean) -&gt; Unit, onRemoveFolder: (Long) -&gt; Unit, folderPicker: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:BackupScreen.kt$@Composable private fun DefaultFolderRow( folder: BackupFolderEntity, onToggle: (Boolean) -&gt; Unit, )</ID>
+    <ID>FunctionNaming:BackupScreen.kt$@Composable private fun FolderRow( folder: BackupFolderEntity, onToggle: (Boolean) -&gt; Unit, onRemove: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:BackupScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun BackupScreen( navController: NavController, vm: BackupViewModel = hiltViewModel(), )</ID>
+    <ID>FunctionNaming:ConsolidateScreen.kt$@Composable fun ConsolidateScreen( navController: NavController, vm: ConsolidateViewModel = hiltViewModel(), )</ID>
+    <ID>FunctionNaming:ConsolidateScreen.kt$@Composable private fun ActionButtons( state: ConsolidateUiState, onStartConsolidate: () -&gt; Unit, onStartBackup: () -&gt; Unit, onStartBoth: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:ConsolidateScreen.kt$@Composable private fun BackfillButton(state: ConsolidateUiState, onBackfillExisting: () -&gt; Unit)</ID>
+    <ID>FunctionNaming:ConsolidateScreen.kt$@Composable private fun BackupErrorCard(state: ConsolidateUiState)</ID>
+    <ID>FunctionNaming:ConsolidateScreen.kt$@Composable private fun BackupProgressCard(state: ConsolidateUiState)</ID>
+    <ID>FunctionNaming:ConsolidateScreen.kt$@Composable private fun ConsolidateProgressCard(state: ConsolidateUiState)</ID>
+    <ID>FunctionNaming:ConsolidateScreen.kt$@Composable private fun FileListHeader( state: ConsolidateUiState, onSetViewMode: (ViewMode) -&gt; Unit, onSetSortField: (SortField) -&gt; Unit, )</ID>
+    <ID>FunctionNaming:ConsolidateScreen.kt$@Composable private fun GridContent( padding: PaddingValues, state: ConsolidateUiState, onStartConsolidate: () -&gt; Unit, onStartBackup: () -&gt; Unit, onStartBoth: () -&gt; Unit, onSetViewMode: (ViewMode) -&gt; Unit, onSetSortField: (SortField) -&gt; Unit, onEnterSelectionMode: (Long) -&gt; Unit, onToggleSelected: (Long) -&gt; Unit, onShowPreview: (String) -&gt; Unit, onProtect: (Long) -&gt; Unit, onRequestUnprotect: (Long) -&gt; Unit, onBackfillExisting: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:ConsolidateScreen.kt$@Composable private fun ListContent( padding: PaddingValues, state: ConsolidateUiState, onStartConsolidate: () -&gt; Unit, onStartBackup: () -&gt; Unit, onStartBoth: () -&gt; Unit, onSetViewMode: (ViewMode) -&gt; Unit, onSetSortField: (SortField) -&gt; Unit, onEnterSelectionMode: (Long) -&gt; Unit, onToggleSelected: (Long) -&gt; Unit, onShowPreview: (String) -&gt; Unit, onProtect: (Long) -&gt; Unit, onRequestUnprotect: (Long) -&gt; Unit, onBackfillExisting: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:ConsolidateScreen.kt$@Composable private fun SortChip(label: String, field: SortField, state: ConsolidateUiState, onSetSortField: (SortField) -&gt; Unit)</ID>
+    <ID>FunctionNaming:ConsolidateScreen.kt$@Composable private fun StatusCard(state: ConsolidateUiState)</ID>
+    <ID>FunctionNaming:ConsolidateScreen.kt$@OptIn(ExperimentalFoundationApi::class) @Composable private fun SafeToDeleteGridCell(file: SafeToDeleteView, isProtected: Boolean, isSelected: Boolean, selectionMode: Boolean, onLongPress: () -&gt; Unit, onTap: () -&gt; Unit, onProtect: () -&gt; Unit, onUnprotect: () -&gt; Unit)</ID>
+    <ID>FunctionNaming:ConsolidateScreen.kt$@OptIn(ExperimentalFoundationApi::class) @Composable private fun SafeToDeleteListRow(file: SafeToDeleteView, isProtected: Boolean, isSelected: Boolean, selectionMode: Boolean, onLongPress: () -&gt; Unit, onTap: () -&gt; Unit, onProtect: () -&gt; Unit, onUnprotect: () -&gt; Unit)</ID>
+    <ID>FunctionNaming:ConsolidateScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable private fun SelectionTopBar( selectedCount: Int, onSelectAll: () -&gt; Unit, onExit: () -&gt; Unit, onDelete: () -&gt; Unit, deleteEnabled: Boolean, )</ID>
+    <ID>FunctionNaming:DcimGate.kt$@Composable fun DcimGate( dcimUri: String?, onGranted: (Uri) -&gt; Unit, writeAccess: Boolean = false, content: @Composable () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:EmbeddedQrScanner.kt$@Composable fun EmbeddedQrScanner( prompt: String, onResult: (String) -&gt; Unit, onCancel: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:MediaEditScreen.kt$@Composable fun MediaEditScreen( uri: Uri, mediaType: MediaType, initialIntent: TransformIntent = TransformIntent(), onConfirm: (TransformIntent) -&gt; Unit, onCancel: () -&gt; Unit, onFrameExtracted: (Uri) -&gt; Unit = {}, onError: (String) -&gt; Unit = {}, )</ID>
+    <ID>FunctionNaming:MediaEditScreen.kt$@Composable private fun FrameGrabControls( keyframeCount: Int, currentIndex: Int, currentTimestampUs: Long, isGrabbing: Boolean, grabCount: Int, sliderFraction: Float, onSliderChange: (Float) -&gt; Unit, onPrev: () -&gt; Unit, onNext: () -&gt; Unit, onGrab: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:MediaEditScreen.kt$@Composable private fun ImageCropOverlay( rawBitmap: Bitmap, exifOrientation: Int, orientation: OrientationTransform, fineRotation: Float, pixelCrop: PixelCrop?, onPixelCropChanged: (PixelCrop) -&gt; Unit, onInitPixelCrop: (Float, Float) -&gt; Unit, modifier: Modifier = Modifier, )</ID>
+    <ID>FunctionNaming:MediaEditScreen.kt$@Composable private fun TrimStrip( frames: List&lt;Bitmap&gt;, startFraction: Float, endFraction: Float, playbackFraction: Float?, onStartChanged: (Float) -&gt; Unit, onEndChanged: (Float) -&gt; Unit, )</ID>
+    <ID>FunctionNaming:MediaEditScreen.kt$@Composable private fun VideoCropOverlay( videoFrameRect: Rect, orientation: OrientationTransform, fineRotation: Float, unrotW: Float, unrotH: Float, pixelCrop: PixelCrop?, onPixelCropChanged: (PixelCrop) -&gt; Unit, modifier: Modifier = Modifier, )</ID>
+    <ID>FunctionNaming:MediaPickerScreen.kt$@Composable private fun AlbumDropdown( albums: List&lt;AlbumInfo&gt;, selected: String?, onSelect: (String?) -&gt; Unit, modifier: Modifier = Modifier, )</ID>
+    <ID>FunctionNaming:MediaPickerScreen.kt$@Composable private fun MediaPickerCell( item: MediaPickerItem, isSelected: Boolean, selectionNumber: Int, onToggle: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:MediaPickerScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun MediaPickerScreen( navController: NavController, onConfirm: (List&lt;Uri&gt;) -&gt; Unit, onCancel: () -&gt; Unit, vm: MediaPickerViewModel = hiltViewModel(), )</ID>
+    <ID>FunctionNaming:MediaPrepScreen.kt$@Composable fun MediaPrepScreen( navController: NavController, postId: Long = 0L, incomingUris: List&lt;Uri&gt; = emptyList(), viewModel: MediaPrepViewModel = hiltViewModel(), )</ID>
+    <ID>FunctionNaming:MediaPrepScreen.kt$@Composable private fun MediaCell( item: MediaPrepItem, editPreview: android.graphics.Bitmap?, displayUri: Uri, sourceStatus: MediaSourceStatus, onTap: () -&gt; Unit, onRemove: () -&gt; Unit, dragHandle: @Composable (Modifier) -&gt; Unit, modifier: Modifier = Modifier, )</ID>
+    <ID>FunctionNaming:MediaSourceBadge.kt$@Composable fun MediaSourceBadge( status: MediaSourceStatus, modifier: Modifier = Modifier, )</ID>
+    <ID>FunctionNaming:NavGraph.kt$@Composable fun NavGraph( navController: NavHostController, startRoute: Any, incomingUris: List&lt;Uri&gt; = emptyList(), backgroundGps: Boolean = false, )</ID>
+    <ID>FunctionNaming:PermissionGate.kt$@Composable fun PermissionGate(content: @Composable () -&gt; Unit)</ID>
+    <ID>FunctionNaming:PostListScreen.kt$@Composable fun PostListScreen( navController: NavController, onNavigateToPost: (postId: Long) -&gt; Unit, onNewPost: () -&gt; Unit, vm: PostListViewModel = hiltViewModel(), )</ID>
+    <ID>FunctionNaming:PostListScreen.kt$@Composable private fun PostRow( post: PostEntity, lead: PostMediaEntity?, leadStatus: MediaSourceStatus, editPreview: Bitmap?, resolveUri: (PostMediaEntity) -&gt; ResolvedMedia, isVerifying: Boolean, onClick: () -&gt; Unit, onPublish: () -&gt; Unit, onUnpublish: () -&gt; Unit, onDelete: () -&gt; Unit, onVerify: () -&gt; Unit, onShare: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:PostListScreen.kt$@Composable private fun PublishBadge(state: PostPublishState)</ID>
+    <ID>FunctionNaming:PostScreen.kt$@Composable private fun CarouselCard( item: PostMediaEntity, isPinned: Boolean, isFirst: Boolean, motto: String, editPreview: android.graphics.Bitmap?, imageModel: Any?, sourceStatus: MediaSourceStatus, onTap: () -&gt; Unit, onPin: () -&gt; Unit, onRemove: () -&gt; Unit, dragHandle: @Composable (Modifier) -&gt; Unit, )</ID>
+    <ID>FunctionNaming:PostScreen.kt$@Composable private fun MediaCarousel( items: List&lt;PostMediaEntity&gt;, pinnedHash: String?, motto: String, editPreviews: Map&lt;Long, android.graphics.Bitmap&gt;, mediaStatuses: Map&lt;Long, MediaSourceStatus&gt;, resolveMedia: (PostMediaEntity) -&gt; ResolvedMedia, onPin: (String) -&gt; Unit, onRemove: (String) -&gt; Unit, onCommitOrder: (List&lt;String&gt;) -&gt; Unit, onTapMedia: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:PostScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun PostScreen( navController: NavController, postId: Long = 0L, onNavigateBack: () -&gt; Unit, onPublished: () -&gt; Unit, vm: PostViewModel = hiltViewModel(), )</ID>
+    <ID>FunctionNaming:PostScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable private fun DateRow( localDate: String, dayNumber: Int?, enabled: Boolean, onPrev: () -&gt; Unit, onNext: () -&gt; Unit, onToday: () -&gt; Unit, onYesterday: () -&gt; Unit, onOpenCalendar: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:QueueScreen.kt$@Composable fun QueueScreen( navController: NavController, vm: QueueViewModel = hiltViewModel(), )</ID>
+    <ID>FunctionNaming:QueueScreen.kt$@Composable private fun JobRow( job: TransformJobEntity, onCancel: () -&gt; Unit, onRemove: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:QueueScreen.kt$@Composable private fun StatusBadge(status: TransformJobStatus)</ID>
+    <ID>FunctionNaming:RecordingScreen.kt$@Composable private fun ActiveTrackInfo( providedFix: TrackPointEntity?, acceptedFix: TrackPointEntity?, gnssInfo: GnssInfo, onShareGeo: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:RecordingScreen.kt$@Composable private fun GpxExportFolder(label: String?, onSelect: () -&gt; Unit, onClear: () -&gt; Unit)</ID>
+    <ID>FunctionNaming:RecordingScreen.kt$@Composable private fun RecordingControls( isRecording: Boolean, isPaused: Boolean, hasLocationPermission: Boolean, onStart: () -&gt; Unit, onStop: () -&gt; Unit, onPause: () -&gt; Unit, onResume: () -&gt; Unit, onNewSegment: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:RecordingScreen.kt$@Composable private fun RecordingModeSelector(currentMode: String, onModeSelected: (String) -&gt; Unit)</ID>
+    <ID>FunctionNaming:RecordingScreen.kt$@Composable private fun SelectionBottomBar( selectedCount: Int, allSelected: Boolean, onClear: () -&gt; Unit, onToggleAll: () -&gt; Unit, onExport: () -&gt; Unit, onRender: () -&gt; Unit, onDelete: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:RecordingScreen.kt$@Composable private fun ToggleRow(title: String, subtitle: String, checked: Boolean, onCheckedChange: (Boolean) -&gt; Unit)</ID>
+    <ID>FunctionNaming:RecordingScreen.kt$@Composable private fun TrackStatsRow(stats: TrackStatsEntity?, isActive: Boolean)</ID>
+    <ID>FunctionNaming:RecordingScreen.kt$@OptIn(ExperimentalFoundationApi::class) @Composable private fun TrackRow( track: TrackSummary, isActive: Boolean, isPaused: Boolean, isSelected: Boolean, selectionMode: Boolean, livePointCount: Int, pendingPoints: Int, lastProvidedFix: TrackPointEntity?, lastAcceptedFix: TrackPointEntity?, gnssInfo: GnssInfo, onToggleSelection: () -&gt; Unit, onShare: () -&gt; Unit, onDelete: () -&gt; Unit, onDeleteActive: (restart: Boolean) -&gt; Unit, onShareGeo: () -&gt; Unit, onRename: (String) -&gt; Unit, onEnsureStats: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:RecordingScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable private fun TimePickerRow(label: String, time: java.time.LocalTime, onTimeSelected: (java.time.LocalTime) -&gt; Unit)</ID>
+    <ID>FunctionNaming:RecordingScreen.kt$@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class) @Composable fun RecordingScreen( navController: NavController, vm: RecordingViewModel = hiltViewModel(), )</ID>
+    <ID>FunctionNaming:RestoreScreen.kt$@Composable private fun FileRow(version: RestoreFileVersion, depth: Int, onToggle: () -&gt; Unit)</ID>
+    <ID>FunctionNaming:RestoreScreen.kt$@Composable private fun FolderRow(folder: TreeNode.Folder, depth: Int, onToggleSelection: () -&gt; Unit, onToggleExpanded: () -&gt; Unit)</ID>
+    <ID>FunctionNaming:RestoreScreen.kt$@Composable private fun MultiVersionFileRow(node: TreeNode.File, depth: Int, onToggleExpanded: () -&gt; Unit, onToggleSelection: () -&gt; Unit)</ID>
+    <ID>FunctionNaming:RestoreScreen.kt$@Composable private fun RestoreMainContent( state: RestoreUiState, vm: RestoreViewModel, )</ID>
+    <ID>FunctionNaming:RestoreScreen.kt$@Composable private fun VersionRow(version: RestoreFileVersion, depth: Int, onToggle: () -&gt; Unit)</ID>
+    <ID>FunctionNaming:RestoreScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun RestoreScreen( navController: NavController, vm: RestoreViewModel = hiltViewModel(), )</ID>
+    <ID>FunctionNaming:RestoreScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable private fun RestoreScreenContent( navController: NavController, vm: RestoreViewModel, )</ID>
+    <ID>FunctionNaming:SecureWindow.kt$@Composable fun SecureWindow()</ID>
+    <ID>FunctionNaming:SettingsScreen.kt$@Composable private fun ConfigRow( label: String, configured: Boolean, detail: String = "", onScan: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:SettingsScreen.kt$@Composable private fun CredentialRow( label: String, configured: Boolean, detail: String = "", onScan: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:SettingsScreen.kt$@Composable private fun DcimFolderRow( configured: Boolean, label: String, onSelect: () -&gt; Unit, onClear: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:SettingsScreen.kt$@Composable private fun HttpMediaEnabledRow(enabled: Boolean, label: String, onToggle: (Boolean) -&gt; Unit)</ID>
+    <ID>FunctionNaming:SettingsScreen.kt$@Composable private fun JourneyDateRow(label: String, value: String, onPick: () -&gt; Unit)</ID>
+    <ID>FunctionNaming:SettingsScreen.kt$@Composable private fun PhoneKeyRow(configured: Boolean, fingerprint: String)</ID>
+    <ID>FunctionNaming:SettingsScreen.kt$@Composable private fun S3EnabledRow(enabled: Boolean, label: String, onToggle: (Boolean) -&gt; Unit)</ID>
+    <ID>FunctionNaming:SettingsScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun SettingsScreen( navController: NavController, vm: SettingsViewModel = hiltViewModel(), )</ID>
+    <ID>FunctionNaming:Theme.kt$@Composable fun CompanionTheme(content: @Composable () -&gt; Unit)</ID>
+    <ID>FunctionNaming:TrackRenderScreen.kt$@Composable fun TrackRenderScreen( navController: NavController, onNavigateToMediaPrep: (Uri) -&gt; Unit, incomingGpxUris: List&lt;Uri&gt; = emptyList(), viewModel: TrackRenderViewModel = hiltViewModel(), )</ID>
+    <ID>FunctionNaming:TrackRenderScreen.kt$@Composable private fun DoneContent( outputUri: Uri, tracks: List&lt;GpxTrack&gt;, onAddToPost: () -&gt; Unit, onReset: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:TrackRenderScreen.kt$@Composable private fun ErrorContent(message: String, onRetry: () -&gt; Unit)</ID>
+    <ID>FunctionNaming:TrackRenderScreen.kt$@Composable private fun IdleContent( onPickFiles: () -&gt; Unit, onPickRecorded: (List&lt;Long&gt;) -&gt; Unit, backgroundGpsEnabled: Boolean, recordedTracks: List&lt;TrackSummary&gt;, tileState: TileSourceState, onSetTileMode: (String) -&gt; Unit, onSetTileNetworkUrl: (String) -&gt; Unit, onClearTileLocal: () -&gt; Unit, onPickTileFile: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:TrackRenderScreen.kt$@Composable private fun LoadedContent( tracks: List&lt;GpxTrack&gt;, onRender: () -&gt; Unit, onReset: () -&gt; Unit, tileState: TileSourceState, onSetTileMode: (String) -&gt; Unit, onSetTileNetworkUrl: (String) -&gt; Unit, onClearTileLocal: () -&gt; Unit, onPickTileFile: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:TrackRenderScreen.kt$@Composable private fun LoadingContent(label: String)</ID>
+    <ID>FunctionNaming:TrackRenderScreen.kt$@Composable private fun RecordedTrackPickerDialog( tracks: List&lt;TrackSummary&gt;, onSelect: (List&lt;Long&gt;) -&gt; Unit, onDismiss: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:TrackRenderScreen.kt$@Composable private fun StatItem(label: String, value: String)</ID>
+    <ID>FunctionNaming:TrackRenderScreen.kt$@Composable private fun TileSourceRow( configured: Boolean, label: String, onSelect: () -&gt; Unit, onClear: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:TrackRenderScreen.kt$@Composable private fun TileSourceSection( tileState: TileSourceState, onSetTileMode: (String) -&gt; Unit, onSetTileNetworkUrl: (String) -&gt; Unit, onClearTileLocal: () -&gt; Unit, onPickTileFile: () -&gt; Unit, )</ID>
+    <ID>FunctionNaming:TrackRenderScreen.kt$@Composable private fun TrackStats(track: GpxTrack)</ID>
+    <ID>LongMethod:AssetDiffScreen.kt$@Composable private fun DiffLineRow(line: DiffLine, modifier: Modifier = Modifier)</ID>
+    <ID>LongMethod:AssetDiffViewModel.kt$internal fun computeDiff( oldLines: List&lt;String&gt;, newLines: List&lt;String&gt;, ): List&lt;DiffLine&gt;</ID>
+    <ID>LongMethod:AssetEditScreen.kt$@Composable fun AssetEditScreen( navController: NavController, assetId: Long, vm: AssetEditViewModel = hiltViewModel(), )</ID>
+    <ID>LongMethod:AssetEditScreen.kt$@Composable private fun Editor( content: String, wrapLines: Boolean, matchRanges: List&lt;IntRange&gt;, currentMatchIndex: Int, onContent: (String) -&gt; Unit, )</ID>
+    <ID>LongMethod:AssetEditScreen.kt$@Composable private fun SearchReplaceBar( searchQuery: String, replaceText: String, matchCount: Int, currentIndex: Int, isReplaceOpen: Boolean, onSearchChange: (String) -&gt; Unit, onReplaceChange: (String) -&gt; Unit, onNext: () -&gt; Unit, onPrevious: () -&gt; Unit, onReplaceAll: () -&gt; Unit, onToggleReplace: () -&gt; Unit, onClose: () -&gt; Unit, )</ID>
+    <ID>LongMethod:AssetListScreen.kt$@Composable fun AssetListScreen( navController: NavController, vm: AssetListViewModel = hiltViewModel(), )</ID>
+    <ID>LongMethod:AssetListScreen.kt$@Composable private fun AssetRow( asset: AssetEntity, onEdit: () -&gt; Unit, onDiff: () -&gt; Unit, onPush: () -&gt; Unit, onPull: () -&gt; Unit, onDelete: () -&gt; Unit, )</ID>
+    <ID>LongMethod:AudioRecordingScreen.kt$@Composable private fun ControlsCard( state: AudioRecordingUiState, hasMicPermission: Boolean, onStart: () -&gt; Unit, onPause: () -&gt; Unit, onResume: () -&gt; Unit, onStop: () -&gt; Unit, )</ID>
+    <ID>LongMethod:AudioRecordingScreen.kt$@OptIn(ExperimentalFoundationApi::class) @Composable private fun RecordingRow( rec: AudioRecordingEntity, isActive: Boolean, isPaused: Boolean, elapsedMs: Long, amplitudeDb: Int?, isSelected: Boolean, selectionMode: Boolean, onToggleSelect: () -&gt; Unit, onPlay: () -&gt; Unit, onShare: () -&gt; Unit, onDelete: () -&gt; Unit, onRename: (String) -&gt; Unit, )</ID>
+    <ID>LongMethod:AudioRecordingScreen.kt$@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class) @Composable fun AudioRecordingScreen( navController: NavController, vm: AudioRecordingViewModel = hiltViewModel(), )</ID>
+    <ID>LongMethod:BackupOrchestrator.kt$BackupOrchestrator$private suspend fun execute(listener: ProgressListener)</ID>
+    <ID>LongMethod:BackupScreen.kt$@Composable private fun BackupContent( state: BackupUiState, onCancelBackup: () -&gt; Unit, onStartBackup: () -&gt; Unit, onSetAutoEnabled: (Boolean) -&gt; Unit, onSetInterval: (Int) -&gt; Unit, onSetNumParts: (Int) -&gt; Unit, onToggleFolder: (Long, Boolean) -&gt; Unit, onRemoveFolder: (Long) -&gt; Unit, folderPicker: () -&gt; Unit, )</ID>
+    <ID>LongMethod:ConsolidateScreen.kt$@Composable fun ConsolidateScreen( navController: NavController, vm: ConsolidateViewModel = hiltViewModel(), )</ID>
+    <ID>LongMethod:ConsolidateWorker.kt$ConsolidateWorker$override suspend fun doWork(): Result</ID>
+    <ID>LongMethod:EmbeddedQrScanner.kt$@Composable fun EmbeddedQrScanner( prompt: String, onResult: (String) -&gt; Unit, onCancel: () -&gt; Unit, )</ID>
+    <ID>LongMethod:FixCycleStateMachine.kt$fun fixTransition( state: FixState, event: FixEvent, maxInaccuracyM: Float, isSingleFixMode: Boolean, maxAttempts: Int = 2, ): FixTransition</ID>
+    <ID>LongMethod:GpxImporter.kt$GpxImporter$fun import(input: InputStream): ImportedTrack</ID>
+    <ID>LongMethod:MediaEditScreen.kt$@Composable fun MediaEditScreen( uri: Uri, mediaType: MediaType, initialIntent: TransformIntent = TransformIntent(), onConfirm: (TransformIntent) -&gt; Unit, onCancel: () -&gt; Unit, onFrameExtracted: (Uri) -&gt; Unit = {}, onError: (String) -&gt; Unit = {}, )</ID>
+    <ID>LongMethod:MediaEditScreen.kt$@Composable private fun FrameGrabControls( keyframeCount: Int, currentIndex: Int, currentTimestampUs: Long, isGrabbing: Boolean, grabCount: Int, sliderFraction: Float, onSliderChange: (Float) -&gt; Unit, onPrev: () -&gt; Unit, onNext: () -&gt; Unit, onGrab: () -&gt; Unit, )</ID>
+    <ID>LongMethod:MediaEditScreen.kt$@Composable private fun ImageCropOverlay( rawBitmap: Bitmap, exifOrientation: Int, orientation: OrientationTransform, fineRotation: Float, pixelCrop: PixelCrop?, onPixelCropChanged: (PixelCrop) -&gt; Unit, onInitPixelCrop: (Float, Float) -&gt; Unit, modifier: Modifier = Modifier, )</ID>
+    <ID>LongMethod:MediaEditScreen.kt$@Composable private fun TrimStrip( frames: List&lt;Bitmap&gt;, startFraction: Float, endFraction: Float, playbackFraction: Float?, onStartChanged: (Float) -&gt; Unit, onEndChanged: (Float) -&gt; Unit, )</ID>
+    <ID>LongMethod:MediaPickerScreen.kt$@Composable private fun MediaPickerCell( item: MediaPickerItem, isSelected: Boolean, selectionNumber: Int, onToggle: () -&gt; Unit, )</ID>
+    <ID>LongMethod:MediaPickerScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun MediaPickerScreen( navController: NavController, onConfirm: (List&lt;Uri&gt;) -&gt; Unit, onCancel: () -&gt; Unit, vm: MediaPickerViewModel = hiltViewModel(), )</ID>
+    <ID>LongMethod:MediaPrepScreen.kt$@Composable fun MediaPrepScreen( navController: NavController, postId: Long = 0L, incomingUris: List&lt;Uri&gt; = emptyList(), viewModel: MediaPrepViewModel = hiltViewModel(), )</ID>
+    <ID>LongMethod:MediaPrepScreen.kt$@Composable private fun MediaCell( item: MediaPrepItem, editPreview: android.graphics.Bitmap?, displayUri: Uri, sourceStatus: MediaSourceStatus, onTap: () -&gt; Unit, onRemove: () -&gt; Unit, dragHandle: @Composable (Modifier) -&gt; Unit, modifier: Modifier = Modifier, )</ID>
+    <ID>LongMethod:NavGraph.kt$@Composable fun NavGraph( navController: NavHostController, startRoute: Any, incomingUris: List&lt;Uri&gt; = emptyList(), backgroundGps: Boolean = false, )</ID>
+    <ID>LongMethod:PostListScreen.kt$@Composable fun PostListScreen( navController: NavController, onNavigateToPost: (postId: Long) -&gt; Unit, onNewPost: () -&gt; Unit, vm: PostListViewModel = hiltViewModel(), )</ID>
+    <ID>LongMethod:PostListScreen.kt$@Composable private fun PostRow( post: PostEntity, lead: PostMediaEntity?, leadStatus: MediaSourceStatus, editPreview: Bitmap?, resolveUri: (PostMediaEntity) -&gt; ResolvedMedia, isVerifying: Boolean, onClick: () -&gt; Unit, onPublish: () -&gt; Unit, onUnpublish: () -&gt; Unit, onDelete: () -&gt; Unit, onVerify: () -&gt; Unit, onShare: () -&gt; Unit, )</ID>
+    <ID>LongMethod:PostScreen.kt$@Composable private fun CarouselCard( item: PostMediaEntity, isPinned: Boolean, isFirst: Boolean, motto: String, editPreview: android.graphics.Bitmap?, imageModel: Any?, sourceStatus: MediaSourceStatus, onTap: () -&gt; Unit, onPin: () -&gt; Unit, onRemove: () -&gt; Unit, dragHandle: @Composable (Modifier) -&gt; Unit, )</ID>
+    <ID>LongMethod:PostScreen.kt$@Composable private fun MediaCarousel( items: List&lt;PostMediaEntity&gt;, pinnedHash: String?, motto: String, editPreviews: Map&lt;Long, android.graphics.Bitmap&gt;, mediaStatuses: Map&lt;Long, MediaSourceStatus&gt;, resolveMedia: (PostMediaEntity) -&gt; ResolvedMedia, onPin: (String) -&gt; Unit, onRemove: (String) -&gt; Unit, onCommitOrder: (List&lt;String&gt;) -&gt; Unit, onTapMedia: () -&gt; Unit, )</ID>
+    <ID>LongMethod:PostScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun PostScreen( navController: NavController, postId: Long = 0L, onNavigateBack: () -&gt; Unit, onPublished: () -&gt; Unit, vm: PostViewModel = hiltViewModel(), )</ID>
+    <ID>LongMethod:PublishWorker.kt$PublishWorker$override suspend fun doWork(): Result</ID>
+    <ID>LongMethod:QueueScreen.kt$@Composable fun QueueScreen( navController: NavController, vm: QueueViewModel = hiltViewModel(), )</ID>
+    <ID>LongMethod:QueueScreen.kt$@Composable private fun JobRow( job: TransformJobEntity, onCancel: () -&gt; Unit, onRemove: () -&gt; Unit, )</ID>
+    <ID>LongMethod:RecordingScreen.kt$@Composable private fun RecordingControls( isRecording: Boolean, isPaused: Boolean, hasLocationPermission: Boolean, onStart: () -&gt; Unit, onStop: () -&gt; Unit, onPause: () -&gt; Unit, onResume: () -&gt; Unit, onNewSegment: () -&gt; Unit, )</ID>
+    <ID>LongMethod:RecordingScreen.kt$@OptIn(ExperimentalFoundationApi::class) @Composable private fun TrackRow( track: TrackSummary, isActive: Boolean, isPaused: Boolean, isSelected: Boolean, selectionMode: Boolean, livePointCount: Int, pendingPoints: Int, lastProvidedFix: TrackPointEntity?, lastAcceptedFix: TrackPointEntity?, gnssInfo: GnssInfo, onToggleSelection: () -&gt; Unit, onShare: () -&gt; Unit, onDelete: () -&gt; Unit, onDeleteActive: (restart: Boolean) -&gt; Unit, onShareGeo: () -&gt; Unit, onRename: (String) -&gt; Unit, onEnsureStats: () -&gt; Unit, )</ID>
+    <ID>LongMethod:RecordingScreen.kt$@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class) @Composable fun RecordingScreen( navController: NavController, vm: RecordingViewModel = hiltViewModel(), )</ID>
+    <ID>LongMethod:RestoreFileUseCase.kt$suspend fun restoreSelectedFiles( context: Context, b2: S3Backend, senderPk: ByteArray, recipientSk: ByteArray, sodium: com.goterl.lazysodium.LazySodiumAndroid, stateRepo: BackupStateRepository, packPrefix: String, selections: List&lt;RestoreSelectionEntity&gt;, dcimUri: String?, safGrants: Map&lt;String, Uri&gt;, listener: RestoreProgressListener, ): List&lt;String&gt;</ID>
+    <ID>LongMethod:RestoreScreen.kt$@Composable private fun RestoreMainContent( state: RestoreUiState, vm: RestoreViewModel, )</ID>
+    <ID>LongMethod:RestoreWorker.kt$RestoreWorker$private suspend fun scanPack( b2: S3Backend, senderPk: ByteArray, recipientSk: ByteArray, packPos: Int, packKey: String, firstPartWire: ByteArray, restoreInline: Boolean, dcimUri: String? = null, safGrants: Map&lt;String, Uri&gt; = emptyMap(), ): List&lt;String&gt;</ID>
+    <ID>LongMethod:SettingsScreen.kt$@OptIn(ExperimentalMaterial3Api::class) @Composable fun SettingsScreen( navController: NavController, vm: SettingsViewModel = hiltViewModel(), )</ID>
+    <ID>LongMethod:TrackRenderScreen.kt$@Composable fun TrackRenderScreen( navController: NavController, onNavigateToMediaPrep: (Uri) -&gt; Unit, incomingGpxUris: List&lt;Uri&gt; = emptyList(), viewModel: TrackRenderViewModel = hiltViewModel(), )</ID>
+    <ID>LongParameterList:AssetEditScreen.kt$( path: String, isDirty: Boolean, wrapLines: Boolean, isSearchOpen: Boolean, onBack: () -&gt; Unit, onSave: () -&gt; Unit, onToggleWrap: () -&gt; Unit, onToggleSearch: () -&gt; Unit, )</ID>
+    <ID>LongParameterList:AssetEditScreen.kt$( searchQuery: String, replaceText: String, matchCount: Int, currentIndex: Int, isReplaceOpen: Boolean, onSearchChange: (String) -&gt; Unit, onReplaceChange: (String) -&gt; Unit, onNext: () -&gt; Unit, onPrevious: () -&gt; Unit, onReplaceAll: () -&gt; Unit, onToggleReplace: () -&gt; Unit, onClose: () -&gt; Unit, )</ID>
+    <ID>LongParameterList:AssetEditScreen.kt$( text: String, matchRanges: List&lt;IntRange&gt;, currentMatchIndex: Int, passiveBg: Color, passiveFg: Color, activeBg: Color, activeFg: Color, )</ID>
+    <ID>LongParameterList:AssetEntity.kt$AssetDao$( id: Long, content: String, localHash: String, serverSha: String, syncState: AssetSyncState = AssetSyncState.IN_SYNC, now: Long = System.currentTimeMillis(), )</ID>
+    <ID>LongParameterList:AssetListScreen.kt$( asset: AssetEntity, onEdit: () -&gt; Unit, onDiff: () -&gt; Unit, onPush: () -&gt; Unit, onPull: () -&gt; Unit, onDelete: () -&gt; Unit, )</ID>
+    <ID>LongParameterList:AudioRecordingScreen.kt$( rec: AudioRecordingEntity, isActive: Boolean, isPaused: Boolean, elapsedMs: Long, amplitudeDb: Int?, isSelected: Boolean, selectionMode: Boolean, onToggleSelect: () -&gt; Unit, onPlay: () -&gt; Unit, onShare: () -&gt; Unit, onDelete: () -&gt; Unit, onRename: (String) -&gt; Unit, )</ID>
+    <ID>LongParameterList:AudioRecordingScreen.kt$( state: AudioRecordingUiState, hasMicPermission: Boolean, onStart: () -&gt; Unit, onPause: () -&gt; Unit, onResume: () -&gt; Unit, onStop: () -&gt; Unit, )</ID>
+    <ID>LongParameterList:BackupNotifier.kt$BackupNotifier$( packState: String, packPosition: Int, partNumber: Int, partsTotal: Int, fileIndex: Int, filesTotal: Int, currentFile: String, errorType: String, errorDetail: String, packPercent: Int = 0, )</ID>
+    <ID>LongParameterList:BackupOrchestrator.kt$BackupOrchestrator$( private val fileSource: BackupFileSource, private val serverPk: ByteArray, private val phoneSk: ByteArray, private val sodium: LazySodiumAndroid, private val scanner: BackupSourceScanner, private val stateRepo: BackupStateRepository, private val hasher: FileHasher, private val b2: S3Backend, private val partsPerPack: Int, private val packPrefix: String, )</ID>
+    <ID>LongParameterList:BackupScreen.kt$( state: BackupUiState, onCancelBackup: () -&gt; Unit, onStartBackup: () -&gt; Unit, onSetAutoEnabled: (Boolean) -&gt; Unit, onSetInterval: (Int) -&gt; Unit, onSetNumParts: (Int) -&gt; Unit, onToggleFolder: (Long, Boolean) -&gt; Unit, onRemoveFolder: (Long) -&gt; Unit, folderPicker: () -&gt; Unit, )</ID>
+    <ID>LongParameterList:BackupStateRepository.kt$BackupStateRepository$( fileId: Long, sha256: String, packNumber: Int, partNumber: Int, partOffset: Long, fileOffset: Long, chunkBytes: Long, )</ID>
+    <ID>LongParameterList:BackupStateRepository.kt$BackupStateRepository$( private val db: AppDatabase, private val backupFileDao: BackupFileDao, private val backupPackDao: BackupPackDao, private val backupPackSealedDao: BackupPackSealedDao, private val backupPartDao: BackupPartDao, private val backupPartEtagDao: BackupPartEtagDao, private val backupChunkDao: BackupChunkDao, private val backupOpenPackDao: BackupOpenPackDao, private val backupFolderDao: BackupFolderDao, private val backupFileStatusDao: BackupFileStatusDao, private val backupRestoreViewDao: BackupRestoreViewDao, private val backupFileDoneDao: BackupFileDoneDao, private val restoreSelectionDao: RestoreSelectionDao, )</ID>
+    <ID>LongParameterList:BackupWorker.kt$BackupWorker$( @Assisted ctx: Context, @Assisted params: WorkerParameters, private val stateRepo: BackupStateRepository, private val scanner: BackupSourceScanner, private val s3Factory: S3BackendFactory, private val lazySodium: LazySodiumAndroid, private val appPrefs: AppPrefs, private val credentialStore: CredentialStore, private val schedulePrefs: BackupSchedulePrefs, private val notificationDao: UserNotificationDao, private val hasher: FileHasher, )</ID>
+    <ID>LongParameterList:ConsolidateScreen.kt$( padding: PaddingValues, state: ConsolidateUiState, onStartConsolidate: () -&gt; Unit, onStartBackup: () -&gt; Unit, onStartBoth: () -&gt; Unit, onSetViewMode: (ViewMode) -&gt; Unit, onSetSortField: (SortField) -&gt; Unit, onEnterSelectionMode: (Long) -&gt; Unit, onToggleSelected: (Long) -&gt; Unit, onShowPreview: (String) -&gt; Unit, onProtect: (Long) -&gt; Unit, onRequestUnprotect: (Long) -&gt; Unit, onBackfillExisting: () -&gt; Unit, )</ID>
+    <ID>LongParameterList:ConsolidateScreen.kt$(file: SafeToDeleteView, isProtected: Boolean, isSelected: Boolean, selectionMode: Boolean, onLongPress: () -&gt; Unit, onTap: () -&gt; Unit, onProtect: () -&gt; Unit, onUnprotect: () -&gt; Unit)</ID>
+    <ID>LongParameterList:ConsolidateWorker.kt$ConsolidateWorker$( total: Int, processed: Int, failed: Int, currentFile: String, hashed: Int = 0, misses: Int = 0, )</ID>
+    <ID>LongParameterList:CropGeometry.kt$( canvasOffset: Offset, frameRect: Rect, unrotW: Float, unrotH: Float, fineRotation: Float, crop: PixelCrop, hitSlop: Float, )</ID>
+    <ID>LongParameterList:CropGeometry.kt$( dragAmount: Offset, frameRect: Rect, unrotW: Float, unrotH: Float, rotW: Float, rotH: Float, fineRotation: Float, crop: PixelCrop, activeHandle: CropHandle, minCropPx: Float, )</ID>
+    <ID>LongParameterList:DigestAuth.kt$DigestAuth$( method: String, uri: String, challenge: Challenge, creds: Credentials, nc: Int = 1, cnonce: String = generateCnonce(), )</ID>
+    <ID>LongParameterList:FrameGrabber.kt$FrameGrabber$( context: Context, videoUri: Uri, timestampUs: Long, orientation: OrientationTransform, fineRotationDegrees: Float, filePrefix: String = "frame", )</ID>
+    <ID>LongParameterList:GitHubClient.kt$GitHubClient$( branch: String = "main", message: String, additions: List&lt;TreeFile&gt; = emptyList(), blobAdditions: List&lt;BlobAddition&gt; = emptyList(), deletions: Set&lt;String&gt; = emptySet(), deleteWhere: ((String) -&gt; Boolean)? = null, stalePrefix: String? = null, keepFilenames: Set&lt;String&gt; = emptySet(), )</ID>
+    <ID>LongParameterList:MediaEditScreen.kt$( frames: List&lt;Bitmap&gt;, startFraction: Float, endFraction: Float, playbackFraction: Float?, onStartChanged: (Float) -&gt; Unit, onEndChanged: (Float) -&gt; Unit, )</ID>
+    <ID>LongParameterList:MediaEditScreen.kt$( keyframeCount: Int, currentIndex: Int, currentTimestampUs: Long, isGrabbing: Boolean, grabCount: Int, sliderFraction: Float, onSliderChange: (Float) -&gt; Unit, onPrev: () -&gt; Unit, onNext: () -&gt; Unit, onGrab: () -&gt; Unit, )</ID>
+    <ID>LongParameterList:MediaEditScreen.kt$( rawBitmap: Bitmap, exifOrientation: Int, orientation: OrientationTransform, fineRotation: Float, pixelCrop: PixelCrop?, onPixelCropChanged: (PixelCrop) -&gt; Unit, onInitPixelCrop: (Float, Float) -&gt; Unit, modifier: Modifier = Modifier, )</ID>
+    <ID>LongParameterList:MediaEditScreen.kt$( uri: Uri, mediaType: MediaType, initialIntent: TransformIntent = TransformIntent(), onConfirm: (TransformIntent) -&gt; Unit, onCancel: () -&gt; Unit, onFrameExtracted: (Uri) -&gt; Unit = {}, onError: (String) -&gt; Unit = {}, )</ID>
+    <ID>LongParameterList:MediaEditScreen.kt$( videoFrameRect: Rect, orientation: OrientationTransform, fineRotation: Float, unrotW: Float, unrotH: Float, pixelCrop: PixelCrop?, onPixelCropChanged: (PixelCrop) -&gt; Unit, modifier: Modifier = Modifier, )</ID>
+    <ID>LongParameterList:MediaPrepScreen.kt$( item: MediaPrepItem, editPreview: android.graphics.Bitmap?, displayUri: Uri, sourceStatus: MediaSourceStatus, onTap: () -&gt; Unit, onRemove: () -&gt; Unit, dragHandle: @Composable (Modifier) -&gt; Unit, modifier: Modifier = Modifier, )</ID>
+    <ID>LongParameterList:MediaStoreWriter.kt$MediaStoreWriter$( context: Context, displayName: String, mimeType: String, relativePath: String, source: InputStream, mtime: Long? = null, )</ID>
+    <ID>LongParameterList:Post.kt$PostShareIntentBuilder$( title: String, teaser: String, tags: List&lt;String&gt;, slug: String, localDate: String, siteUrl: String?, media: List&lt;ShareMedia&gt;, )</ID>
+    <ID>LongParameterList:PostEntity.kt$PostDao$( id: Long, localDate: String, motto: String, title: String, titleEdited: Boolean, body: String, teaser: String, teaserEdited: Boolean, tags: String, pinnedMediaId: Long?, slug: String, slugEdited: Boolean, publishState: PostPublishState, updatedAt: Long, )</ID>
+    <ID>LongParameterList:PostListScreen.kt$( post: PostEntity, lead: PostMediaEntity?, leadStatus: MediaSourceStatus, editPreview: Bitmap?, resolveUri: (PostMediaEntity) -&gt; ResolvedMedia, isVerifying: Boolean, onClick: () -&gt; Unit, onPublish: () -&gt; Unit, onUnpublish: () -&gt; Unit, onDelete: () -&gt; Unit, onVerify: () -&gt; Unit, onShare: () -&gt; Unit, )</ID>
+    <ID>LongParameterList:PostListViewModel.kt$PostListViewModel$( @param:ApplicationContext private val ctx: android.content.Context, private val postRepository: PostRepository, private val postMediaDao: PostMediaDao, private val appPrefs: AppPrefs, private val credentialStore: CredentialStore, private val http: HttpClient, private val mediaFileStore: PostMediaFileStore, private val resolutionCache: MediaResolutionCache, private val previewCache: TransformPreviewCache, private val notificationDao: UserNotificationDao, )</ID>
+    <ID>LongParameterList:PostMediaEntity.kt$PostMediaDao$( id: Long, cropLeft: Float, cropTop: Float, cropRight: Float, cropBottom: Float, orientationDegrees: Int, flipHorizontal: Boolean, fineRotationDegrees: Float, trimStartMs: Long, trimEndMs: Long, )</ID>
+    <ID>LongParameterList:PostMediaPuller.kt$( contentHash: String, mimeType: String, slug: String, github: GitHubClient, mediaFileStore: PostMediaFileStore, processedHash: String? = null, )</ID>
+    <ID>LongParameterList:PostRepository.kt$PostRepository$( id: Long, localDate: String, motto: String, title: String, titleEdited: Boolean, body: String, teaser: String, teaserEdited: Boolean, tags: List&lt;String&gt;, pinnedMediaId: Long?, slug: String, slugEdited: Boolean, publishState: PostPublishState, )</ID>
+    <ID>LongParameterList:PostScreen.kt$( item: PostMediaEntity, isPinned: Boolean, isFirst: Boolean, motto: String, editPreview: android.graphics.Bitmap?, imageModel: Any?, sourceStatus: MediaSourceStatus, onTap: () -&gt; Unit, onPin: () -&gt; Unit, onRemove: () -&gt; Unit, dragHandle: @Composable (Modifier) -&gt; Unit, )</ID>
+    <ID>LongParameterList:PostScreen.kt$( items: List&lt;PostMediaEntity&gt;, pinnedHash: String?, motto: String, editPreviews: Map&lt;Long, android.graphics.Bitmap&gt;, mediaStatuses: Map&lt;Long, MediaSourceStatus&gt;, resolveMedia: (PostMediaEntity) -&gt; ResolvedMedia, onPin: (String) -&gt; Unit, onRemove: (String) -&gt; Unit, onCommitOrder: (List&lt;String&gt;) -&gt; Unit, onTapMedia: () -&gt; Unit, )</ID>
+    <ID>LongParameterList:PostScreen.kt$( localDate: String, dayNumber: Int?, enabled: Boolean, onPrev: () -&gt; Unit, onNext: () -&gt; Unit, onToday: () -&gt; Unit, onYesterday: () -&gt; Unit, onOpenCalendar: () -&gt; Unit, )</ID>
+    <ID>LongParameterList:PublishWorker.kt$PublishWorker$( @Assisted ctx: Context, @Assisted params: WorkerParameters, private val postDao: PostDao, private val postMediaDao: PostMediaDao, private val postRepository: PostRepository, private val http: HttpClient, private val appPrefs: AppPrefs, private val credentialStore: CredentialStore, private val mediaStore: PostMediaFileStore, private val transformQueue: TransformQueue, private val notificationDao: UserNotificationDao, private val s3Factory: S3BackendFactory, private val httpMediaFactory: HttpMediaBackendFactory, )</ID>
+    <ID>LongParameterList:RecordingScreen.kt$( isRecording: Boolean, isPaused: Boolean, hasLocationPermission: Boolean, onStart: () -&gt; Unit, onStop: () -&gt; Unit, onPause: () -&gt; Unit, onResume: () -&gt; Unit, onNewSegment: () -&gt; Unit, )</ID>
+    <ID>LongParameterList:RecordingScreen.kt$( selectedCount: Int, allSelected: Boolean, onClear: () -&gt; Unit, onToggleAll: () -&gt; Unit, onExport: () -&gt; Unit, onRender: () -&gt; Unit, onDelete: () -&gt; Unit, )</ID>
+    <ID>LongParameterList:RecordingScreen.kt$( track: TrackSummary, isActive: Boolean, isPaused: Boolean, isSelected: Boolean, selectionMode: Boolean, livePointCount: Int, pendingPoints: Int, lastProvidedFix: TrackPointEntity?, lastAcceptedFix: TrackPointEntity?, gnssInfo: GnssInfo, onToggleSelection: () -&gt; Unit, onShare: () -&gt; Unit, onDelete: () -&gt; Unit, onDeleteActive: (restart: Boolean) -&gt; Unit, onShareGeo: () -&gt; Unit, onRename: (String) -&gt; Unit, onEnsureStats: () -&gt; Unit, )</ID>
+    <ID>LongParameterList:RestoreFileUseCase.kt$( context: Context, b2: S3Backend, senderPk: ByteArray, recipientSk: ByteArray, sodium: com.goterl.lazysodium.LazySodiumAndroid, stateRepo: BackupStateRepository, packPrefix: String, selections: List&lt;RestoreSelectionEntity&gt;, dcimUri: String?, safGrants: Map&lt;String, Uri&gt;, listener: RestoreProgressListener, )</ID>
+    <ID>LongParameterList:RestoreFileUseCase.kt$( context: Context, fileId: Long, path: String, mtime: Long, sha256: String, realSize: Long, dest: SafDest, )</ID>
+    <ID>LongParameterList:RestoreNotifier.kt$RestoreNotifier$( restoreState: String, packPosition: Int, packsTotal: Int, fileIndex: Int, filesTotal: Int, currentFile: String, errorType: String = ERR_NONE, errorDetail: String = "", )</ID>
+    <ID>LongParameterList:RestoreScreen.kt$( node: TreeNode, pathPrefix: String, depth: Int, onToggleFolder: (String) -&gt; Unit, onToggleFolderExpanded: (String) -&gt; Unit, onToggleVersion: (path: String, sha256: String) -&gt; Unit, onToggleVersionsExpanded: (String) -&gt; Unit, )</ID>
+    <ID>LongParameterList:RestoreWorker.kt$RestoreWorker$( b2: S3Backend, senderPk: ByteArray, recipientSk: ByteArray, packPos: Int, packKey: String, firstPartWire: ByteArray, restoreInline: Boolean, dcimUri: String? = null, safGrants: Map&lt;String, Uri&gt; = emptyMap(), )</ID>
+    <ID>LongParameterList:SafUtils.kt$( context: Context, treeUri: Uri, subfolders: List&lt;String&gt;, displayName: String, mimeType: String, bytes: ByteArray, )</ID>
+    <ID>LongParameterList:SafUtils.kt$( context: Context, treeUri: Uri, subfolders: List&lt;String&gt;, displayName: String, mimeType: String, source: java.io.InputStream, )</ID>
+    <ID>LongParameterList:SigV4.kt$SigV4$( method: String, host: String, bucketPath: String, payloadHash: String, ts: Timestamp, creds: Credentials, extraHeaders: Map&lt;String, String&gt; = emptyMap(), )</ID>
+    <ID>LongParameterList:TrackRenderScreen.kt$( onPickFiles: () -&gt; Unit, onPickRecorded: (List&lt;Long&gt;) -&gt; Unit, backgroundGpsEnabled: Boolean, recordedTracks: List&lt;TrackSummary&gt;, tileState: TileSourceState, onSetTileMode: (String) -&gt; Unit, onSetTileNetworkUrl: (String) -&gt; Unit, onClearTileLocal: () -&gt; Unit, onPickTileFile: () -&gt; Unit, )</ID>
+    <ID>LongParameterList:TrackRenderScreen.kt$( tracks: List&lt;GpxTrack&gt;, onRender: () -&gt; Unit, onReset: () -&gt; Unit, tileState: TileSourceState, onSetTileMode: (String) -&gt; Unit, onSetTileNetworkUrl: (String) -&gt; Unit, onClearTileLocal: () -&gt; Unit, onPickTileFile: () -&gt; Unit, )</ID>
+    <ID>LongParameterList:TransformQueue.kt$TransformQueue$( sourceUri: Uri, displayName: String, mediaType: String, boxPx: Int = DEFAULT_BOX_PX, quality: Int = DEFAULT_QUALITY, callerTag: String, )</ID>
+    <ID>LongParameterList:TransformQueue.kt$TransformQueue$( sourceUri: Uri, displayName: String, mediaType: String, boxPx: Int = DEFAULT_BOX_PX, quality: Int = DEFAULT_QUALITY, trimStartMs: Long = 0L, trimEndMs: Long = Long.MAX_VALUE, cropLeft: Float = 0f, cropTop: Float = 0f, cropRight: Float = 1f, cropBottom: Float = 1f, orientationDegrees: Int = 0, flipHorizontal: Boolean = false, fineRotationDegrees: Float = 0f, callerTag: String = "", )</ID>
+    <ID>LongParameterList:UnpublishWorker.kt$UnpublishWorker$( @Assisted ctx: Context, @Assisted params: WorkerParameters, private val postDao: PostDao, private val postMediaDao: PostMediaDao, private val http: HttpClient, private val appPrefs: AppPrefs, private val credentialStore: CredentialStore, private val notificationDao: UserNotificationDao, private val s3Factory: S3BackendFactory, private val httpMediaFactory: HttpMediaBackendFactory, )</ID>
+    <ID>LongParameterList:VideoTransformer.kt$VideoTransformer$( context: Context, sourceUri: Uri, outFile: File, boxPx: Int = 640, sourceWidth: Int = 0, sourceHeight: Int = 0, handler: Handler, )</ID>
+    <ID>LoopWithTooManyJumpStatements:AssetRepository.kt$AssetRepository$for</ID>
+    <ID>LoopWithTooManyJumpStatements:BackupOrchestrator.kt$BackupOrchestrator$for</ID>
+    <ID>LoopWithTooManyJumpStatements:BackupPaxWriter.kt$BackupPaxWriter$while</ID>
+    <ID>LoopWithTooManyJumpStatements:ConsolidateWorker.kt$ConsolidateWorker$for</ID>
+    <ID>LoopWithTooManyJumpStatements:FrameGrabber.kt$FrameGrabber$while</ID>
+    <ID>LoopWithTooManyJumpStatements:GpxExportWorker.kt$GpxExportWorker$for</ID>
+    <ID>LoopWithTooManyJumpStatements:MediaPrepViewModel.kt$MediaPrepViewModel$for</ID>
+    <ID>LoopWithTooManyJumpStatements:PublishWorker.kt$PublishWorker$for</ID>
+    <ID>LoopWithTooManyJumpStatements:RecordingViewModel.kt$RecordingViewModel$for</ID>
+    <ID>LoopWithTooManyJumpStatements:RestoreFileUseCase.kt$for</ID>
+    <ID>LoopWithTooManyJumpStatements:RestoreWorker.kt$RestoreWorker$while</ID>
+    <ID>LoopWithTooManyJumpStatements:SafUtils.kt$while</ID>
+    <ID>MagicNumber:AppModule.kt$AppModule$120_000</ID>
+    <ID>MagicNumber:AppModule.kt$AppModule$30_000</ID>
+    <ID>MagicNumber:AssetDiffScreen.kt$0x3300C853</ID>
+    <ID>MagicNumber:AssetDiffScreen.kt$0x33D50000</ID>
+    <ID>MagicNumber:AssetDiffScreen.kt$0x6600C853</ID>
+    <ID>MagicNumber:AssetDiffScreen.kt$0x66D50000</ID>
+    <ID>MagicNumber:AssetDiffScreen.kt$0xFF00C853</ID>
+    <ID>MagicNumber:AssetDiffScreen.kt$0xFFD50000</ID>
+    <ID>MagicNumber:AssetEditScreen.kt$100f</ID>
+    <ID>MagicNumber:AudioConfigEntity.kt$AudioConfigEntity.Companion$128_000</ID>
+    <ID>MagicNumber:AudioConfigEntity.kt$AudioConfigEntity.Companion$16_000</ID>
+    <ID>MagicNumber:AudioConfigEntity.kt$AudioConfigEntity.Companion$192_000</ID>
+    <ID>MagicNumber:AudioConfigEntity.kt$AudioConfigEntity.Companion$22_050</ID>
+    <ID>MagicNumber:AudioConfigEntity.kt$AudioConfigEntity.Companion$23_850</ID>
+    <ID>MagicNumber:AudioConfigEntity.kt$AudioConfigEntity.Companion$44_100</ID>
+    <ID>MagicNumber:AudioConfigEntity.kt$AudioConfigEntity.Companion$48_000</ID>
+    <ID>MagicNumber:AudioConfigEntity.kt$AudioConfigEntity.Companion$64_000</ID>
+    <ID>MagicNumber:AudioConfigEntity.kt$AudioConfigEntity.Companion$96_000</ID>
+    <ID>MagicNumber:AudioFormat.kt$100</ID>
+    <ID>MagicNumber:AudioFormat.kt$1000</ID>
+    <ID>MagicNumber:AudioFormat.kt$1000.0</ID>
+    <ID>MagicNumber:AudioFormat.kt$128_000</ID>
+    <ID>MagicNumber:AudioFormat.kt$16_000</ID>
+    <ID>MagicNumber:AudioFormat.kt$192_000</ID>
+    <ID>MagicNumber:AudioFormat.kt$20.0</ID>
+    <ID>MagicNumber:AudioFormat.kt$22_050</ID>
+    <ID>MagicNumber:AudioFormat.kt$32_000</ID>
+    <ID>MagicNumber:AudioFormat.kt$44_100</ID>
+    <ID>MagicNumber:AudioFormat.kt$48_000</ID>
+    <ID>MagicNumber:AudioFormat.kt$60</ID>
+    <ID>MagicNumber:AudioFormat.kt$60f</ID>
+    <ID>MagicNumber:AudioFormat.kt$64_000</ID>
+    <ID>MagicNumber:AudioFormat.kt$96_000</ID>
+    <ID>MagicNumber:AudioRecordingScreen.kt$1000</ID>
+    <ID>MagicNumber:AudioRecordingScreen.kt$1_000</ID>
+    <ID>MagicNumber:AudioRecordingScreen.kt$1_000.0</ID>
+    <ID>MagicNumber:AudioRecordingScreen.kt$1_000_000</ID>
+    <ID>MagicNumber:AudioRecordingScreen.kt$1_000_000.0</ID>
+    <ID>MagicNumber:AudioRecordingScreen.kt$3600</ID>
+    <ID>MagicNumber:AudioRecordingScreen.kt$60</ID>
+    <ID>MagicNumber:AudioRecordingService.kt$AudioRecordingStatus$100</ID>
+    <ID>MagicNumber:AudioRecordingViewModel.kt$AudioRecordingUiState$100</ID>
+    <ID>MagicNumber:BackgroundService.kt$BackgroundService$0.25</ID>
+    <ID>MagicNumber:BackgroundService.kt$BackgroundService$10_000L</ID>
+    <ID>MagicNumber:BackgroundService.kt$BackgroundService$1441</ID>
+    <ID>MagicNumber:BackgroundService.kt$BackgroundService$180.0</ID>
+    <ID>MagicNumber:BackgroundService.kt$BackgroundService$1_000_000L</ID>
+    <ID>MagicNumber:BackgroundService.kt$BackgroundService$2000</ID>
+    <ID>MagicNumber:BackgroundService.kt$BackgroundService$2100</ID>
+    <ID>MagicNumber:BackgroundService.kt$BackgroundService$3</ID>
+    <ID>MagicNumber:BackgroundService.kt$BackgroundService$30_000L</ID>
+    <ID>MagicNumber:BackgroundService.kt$BackgroundService$360.0</ID>
+    <ID>MagicNumber:BackgroundService.kt$BackgroundService$50f</ID>
+    <ID>MagicNumber:BackgroundService.kt$BackgroundService$719</ID>
+    <ID>MagicNumber:BackgroundService.kt$BackgroundService$90.0</ID>
+    <ID>MagicNumber:BackupOrchestrator.kt$BackupOrchestrator$1000L</ID>
+    <ID>MagicNumber:BackupOrchestrator.kt$BackupOrchestrator$3</ID>
+    <ID>MagicNumber:BackupPaxWriter.kt$BackupPaxWriter$3</ID>
+    <ID>MagicNumber:BackupPaxWriter.kt$BackupPaxWriter$64</ID>
+    <ID>MagicNumber:BackupScreen.kt$24</ID>
+    <ID>MagicNumber:BackupScreen.kt$8</ID>
+    <ID>MagicNumber:BackupWorker.kt$BackupWorker.&lt;no name provided&gt;$100</ID>
+    <ID>MagicNumber:BitmapTransforms.kt$180f</ID>
+    <ID>MagicNumber:BitmapTransforms.kt$270f</ID>
+    <ID>MagicNumber:BitmapTransforms.kt$90f</ID>
+    <ID>MagicNumber:ConsolidateScreen.kt$100</ID>
+    <ID>MagicNumber:ConsolidateScreen.kt$1024</ID>
+    <ID>MagicNumber:ConsolidateScreen.kt$1024.0</ID>
+    <ID>MagicNumber:ConsolidateScreen.kt$3</ID>
+    <ID>MagicNumber:CropGeometry.kt$0.15f</ID>
+    <ID>MagicNumber:CropGeometry.kt$0.25f</ID>
+    <ID>MagicNumber:CropGeometry.kt$0.3f</ID>
+    <ID>MagicNumber:CropGeometry.kt$0.6f</ID>
+    <ID>MagicNumber:CropGeometry.kt$0.7f</ID>
+    <ID>MagicNumber:CropGeometry.kt$1000</ID>
+    <ID>MagicNumber:CropGeometry.kt$3</ID>
+    <ID>MagicNumber:CropGeometry.kt$3f</ID>
+    <ID>MagicNumber:CropGeometry.kt$4</ID>
+    <ID>MagicNumber:CropGeometry.kt$60</ID>
+    <ID>MagicNumber:DigestAuth.kt$DigestAuth$16</ID>
+    <ID>MagicNumber:DigestAuth.kt$DigestAuth$3</ID>
+    <ID>MagicNumber:EmbeddedQrScanner.kt$1280</ID>
+    <ID>MagicNumber:EmbeddedQrScanner.kt$720</ID>
+    <ID>MagicNumber:FileHasher.kt$FileHasher.Companion$1000</ID>
+    <ID>MagicNumber:FrameGrabber.kt$FrameGrabber$100</ID>
+    <ID>MagicNumber:GpxExportWorker.kt$64</ID>
+    <ID>MagicNumber:GpxTrack.kt$6_371_000.0</ID>
+    <ID>MagicNumber:Hashing.kt$16</ID>
+    <ID>MagicNumber:KeyStoreCredentialStore.kt$KeyStoreCredentialStore$256</ID>
+    <ID>MagicNumber:MediaEditScreen.kt$0.02f</ID>
+    <ID>MagicNumber:MediaEditScreen.kt$0.98f</ID>
+    <ID>MagicNumber:MediaEditScreen.kt$1000</ID>
+    <ID>MagicNumber:MediaEditScreen.kt$1000L</ID>
+    <ID>MagicNumber:MediaEditScreen.kt$180</ID>
+    <ID>MagicNumber:MediaEditScreen.kt$270</ID>
+    <ID>MagicNumber:MediaEditScreen.kt$360</ID>
+    <ID>MagicNumber:MediaEditScreen.kt$3f</ID>
+    <ID>MagicNumber:MediaEditScreen.kt$50</ID>
+    <ID>MagicNumber:MediaEditScreen.kt$60</ID>
+    <ID>MagicNumber:MediaEditScreen.kt$90</ID>
+    <ID>MagicNumber:MediaEditScreen.kt$90f</ID>
+    <ID>MagicNumber:MediaPickerScreen.kt$1000</ID>
+    <ID>MagicNumber:MediaPickerScreen.kt$3</ID>
+    <ID>MagicNumber:MediaPickerScreen.kt$60</ID>
+    <ID>MagicNumber:MediaPickerViewModel.kt$MediaPickerViewModel$1000L</ID>
+    <ID>MagicNumber:MediaPrepScreen.kt$3</ID>
+    <ID>MagicNumber:MediaStoreWriter.kt$MediaStoreWriter$1000L</ID>
+    <ID>MagicNumber:Migrations.kt$&lt;no name provided&gt;$18</ID>
+    <ID>MagicNumber:Post.kt$3</ID>
+    <ID>MagicNumber:PostListViewModel.kt$PostListViewModel$5_000</ID>
+    <ID>MagicNumber:PostRepository.kt$PostRepository$1000L</ID>
+    <ID>MagicNumber:PostRepository.kt$PostRepository$3</ID>
+    <ID>MagicNumber:PostScreen.kt$86_400_000L</ID>
+    <ID>MagicNumber:PostViewModel.kt$PostViewModel$5_000</ID>
+    <ID>MagicNumber:PublishWorker.kt$PublishWorker$12</ID>
+    <ID>MagicNumber:QueueScreen.kt$QueueViewModel$5_000</ID>
+    <ID>MagicNumber:RecordingScreen.kt$10</ID>
+    <ID>MagicNumber:RecordingScreen.kt$1000</ID>
+    <ID>MagicNumber:RecordingScreen.kt$1000f</ID>
+    <ID>MagicNumber:RecordingScreen.kt$3.6f</ID>
+    <ID>MagicNumber:RecordingScreen.kt$3600</ID>
+    <ID>MagicNumber:RecordingScreen.kt$60</ID>
+    <ID>MagicNumber:RecordingScreen.kt$9</ID>
+    <ID>MagicNumber:RecordingViewModel.kt$64</ID>
+    <ID>MagicNumber:RecordingViewModel.kt$RecordingViewModel$500</ID>
+    <ID>MagicNumber:RestoreFileUseCase.kt$1000L</ID>
+    <ID>MagicNumber:RestoreFileUseCase.kt$3</ID>
+    <ID>MagicNumber:RestoreFileUseCase.kt$8</ID>
+    <ID>MagicNumber:RestoreScreen.kt$1_024</ID>
+    <ID>MagicNumber:RestoreScreen.kt$1_024.0</ID>
+    <ID>MagicNumber:RestoreScreen.kt$5</ID>
+    <ID>MagicNumber:RestoreWorker.kt$RestoreWorker$1000L</ID>
+    <ID>MagicNumber:RestoreWorker.kt$RestoreWorker$3</ID>
+    <ID>MagicNumber:RestoreWorker.kt$RestoreWorker$64</ID>
+    <ID>MagicNumber:SafUtils.kt$3</ID>
+    <ID>MagicNumber:SafUtils.kt$4</ID>
+    <ID>MagicNumber:SettingsScreen.kt$1000</ID>
+    <ID>MagicNumber:SettingsScreen.kt$1000.0</ID>
+    <ID>MagicNumber:SettingsScreen.kt$1000L</ID>
+    <ID>MagicNumber:SettingsScreen.kt$60_000</ID>
+    <ID>MagicNumber:SettingsScreen.kt$60_000L</ID>
+    <ID>MagicNumber:SettingsScreen.kt$86_400_000L</ID>
+    <ID>MagicNumber:SettingsViewModel.kt$16</ID>
+    <ID>MagicNumber:SettingsViewModel.kt$8</ID>
+    <ID>MagicNumber:SettingsViewModel.kt$SettingsViewModel$32</ID>
+    <ID>MagicNumber:SettingsViewModel.kt$SettingsViewModel$64</ID>
+    <ID>MagicNumber:SigV4.kt$SigV4$0xFF</ID>
+    <ID>MagicNumber:TileSource.kt$NetworkTileSource.Companion$10_000</ID>
+    <ID>MagicNumber:TileSource.kt$NetworkTileSource.Companion$200</ID>
+    <ID>MagicNumber:TileSource.kt$SqliteTileSource$17</ID>
+    <ID>MagicNumber:TileSource.kt$SqliteTileSource.Companion$17</ID>
+    <ID>MagicNumber:TileStitcher.kt$180.0</ID>
+    <ID>MagicNumber:TileStitcher.kt$360.0</ID>
+    <ID>MagicNumber:TileStitcher.kt$85.051129f</ID>
+    <ID>MagicNumber:TrackRecorder.kt$1000</ID>
+    <ID>MagicNumber:TrackRecorder.kt$10_000L</ID>
+    <ID>MagicNumber:TrackRecorder.kt$120_000L</ID>
+    <ID>MagicNumber:TrackRecorder.kt$1_000L</ID>
+    <ID>MagicNumber:TrackRecorder.kt$2_000L</ID>
+    <ID>MagicNumber:TrackRecorder.kt$300_000L</ID>
+    <ID>MagicNumber:TrackRecorder.kt$30_000L</ID>
+    <ID>MagicNumber:TrackRecorder.kt$5_000L</ID>
+    <ID>MagicNumber:TrackRecorder.kt$60_000</ID>
+    <ID>MagicNumber:TrackRecorder.kt$60_000L</ID>
+    <ID>MagicNumber:TrackRecorder.kt$900_000L</ID>
+    <ID>MagicNumber:TrackRecorder.kt$Background$120_000L</ID>
+    <ID>MagicNumber:TrackRenderScreen.kt$1000.0</ID>
+    <ID>MagicNumber:TrackRenderViewModel.kt$TrackRenderViewModel$5_000</ID>
+    <ID>MagicNumber:TrackRenderViewModel.kt$TrackRenderViewModel$90</ID>
+    <ID>MagicNumber:TrackRenderer.kt$0.5</ID>
+    <ID>MagicNumber:TrackRenderer.kt$1e-9</ID>
+    <ID>MagicNumber:TrackRenderer.kt$4</ID>
+    <ID>MagicNumber:TrackRepository.kt$1000f</ID>
+    <ID>MagicNumber:TrackRepository.kt$6_371_000.0</ID>
+    <ID>MagicNumber:TrackRepository.kt$TrackRepository$86_400_000</ID>
+    <ID>MagicNumber:TrackShareUseCase.kt$64</ID>
+    <ID>MagicNumber:TransformPreviewGenerator.kt$TransformPreviewGenerator$1000L</ID>
+    <ID>MagicNumber:TransformQueue.kt$TransformQueue$1_000</ID>
+    <ID>MagicNumber:VideoProbe.kt$VideoProbe$270</ID>
+    <ID>MagicNumber:VideoProbe.kt$VideoProbe$90</ID>
+    <ID>MatchingDeclarationName:AppScope.kt$ApplicationScope</ID>
+    <ID>MatchingDeclarationName:MediaPickerScreen.kt$MediaTypeFilter</ID>
+    <ID>MaxLineLength:AppPrefs.kt$AppPrefs$S3MediaConfig</ID>
+    <ID>MaxLineLength:AppPrefs.kt$AppPrefsImpl$override fun autosaveMaxIntervalMs(): Long</ID>
+    <ID>MaxLineLength:AppPrefs.kt$AppPrefsImpl$override suspend</ID>
+    <ID>MaxLineLength:AppPrefs.kt$AppPrefsImpl$override suspend fun setHttpMediaStaticUrl(staticUrl: String)</ID>
+    <ID>MaxLineLength:AssetEntity.kt$AssetDao$@Query("UPDATE assets SET content = :content, localHash = :localHash, serverSha = :serverSha, syncState = :syncState, updatedAt = :now WHERE id = :id")</ID>
+    <ID>MaxLineLength:AssetEntity.kt$AssetDao$@Query("UPDATE assets SET content = :content, localHash = :localHash, syncState = :syncState, updatedAt = :now WHERE id = :id")</ID>
+    <ID>MaxLineLength:AssetEntity.kt$AssetDao$@Query("UPDATE assets SET localHash = :localHash, serverSha = :serverSha, syncState = :syncState, updatedAt = :now WHERE id = :id")</ID>
+    <ID>MaxLineLength:AudioConfigEntity.kt$AudioConfigEntity.Companion$AudioPreset.CUSTOM -&gt; PresetFields(DEFAULT.format, DEFAULT.sampleRateHz, DEFAULT.bitrateBps, DEFAULT.noiseSuppression, DEFAULT.autoGain)</ID>
+    <ID>MaxLineLength:AudioConfigEntity.kt$AudioConfigEntity.Companion$AudioPreset.DIALOG -&gt; PresetFields(AudioFormat.OGG_OPUS, 48_000, 128_000, noiseSuppression = false, autoGain = false)</ID>
+    <ID>MaxLineLength:AudioConfigEntity.kt$AudioConfigEntity.Companion$AudioPreset.DICTATION -&gt; PresetFields(AudioFormat.AMR_WB, 16_000, 23_850, noiseSuppression = true, autoGain = false)</ID>
+    <ID>MaxLineLength:AudioConfigEntity.kt$AudioConfigEntity.Companion$AudioPreset.INTERVIEW -&gt; PresetFields(AudioFormat.M4A_AAC, 44_100, 96_000, noiseSuppression = true, autoGain = false)</ID>
+    <ID>MaxLineLength:AudioConfigEntity.kt$AudioConfigEntity.Companion$AudioPreset.NATURE -&gt; PresetFields(AudioFormat.OGG_OPUS, 48_000, 192_000, noiseSuppression = false, autoGain = false)</ID>
+    <ID>MaxLineLength:AudioConfigEntity.kt$AudioConfigEntity.Companion$AudioPreset.VOICE -&gt; PresetFields(AudioFormat.M4A_AAC, 22_050, 64_000, noiseSuppression = true, autoGain = false)</ID>
+    <ID>MaxLineLength:AudioRecordingScreen.kt$"Device-dependent. Quality varies by manufacturer. Test with your recording subject before relying on either."</ID>
+    <ID>MaxLineLength:AudioRecordingScreen.kt$Icon(Icons.Default.Delete, "Delete recording", tint = MaterialTheme.colorScheme.outline, modifier = Modifier.size(18.dp))</ID>
+    <ID>MaxLineLength:AudioRecordingScreen.kt$Icon(Icons.Default.Share, "Share recording", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))</ID>
+    <ID>MaxLineLength:AudioRecordingScreen.kt$Row</ID>
+    <ID>MaxLineLength:AudioRecordingScreen.kt$Text(rec.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))</ID>
+    <ID>MaxLineLength:AudioRecordingScreen.kt$color = if (label != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant</ID>
+    <ID>MaxLineLength:AudioRecordingService.kt$AudioRecordingService$val created = DocumentsContract.createDocument(contentResolver, parentUri, format.mimeType, name) ?: return null</ID>
+    <ID>MaxLineLength:BackgroundService.kt$BackgroundService$is FixEffect.AcceptFix -&gt; { _status.update { it.copy(lastAcceptedFix = effect.point) }; bufferPoint(effect.point) }</ID>
+    <ID>MaxLineLength:BackgroundService.kt$BackgroundService$private var config = BackgroundConfig(RecordingMode.CONTINUOUS, 10_000L, 30_000L, 50f, true, true, true, TrackConfigEntity.DEFAULT_AUTO_SEGMENT_GAP_MS)</ID>
+    <ID>MaxLineLength:BackupOrchestrator.kt$BackupOrchestrator$check(part === lastPart) { "Part buffer not full before upload: ${buffer.size()} of $PART_PAX_CAPACITY" }</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupChunkDao$@Query("DELETE FROM backup_chunks WHERE backupPartId IN (SELECT id FROM backup_parts WHERE packNumber = :packNumber)")</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupChunkDao$@Query("SELECT c.* FROM backup_chunks c JOIN backup_parts p ON p.id = c.backupPartId WHERE p.packNumber = :packNumber AND p.partNumber = :partNumber ORDER BY c.partOffset ASC, c.id ASC")</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupChunkDao$@Query("SELECT c.* FROM backup_chunks c JOIN backup_parts p ON p.id = c.backupPartId WHERE p.packNumber = :packNumber ORDER BY p.partNumber ASC, c.partOffset ASC, c.id ASC")</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupChunkDao$@Query("SELECT c.*, p.packNumber, p.partNumber FROM backup_chunks c JOIN backup_parts p ON p.id = c.backupPartId WHERE c.backupFileId = :fileId ORDER BY p.packNumber ASC, p.partNumber ASC, c.fileOffset ASC")</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupChunkEntity$@Entity(tableName = "backup_chunks", foreignKeys = [ForeignKey(entity = BackupFileEntity::class, parentColumns = ["id"], childColumns = ["backupFileId"], onDelete = ForeignKey.CASCADE), ForeignKey(entity = BackupPartEntity::class, parentColumns = ["id"], childColumns = ["backupPartId"], onDelete = ForeignKey.CASCADE)], indices = [Index("backupFileId"), Index("backupPartId"), Index(value = ["backupFileId", "backupPartId"], unique = true)])</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupFileDoneDao$@Query("INSERT OR IGNORE INTO backup_files_done (backupFileId, sealedAt) SELECT DISTINCT bf.id, :now FROM backup_files bf JOIN backup_chunks c ON c.backupFileId = bf.id JOIN backup_parts p ON p.id = c.backupPartId WHERE p.packNumber = :packNumber AND NOT EXISTS (SELECT 1 FROM backup_chunks c2 JOIN backup_parts p2 ON p2.id = c2.backupPartId LEFT JOIN backup_pack_sealed s2 ON s2.packNumber = p2.packNumber WHERE c2.backupFileId = bf.id AND s2.packNumber IS NULL)")</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupFileDoneEntity$@Entity(tableName = "backup_files_done", foreignKeys = [ForeignKey(entity = BackupFileEntity::class, parentColumns = ["id"], childColumns = ["backupFileId"], onDelete = ForeignKey.CASCADE)])</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupFileStatusDao$@Query("SELECT v.* FROM backup_file_status_view v LEFT JOIN backup_chunks c ON c.backupFileId = v.id AND c.fileOffset = 0 WHERE c.id IS NULL ORDER BY v.mtime ASC, v.path ASC")</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupFileStatusView$@DatabaseView(viewName = "backup_file_status_view", value = "SELECT f.id, f.path, f.uri, f.mtime, f.size, f.sha256, CASE WHEN COUNT(c.id) = 0 THEN 0 WHEN SUM(CASE WHEN s.packNumber IS NOT NULL THEN 1 ELSE 0 END) = COUNT(c.id) THEN 2 WHEN SUM(CASE WHEN e.backupPartId IS NOT NULL THEN 1 ELSE 0 END) &gt; 0 THEN 1 ELSE 0 END as state FROM backup_files f LEFT JOIN backup_chunks c ON c.backupFileId = f.id LEFT JOIN backup_parts p ON p.id = c.backupPartId LEFT JOIN backup_part_etags e ON e.backupPartId = p.id LEFT JOIN backup_pack_sealed s ON s.packNumber = p.packNumber GROUP BY f.id ORDER BY f.id ASC")</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupPackSealedEntity$@Entity(tableName = "backup_pack_sealed", foreignKeys = [ForeignKey(entity = BackupPackEntity::class, parentColumns = ["packNumber"], childColumns = ["packNumber"], onDelete = ForeignKey.CASCADE)])</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupPartDao$@Query("SELECT p.* FROM backup_parts p JOIN backup_part_etags e ON e.backupPartId = p.id LEFT JOIN backup_pack_sealed s ON s.packNumber = p.packNumber WHERE p.packNumber = :packNumber AND s.packNumber IS NULL ORDER BY p.partNumber ASC")</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupPartDao$@Query("SELECT p.* FROM backup_parts p LEFT JOIN backup_part_etags e ON e.backupPartId = p.id LEFT JOIN backup_pack_sealed s ON s.packNumber = p.packNumber WHERE e.backupPartId IS NULL AND s.packNumber IS NULL AND (p.packNumber &gt; :packNumber OR (p.packNumber = :packNumber AND p.partNumber &gt; :partNumber)) ORDER BY p.packNumber ASC, p.partNumber ASC LIMIT 1")</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupPartDao$@Query("SELECT p.* FROM backup_parts p LEFT JOIN backup_part_etags e ON e.backupPartId = p.id LEFT JOIN backup_pack_sealed s ON s.packNumber = p.packNumber WHERE e.backupPartId IS NULL AND s.packNumber IS NULL ORDER BY p.packNumber ASC, p.partNumber ASC LIMIT 1")</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupPartDao$@Query("SELECT p.id, p.packNumber, p.partNumber, (e.backupPartId IS NOT NULL) AS uploaded, (s.packNumber IS NOT NULL) AS sealed FROM backup_parts p LEFT JOIN backup_part_etags e ON e.backupPartId = p.id LEFT JOIN backup_pack_sealed s ON s.packNumber = p.packNumber ORDER BY p.packNumber DESC, p.partNumber DESC LIMIT 1")</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupPartEntity$@Entity(tableName = "backup_parts", foreignKeys = [ForeignKey(entity = BackupPackEntity::class, parentColumns = ["packNumber"], childColumns = ["packNumber"], onDelete = ForeignKey.CASCADE)], indices = [Index(value = ["packNumber", "partNumber"], unique = true), Index("packNumber")])</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupPartEtagDao$@Query("DELETE FROM backup_part_etags WHERE backupPartId IN (SELECT id FROM backup_parts WHERE packNumber = :packNumber)")</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupPartEtagDao$@Query("SELECT p.partNumber, e.etag FROM backup_part_etags e JOIN backup_parts p ON p.id = e.backupPartId WHERE p.packNumber = :packNumber ORDER BY p.partNumber ASC")</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupPartEtagEntity$@Entity(tableName = "backup_part_etags", foreignKeys = [ForeignKey(entity = BackupPartEntity::class, parentColumns = ["id"], childColumns = ["backupPartId"], onDelete = ForeignKey.CASCADE)])</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupRestoreView$@DatabaseView(viewName = "backup_restore_view", value = "SELECT f.id, f.path, f.mtime, f.size, f.sha256, MIN(p.packNumber) as startPack, MIN(CASE WHEN p.packNumber = (SELECT MIN(p2.packNumber) FROM backup_parts p2 JOIN backup_chunks c2 ON c2.backupPartId = p2.id WHERE c2.backupFileId = f.id) THEN p.partNumber ELSE NULL END) as startPart, (SELECT c2.partOffset FROM backup_chunks c2 JOIN backup_parts p2 ON p2.id = c2.backupPartId WHERE c2.backupFileId = f.id AND c2.fileOffset = 0) as startPartOffset, MAX(p.packNumber) as endPack, MAX(CASE WHEN p.packNumber = (SELECT MAX(p2.packNumber) FROM backup_parts p2 JOIN backup_chunks c2 ON c2.backupPartId = p2.id WHERE c2.backupFileId = f.id) THEN p.partNumber ELSE NULL END) as endPart, COUNT(c.id) as numParts FROM backup_files f JOIN backup_chunks c ON c.backupFileId = f.id JOIN backup_parts p ON p.id = c.backupPartId JOIN backup_pack_sealed s ON s.packNumber = p.packNumber GROUP BY f.id ORDER BY startPack, startPart")</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupStateRepository$backupPackSealedDao.insert(BackupPackSealedEntity(packNumber = packNumber, sealedAt = System.currentTimeMillis()))</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupStateRepository$suspend fun getChunksForPart(packNumber: Int, partNumber: Int): List&lt;BackupChunkEntity&gt;</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupStateRepository$suspend fun getNextPendingPart(packNumber: Int, partNumber: Int): BackupPartEntity?</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupStateRepository$suspend fun getRestoreFilesByFileId(fileId: Long): List&lt;BackupRestoreView&gt;</ID>
+    <ID>MaxLineLength:BackupStateRepository.kt$BackupStateRepository$suspend fun getUploadedPartsForPack(packNumber: Int): List&lt;BackupPartEntity&gt;</ID>
+    <ID>MaxLineLength:BackupViewModel.kt$BackupViewModel$WorkInfo.State.FAILED -&gt; out.getString(BackupWorker.KEY_ERROR_TYPE) ?: BackupWorker.ERR_B2_ERROR</ID>
+    <ID>MaxLineLength:ConsolidateRepository.kt$ConsolidateFileDao$@Query("DELETE FROM consolidate_files WHERE id IN (:ids) AND id NOT IN (SELECT consolidateFileId FROM consolidate_protected_files)")</ID>
+    <ID>MaxLineLength:ConsolidateRepository.kt$ConsolidateFileDao$@Query("SELECT cf.* FROM consolidate_files cf LEFT JOIN consolidate_files_done d ON d.consolidateFileId = cf.id WHERE d.consolidateFileId IS NULL ORDER BY cf.id ASC")</ID>
+    <ID>MaxLineLength:ConsolidateRepository.kt$SafeToDeleteView$value = "SELECT cf.id, cf.path, cf.uri, cf.mtime, cf.size, d.destinationName, d.completedAt as consolidatedAt, CASE WHEN p.consolidateFileId IS NOT NULL THEN 1 ELSE 0 END as isProtected FROM consolidate_files cf JOIN consolidate_files_done d ON d.consolidateFileId = cf.id JOIN backup_files bf ON bf.path = cf.path AND bf.sha256 = cf.sha256 JOIN backup_files_done bd ON bd.backupFileId = bf.id LEFT JOIN consolidate_protected_files p ON p.consolidateFileId = cf.id"</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$AsyncImage(model = android.net.Uri.parse(file.uri), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Box</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)), contentAlignment = Alignment.Center) { Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(20.dp)) }</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)), contentAlignment = Alignment.Center) { Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(28.dp)) }</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Button</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Card</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$FilledTonalButton</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Icon(Icons.AutoMirrored.Filled.ViewList, "List view", tint = if (state.viewMode == ViewMode.LIST) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Icon(Icons.Default.CloudUpload, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Back up")</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Icon(Icons.Default.Compress, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Consolidate")</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Icon(Icons.Default.GridView, "Grid view", tint = if (state.viewMode == ViewMode.GRID) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Consolidate + Back up")</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Icon(Icons.Default.SearchOff, null, Modifier.size(18.dp))</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Icon(if (isProtected) Icons.Default.Shield else Icons.Default.ShieldMoon, contentDescription = if (isProtected) "Unprotect" else "Protect", tint = if (isProtected) MaterialTheme.colorScheme.primary else Color.White, modifier = Modifier.size(16.dp))</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Icon(if (isProtected) Icons.Default.Shield else Icons.Default.ShieldMoon, contentDescription = if (isProtected) "Unprotect" else "Protect", tint = if (isProtected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, modifier = Modifier.size(18.dp))</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$IconButton</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$LinearProgressIndicator(progress = { state.backupFileIndex.toFloat() / state.backupFilesTotal }, modifier = Modifier.fillMaxWidth())</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$LinearProgressIndicator(progress = { state.consolidateProcessed.toFloat() / state.consolidateTotal }, modifier = Modifier.fillMaxWidth())</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Row</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Text("${formatSize(file.size)} · ${formatDate(file.mtime)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Text("${state.consolidateProcessed * 100 / state.consolidateTotal}%", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Text("File ${state.backupFileIndex} / ${state.backupFilesTotal}", style = MaterialTheme.typography.bodySmall)</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Text("File ${state.consolidateProcessed} / ${state.consolidateTotal}", style = MaterialTheme.typography.bodySmall)</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Text("Ready", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Text(backupErrorLabel(state.backupErrorType), color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.titleSmall)</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Text(file.path.substringAfterLast('/'), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Text(file.path.substringAfterLast('/'), style = MaterialTheme.typography.labelSmall, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Text(state.backupCurrentFile.substringAfterLast('/'), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$Text(state.consolidateCurrentFile.substringAfterLast('/'), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$if (isActive) { Icon(if (state.sortDirection == SortDirection.ASC) Icons.Default.ArrowUpward else Icons.Default.ArrowDownward, null, modifier = Modifier.size(14.dp)) }</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$if (state.backupErrorDetail.isNotEmpty()) { Text(state.backupErrorDetail, color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis) }</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$if (state.backupPackPosition &gt; 0) { Text("Pack ${state.backupPackPosition}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$if (state.backupPartNumber &gt; 0) { Text("${state.backupPartNumber} parts - ${state.backupPackPercent}%", style = MaterialTheme.typography.bodySmall) }</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$if (state.consolidateFailed &gt; 0) { Text("${state.consolidateFailed} failed", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }</ID>
+    <ID>MaxLineLength:ConsolidateScreen.kt$private</ID>
+    <ID>MaxLineLength:CropGeometry.kt$if (handle in listOf(CropHandle.TOP_LEFT, CropHandle.BOTTOM_LEFT, CropHandle.LEFT)) l = r - minSize else r = l + minSize</ID>
+    <ID>MaxLineLength:CropGeometry.kt$if (handle in listOf(CropHandle.TOP_LEFT, CropHandle.TOP_RIGHT, CropHandle.TOP)) t = b - minSize else b = t + minSize</ID>
+    <ID>MaxLineLength:FixCycleStateMachine.kt$effects = listOf(FixEffect.AcceptFix(candidate), FixEffect.ReleaseFixWakeLock, FixEffect.ScheduleNext)</ID>
+    <ID>MaxLineLength:KeyStoreCredentialStore.kt$KeyStoreCredentialStore$Log.e(TAG, "decrypt failed for '$key' — Keystore key invalidated or data corrupt; re-enter this credential", e)</ID>
+    <ID>MaxLineLength:MediaEditScreen.kt$Text(formatTime(trimEndMs), color = Color.White, style = MaterialTheme.typography.labelSmall)</ID>
+    <ID>MaxLineLength:MediaEditScreen.kt$Text(formatTime(trimStartMs), color = Color.White, style = MaterialTheme.typography.labelSmall)</ID>
+    <ID>MaxLineLength:MediaEditScreen.kt$drawRect(selectedColor, androidx.compose.ui.geometry.Offset(right - handleWidthPx, 0f), Size(handleWidthPx, size.height))</ID>
+    <ID>MaxLineLength:MediaEditScreen.kt$if (videoMode == VideoEditMode.TRIM) Icons.Default.PhotoCamera else Icons.Default.ContentCut</ID>
+    <ID>MaxLineLength:MediaEditScreen.kt$val startMs = if (videoMode == VideoEditMode.TRIM) trimStartMs else player?.currentPosition ?: 0L</ID>
+    <ID>MaxLineLength:MediaEditScreen.kt$videoMode = if (videoMode == VideoEditMode.TRIM) VideoEditMode.FRAME_GRAB else VideoEditMode.TRIM</ID>
+    <ID>MaxLineLength:MediaModule.kt$MediaModule$@Provides fun provideConsolidateProtectedFileDao(db: AppDatabase): ConsolidateProtectedFileDao</ID>
+    <ID>MaxLineLength:MediaPrepScreen.kt$val mediaType = item?.type ?: if (request.media.mimeType.startsWith("video")) MediaType.VIDEO else MediaType.IMAGE</ID>
+    <ID>MaxLineLength:PostListScreen.kt$text = { Text("\"${post.title.ifBlank { "Untitled" }}\" will be queued for publishing to GitHub.") }</ID>
+    <ID>MaxLineLength:PostListScreen.kt$text = { Text("\"${post.title.ifBlank { "Untitled" }}\" will be removed from GitHub and marked as draft.") }</ID>
+    <ID>MaxLineLength:PostListScreen.kt$title = { Text(if (publishState == PostPublishState.NEEDS_FIXING) "Re-publish post?" else "Publish post?") }</ID>
+    <ID>MaxLineLength:PublishWorker.kt$PublishWorker$mediaErrors += "${media.contentHash.take(12)}….$ext: source file no longer accessible. Open the post and re-add this media."</ID>
+    <ID>MaxLineLength:PublishWorker.kt$PublishWorker$val backend = s3Factory.create(s3Config.endpoint, s3Config.bucket, s3Config.keyId, s3Secret, s3Config.region)</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$FilterChip(selected = currentMode == mode, onClick = { onModeSelected(mode) }, label = { Text(formatModeLabel(mode)) })</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$FilterChip(selected = state.config.fixTimeoutMs == ms, onClick = { vm.setFixTimeout(ms) }, label = { Text("${ms / 1000}s") })</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$FilterChip(selected = state.config.intervalMs == ms, onClick = { vm.setInterval(ms) }, label = { Text(formatIntervalLabel(ms)) })</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$FilterChip(selected = state.config.maxInaccuracyM == m, onClick = { vm.setMaxInaccuracy(m) }, label = { Text("${m.toInt()}m") })</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$FlowRow</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$Icon(Icons.Default.Delete, "Delete track", tint = MaterialTheme.colorScheme.outline, modifier = Modifier.size(18.dp))</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$Icon(Icons.Default.Share, "Share track", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$Row</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$Text(firstLine.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = contentColor, modifier = Modifier.weight(1f))</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$Text(formatTime(time), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$Text(track.name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$TextButton(onClick = { onDeleteActive(false); confirmDeleteActive = false }) { Text("Delete &amp; stop") }</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$TextButton(onClick = { onDeleteActive(true); confirmDeleteActive = false }) { Text("Delete &amp; restart") }</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$TextButton(onClick = { vm.confirmStop(StopPromptChoice.STOP_AND_DISABLE) }) { Text("Stop and disable schedule") }</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$TextButton(onClick = { vm.confirmStop(StopPromptChoice.STOP_FOR_TODAY) }) { Text("Stop for today only") }</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$android.content.Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$color = if (label != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$color = if (state.config.autoScheduleEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$if (state.config.autoScheduleEnabled) "${formatTime(state.config.autoStartTime)} – ${formatTime(state.config.autoStopTime)}" else "Disabled"</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$item { TimePickerRow(label = "Start time", time = state.config.autoStartTime, onTimeSelected = vm::setAutoStartTime) }</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$item { TimePickerRow(label = "Stop time", time = state.config.autoStopTime, onTimeSelected = vm::setAutoStopTime) }</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$item { ToggleRow("Hold wake lock", "Prevents CPU from sleeping. Required for reliable continuous mode.", state.config.holdWakeLock, vm::setHoldWakeLock) }</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$item { ToggleRow("Keep ephemeris warm", "Passive listener keeps GPS chip data fresh between fixes. Low power.", state.config.keepEphemerisWarm, vm::setKeepEphemerisWarm) }</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$style = MaterialTheme.typography.bodySmall</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$subtitle = "Start a new recording when the day changes. Disable to continue the same recording across midnight."</ID>
+    <ID>MaxLineLength:RecordingScreen.kt$text = { Text("Auto-schedule is active. It would restart recording at ${formatTime(state.config.autoStartTime)} tomorrow.") }</ID>
+    <ID>MaxLineLength:RecordingViewModel.kt$RecordingViewModel$fun selectAll()</ID>
+    <ID>MaxLineLength:RecordingViewModel.kt$RecordingViewModel$fun setAutoSegmentGapMs(ms: Long)</ID>
+    <ID>MaxLineLength:RecordingViewModel.kt$RecordingViewModel$fun setAutoSplitOnDayRollover(v: Boolean)</ID>
+    <ID>MaxLineLength:RecordingViewModel.kt$RecordingViewModel$fun setFixTimeout(ms: Long)</ID>
+    <ID>MaxLineLength:RecordingViewModel.kt$RecordingViewModel$fun setHoldWakeLock(v: Boolean)</ID>
+    <ID>MaxLineLength:RecordingViewModel.kt$RecordingViewModel$fun setInterval(ms: Long)</ID>
+    <ID>MaxLineLength:RecordingViewModel.kt$RecordingViewModel$fun setKeepEphemerisWarm(v: Boolean)</ID>
+    <ID>MaxLineLength:RecordingViewModel.kt$RecordingViewModel$fun setMaxInaccuracy(m: Float)</ID>
+    <ID>MaxLineLength:RecordingViewModel.kt$RecordingViewModel$fun setMode(mode: String)</ID>
+    <ID>MaxLineLength:RestoreScreen.kt$node.versions.forEach { v -&gt; if (v.selected != selectAll) onToggleVersion(v.path, v.sha256) }</ID>
+    <ID>MaxLineLength:RestoreScreen.kt$private</ID>
+    <ID>MaxLineLength:RestoreWorker.kt$RestoreWorker$UserNotifications.error(notificationDao, "restore", "Rebuild &amp; restore with ${errors.size} error(s)", errors.joinToString("\n"))</ID>
+    <ID>MaxLineLength:RestoreWorker.kt$RestoreWorker$UserNotifications.error(notificationDao, "restore", "Restored with ${errors.size} error(s)", errors.joinToString("\n"))</ID>
+    <ID>MaxLineLength:SettingsScreen.kt$Text</ID>
+    <ID>MaxLineLength:SettingsScreen.kt$text = { Text("Removes all secrets, config, and preferences. Rescan all QR codes and reconfigure journey settings to restore.") }</ID>
+    <ID>MaxLineLength:SettingsScreen.kt$text = { Text("Removes the B2 app key, GitHub token, S3 secret key, HTTP media password, and phone keypair. All other config is kept. Rescan QR codes to restore access.") }</ID>
+    <ID>MaxLineLength:SettingsViewModel.kt$SettingsViewModel$b2 = obj["b2"]?.jsonObject?.let { b -&gt; "${b["endpoint"]?.jsonPrimitive?.content ?: "?"} / ${b["bucket"]?.jsonPrimitive?.content ?: "?"}" }</ID>
+    <ID>MaxLineLength:SettingsViewModel.kt$SettingsViewModel$github = obj["github"]?.jsonObject?.let { g -&gt; "${g["owner"]?.jsonPrimitive?.content}/${g["repo"]?.jsonPrimitive?.content}" }</ID>
+    <ID>MaxLineLength:SettingsViewModel.kt$SettingsViewModel$httpMediaEnabled = appPrefs.isHttpMediaEnabled() &amp;&amp; httpConfigRaw != null &amp;&amp; creds.httpMediaPassword() != null</ID>
+    <ID>MaxLineLength:SettingsViewModel.kt$SettingsViewModel$val appKey = b2["application_key"]?.jsonPrimitive?.content ?: error("Bootstrap missing b2.application_key")</ID>
+    <ID>MaxLineLength:SettingsViewModel.kt$SettingsViewModel$val b2 = s3Factory.create(b2Config.endpoint, b2Config.bucket, b2Config.keyId, b2RwAppKey, b2Config.region)</ID>
+    <ID>MaxLineLength:SigV4.kt$SigV4$"Authorization" to "AWS4-HMAC-SHA256 Credential=${creds.keyId}/$credScope, SignedHeaders=$signedHeaders, Signature=$sig"</ID>
+    <ID>MaxLineLength:TrackRenderScreen.kt$"Configure tile sources for track rendering backgrounds. Both can coexist — toggle to choose the active source."</ID>
+    <ID>MaxLineLength:TrackRenderScreen.kt$color = if (configured) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant</ID>
+    <ID>MaxLineLength:TrackRenderScreen.kt$onPickFiles = { gpxPicker.launch(arrayOf("application/gpx+xml", "application/octet-stream", "*/*")) }</ID>
+    <ID>MaxLineLength:TrackRenderScreen.kt$onPickTileFile = { tilePicker.launch(arrayOf("application/octet-stream", "application/x-sqlite3", "*/*")) }</ID>
+    <ID>MaxLineLength:TrackRepository.kt$TrackDao$@Query("SELECT t.id, t.date, t.name, t.createdAt, COALESCE(SUM(pc.cnt), 0) AS pointCount, ts.trackId AS stats_trackId, ts.durationMs AS stats_durationMs, ts.recordingLengthMs AS stats_recordingLengthMs, ts.distanceM AS stats_distanceM, ts.timeMovingMs AS stats_timeMovingMs FROM tracks t LEFT JOIN track_segments s ON s.trackId = t.id LEFT JOIN (SELECT segmentId, COUNT(*) AS cnt FROM track_points GROUP BY segmentId) pc ON pc.segmentId = s.id LEFT JOIN track_stats ts ON ts.trackId = t.id GROUP BY t.id ORDER BY t.createdAt DESC")</ID>
+    <ID>MaxLineLength:TrackRepository.kt$TrackPointRow$value = "SELECT t.id AS trackId, t.date AS trackDate, t.name AS trackName, s.id AS segmentId, s.startedAt AS segmentStartedAt, p.id AS pointId, p.lat, p.lon, p.ele, p.undulation, p.accuracyM, p.speedMs, p.bearing, p.time, p.provider FROM track_points p JOIN track_segments s ON s.id = p.segmentId JOIN tracks t ON t.id = s.trackId ORDER BY t.id ASC, s.id ASC, p.id ASC"</ID>
+    <ID>MaxLineLength:TrackRepository.kt$TrackRepository$val trackId = dao.insertTrack(TrackEntity(date = date, name = LocalDateTime.now().format(RECORDING_NAME_FORMAT)))</ID>
+    <ID>MaxLineLength:UnpublishWorker.kt$UnpublishWorker$"Unpublished $slug: external media (if any) under static/$slug/ was not deleted (post id unknown) — remove manually if needed."</ID>
+    <ID>MaxLineLength:UserNotificationEntity.kt$UserNotifications$suspend</ID>
+    <ID>MayBeConst:BackupOrchestrator.kt$BackupOrchestrator.Companion$val PART_WIRE_SIZE = 8L * 1024 * 1024</ID>
+    <ID>NestedBlockDepth:AssetDiffViewModel.kt$internal fun computeDiff( oldLines: List&lt;String&gt;, newLines: List&lt;String&gt;, ): List&lt;DiffLine&gt;</ID>
+    <ID>NestedBlockDepth:BackupOrchestrator.kt$BackupOrchestrator$private suspend fun execute(listener: ProgressListener)</ID>
+    <ID>NestedBlockDepth:GpxImporter.kt$GpxImporter$fun import(input: InputStream): ImportedTrack</ID>
+    <ID>NestedBlockDepth:Post.kt$PostShareIntentBuilder$fun build( title: String, teaser: String, tags: List&lt;String&gt;, slug: String, localDate: String, siteUrl: String?, media: List&lt;ShareMedia&gt;, ): Intent</ID>
+    <ID>NestedBlockDepth:PublishWorker.kt$PublishWorker$override suspend fun doWork(): Result</ID>
+    <ID>NestedBlockDepth:RestoreFileUseCase.kt$suspend fun restoreSelectedFiles( context: Context, b2: S3Backend, senderPk: ByteArray, recipientSk: ByteArray, sodium: com.goterl.lazysodium.LazySodiumAndroid, stateRepo: BackupStateRepository, packPrefix: String, selections: List&lt;RestoreSelectionEntity&gt;, dcimUri: String?, safGrants: Map&lt;String, Uri&gt;, listener: RestoreProgressListener, ): List&lt;String&gt;</ID>
+    <ID>NestedBlockDepth:RestoreWorker.kt$RestoreWorker$private suspend fun scanPack( b2: S3Backend, senderPk: ByteArray, recipientSk: ByteArray, packPos: Int, packKey: String, firstPartWire: ByteArray, restoreInline: Boolean, dcimUri: String? = null, safGrants: Map&lt;String, Uri&gt; = emptyMap(), ): List&lt;String&gt;</ID>
+    <ID>NestedBlockDepth:VideoTransformer.kt$VideoTransformer$private fun buildEffects(params: VideoTransformParams): List&lt;androidx.media3.common.Effect&gt;</ID>
+    <ID>ReturnCount:AccessibilityGate.kt$private fun checkScreenReaders(context: Context): Boolean</ID>
+    <ID>ReturnCount:AppPrefs.kt$AppPrefs$fun b2Config(): B2Config?</ID>
+    <ID>ReturnCount:AppPrefs.kt$AppPrefs$fun githubRepo2(): GitHubRepo?</ID>
+    <ID>ReturnCount:AppPrefs.kt$AppPrefs$fun httpMediaConfig(): HttpMediaConfig?</ID>
+    <ID>ReturnCount:AppPrefs.kt$AppPrefs$fun httpMediaConfigRaw(): HttpMediaConfig?</ID>
+    <ID>ReturnCount:AppPrefs.kt$AppPrefs$fun s3MediaConfig(): S3MediaConfig?</ID>
+    <ID>ReturnCount:AppPrefs.kt$AppPrefs$fun s3MediaConfigRaw(): S3MediaConfig?</ID>
+    <ID>ReturnCount:AssetDiffViewModel.kt$AssetDiffViewModel$private fun githubClient(): GitHubClient?</ID>
+    <ID>ReturnCount:AssetListViewModel.kt$AssetListViewModel$private fun githubClient(): GitHubClient?</ID>
+    <ID>ReturnCount:AssetSyncPolicy.kt$fun canDiff(asset: AssetEntity): Boolean</ID>
+    <ID>ReturnCount:AudioRecordingService.kt$AudioRecordingService$@Suppress("Recycle") private fun createFile(folderUri: Uri, name: String, format: AudioFormat): Pair&lt;Uri, ParcelFileDescriptor&gt;?</ID>
+    <ID>ReturnCount:AudioRecordingService.kt$AudioRecordingService$private fun userPause()</ID>
+    <ID>ReturnCount:AudioRecordingService.kt$AudioRecordingService$private fun userResume()</ID>
+    <ID>ReturnCount:BackgroundService.kt$BackgroundService$private fun startRecording()</ID>
+    <ID>ReturnCount:BackupPaxWriter.kt$BackupPaxWriter$fun parseEntry(block: ByteArray): PaxEntry?</ID>
+    <ID>ReturnCount:ConsolidateViewModel.kt$ConsolidateViewModel$private suspend fun scanAndBackfill(): Int</ID>
+    <ID>ReturnCount:ConsolidateWorker.kt$ConsolidateWorker$override suspend fun doWork(): Result</ID>
+    <ID>ReturnCount:ConsolidateWorker.kt$ConsolidateWorker$private suspend fun scanAndPersistSourceFiles(dcimTreeUri: Uri): Int</ID>
+    <ID>ReturnCount:CropGeometry.kt$fun applyCropDrag(rect: Rect, handle: CropHandle, delta: Offset, bounds: Rect, minSize: Float): Rect</ID>
+    <ID>ReturnCount:CropGeometry.kt$fun hitTestCropHandle(touch: Offset, rect: Rect, slop: Float): CropHandle</ID>
+    <ID>ReturnCount:FileHasher.kt$FileHasher$suspend fun hashOrCached( path: String, mtime: Long, size: Long, open: () -&gt; InputStream, ): String?</ID>
+    <ID>ReturnCount:FrameGrabber.kt$FrameGrabber$fun extractKeyframeToCache( context: Context, videoUri: Uri, timestampUs: Long, orientation: OrientationTransform, fineRotationDegrees: Float, filePrefix: String = "frame", ): GrabResult</ID>
+    <ID>ReturnCount:GitHubClient.kt$GitHubClient$suspend fun getFileBinary(path: String): ByteArray?</ID>
+    <ID>ReturnCount:GitHubClient.kt$GitHubClient$suspend fun getFileContent(path: String): String?</ID>
+    <ID>ReturnCount:GitHubClient.kt$GitHubClient$suspend fun getTree(branch: String = "main"): List&lt;FileEntry&gt;</ID>
+    <ID>ReturnCount:GitHubClient.kt$GitHubClient$suspend fun listDir(path: String): List&lt;FileEntry&gt;</ID>
+    <ID>ReturnCount:GitHubFileWorker.kt$GitHubFileWorker$override suspend fun doWork(): Result</ID>
+    <ID>ReturnCount:GitHubFileWorker.kt$GitHubFileWorker$private fun githubClient(): GitHubClient?</ID>
+    <ID>ReturnCount:GpxExportWorker.kt$GpxExportWorker$override suspend fun doWork(): Result</ID>
+    <ID>ReturnCount:GpxTrack.kt$GpxHandler$override fun startElement(uri: String?, local: String?, qName: String?, attrs: Attributes)</ID>
+    <ID>ReturnCount:HttpDigestBackend.kt$HttpMediaBackend$private suspend fun requestDigest( method: HttpMethod, key: String, data: ByteArray?, contentType: String?, ): HttpResponse</ID>
+    <ID>ReturnCount:MediaCaches.kt$MediaResolutionCache$private fun remoteBaseUrl(): String?</ID>
+    <ID>ReturnCount:MediaCaches.kt$MediaResolutionCache$private fun resolve(entity: PostMediaEntity, slug: String?): ResolvedMedia</ID>
+    <ID>ReturnCount:MediaCaches.kt$TransformPreviewCache$fun get(entity: PostMediaEntity): Bitmap?</ID>
+    <ID>ReturnCount:MediaEditScreen.kt$private fun computeVideoFrameRect( containerSize: IntSize, probedVideoSize: IntSize, orientation: OrientationTransform, ): Rect</ID>
+    <ID>ReturnCount:MediaEditScreen.kt$private fun nearestKeyframeIndex(keyframesUs: List&lt;Long&gt;, targetUs: Long): Int</ID>
+    <ID>ReturnCount:MediaStoreWriter.kt$MediaStoreWriter$fun findByName( context: Context, displayName: String, relativePath: String, ): Uri?</ID>
+    <ID>ReturnCount:Post.kt$fun Post.publishedUrl(siteUrl: String?): String?</ID>
+    <ID>ReturnCount:Post.kt$fun autoTeaser(body: String, maxLen: Int = 160): String</ID>
+    <ID>ReturnCount:PostListViewModel.kt$PostListViewModel$private fun githubClient(): GitHubClient?</ID>
+    <ID>ReturnCount:PostMediaFileStore.kt$PostMediaFileStore$fun resolveDisplayMedia(entity: PostMediaEntity): ResolvedMedia</ID>
+    <ID>ReturnCount:PostMediaFileStore.kt$PostMediaFileStore$fun resolveUri(hash: String, mimeType: String): Uri?</ID>
+    <ID>ReturnCount:PostMediaFileStore.kt$PostMediaFileStore$private fun findInLegacyDir(hash: String, ext: String): Uri?</ID>
+    <ID>ReturnCount:PostMediaFileStore.kt$PostMediaFileStore$private fun postMediaFolderId(treeUri: Uri): String?</ID>
+    <ID>ReturnCount:PostMediaPuller.kt$suspend fun pullPostMediaFromGitHub( contentHash: String, mimeType: String, slug: String, github: GitHubClient, mediaFileStore: PostMediaFileStore, processedHash: String? = null, ): String?</ID>
+    <ID>ReturnCount:PostRepository.kt$PostRepository$private fun queryMeta(uri: Uri): ConsolidateMeta?</ID>
+    <ID>ReturnCount:PostViewModel.kt$PostViewModel$private fun githubClient(): GitHubClient?</ID>
+    <ID>ReturnCount:PublishWorker.kt$PublishWorker$override suspend fun doWork(): Result</ID>
+    <ID>ReturnCount:PublishWorker.kt$PublishWorker$private fun githubClient(): GitHubClient?</ID>
+    <ID>ReturnCount:PublishWorker.kt$PublishWorker$private fun mediaBackend(): Pair&lt;MediaBackend, String&gt;?</ID>
+    <ID>ReturnCount:PublishWorker.kt$PublishWorker$private fun resolveSourceUri(media: PostMediaEntity): String?</ID>
+    <ID>ReturnCount:PublishWorker.kt$PublishWorker$private suspend fun processMediaWithIntent(media: PostMediaEntity): ProcessedMediaResult?</ID>
+    <ID>ReturnCount:RestoreFileUseCase.kt$fun finalizeFileAccum(context: Context, acc: FileAccum): String?</ID>
+    <ID>ReturnCount:RestoreFileUseCase.kt$fun openFileAccum( context: Context, fileId: Long, path: String, mtime: Long, sha256: String, realSize: Long, dest: SafDest, ): FileAccum?</ID>
+    <ID>ReturnCount:RestoreFileUseCase.kt$fun resolveDestination( path: String, dcimUri: String?, safGrants: Map&lt;String, Uri&gt;, ): SafDest?</ID>
+    <ID>ReturnCount:RestoreViewModel.kt$RestoreViewModel$private fun findFolder(root: TreeNode.Folder, path: String): TreeNode.Folder?</ID>
+    <ID>ReturnCount:SafUtils.kt$fun collectFileNames( context: Context, treeUri: Uri, subfolderName: String, ): Set&lt;String&gt;</ID>
+    <ID>ReturnCount:SafUtils.kt$fun findFile( context: Context, treeUri: Uri, subfolders: List&lt;String&gt;, displayName: String, ): DocumentFile?</ID>
+    <ID>ReturnCount:SafUtils.kt$fun listSubfolder( context: Context, treeUri: Uri, subfolderName: String, ): List&lt;ScannedFile&gt;?</ID>
+    <ID>ReturnCount:SafUtils.kt$private fun navigateToId(context: Context, treeUri: Uri, subfolders: List&lt;String&gt;): String?</ID>
+    <ID>ReturnCount:SafUtils.kt$private fun queryDisplayName(context: Context, treeUri: Uri, documentId: String): String?</ID>
+    <ID>ReturnCount:SettingsViewModel.kt$SettingsViewModel$private suspend fun handleNaclKey(hex: String)</ID>
+    <ID>ReturnCount:TileSource.kt$SqliteTileSource$override fun getTile(z: Int, x: Int, y: Int): Bitmap?</ID>
+    <ID>ReturnCount:TrackRecorder.kt$Background$fun shouldFlush( bufferSize: Int, lastFlushElapsedMs: Long, intervalMs: Long, mode: String, ): Boolean</ID>
+    <ID>ReturnCount:TrackRenderViewModel.kt$TrackRenderViewModel$private fun loadLocalTileSource(): TileSource?</ID>
+    <ID>ReturnCount:TrackRepository.kt$private fun movingMs(a: TrackPointEntity, b: TrackPointEntity): Long</ID>
+    <ID>ReturnCount:TrackShareUseCase.kt$TrackShareUseCase$suspend fun shareAsGpx(trackId: Long): Intent?</ID>
+    <ID>ReturnCount:TransformPreviewGenerator.kt$TransformPreviewGenerator$private fun generateImagePreview( entity: PostMediaEntity, intent: TransformIntent, previewSizePx: Int, ): Bitmap?</ID>
+    <ID>ReturnCount:TransformPreviewGenerator.kt$TransformPreviewGenerator$private fun generateVideoPreview( entity: PostMediaEntity, intent: TransformIntent, previewSizePx: Int, ): Bitmap?</ID>
+    <ID>ReturnCount:TransformQueue.kt$TransformQueue$private fun isAlreadyProcessed(uri: Uri): Boolean</ID>
+    <ID>ReturnCount:UnpublishWorker.kt$UnpublishWorker$override suspend fun doWork(): Result</ID>
+    <ID>ReturnCount:UnpublishWorker.kt$UnpublishWorker$private fun githubClient(): GitHubClient?</ID>
+    <ID>ReturnCount:UnpublishWorker.kt$UnpublishWorker$private fun mediaBackend(): MediaBackend?</ID>
+    <ID>SwallowedException:PublishWorker.kt$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:AssetDiffViewModel.kt$AssetDiffViewModel$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:AssetListViewModel.kt$AssetListViewModel$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:AudioRecordingService.kt$AudioRecordingService$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:BackgroundService.kt$BackgroundService$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:BackupOrchestrator.kt$BackupOrchestrator$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:BackupWorker.kt$BackupWorker$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:ConsolidateViewModel.kt$ConsolidateViewModel$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:FrameGrabber.kt$FrameGrabber$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:GitHubFileWorker.kt$GitHubFileWorker$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:GpxExportWorker.kt$GpxExportWorker$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:KeyStoreCredentialStore.kt$KeyStoreCredentialStore$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:MediaPrepViewModel.kt$MediaPrepViewModel$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:PostListViewModel.kt$PostListViewModel$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:PostViewModel.kt$PostViewModel$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:PublishWorker.kt$PublishWorker$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:PublishWorker.kt$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:RestoreFileUseCase.kt$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:RestoreViewModel.kt$RestoreViewModel$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:RestoreWorker.kt$RestoreWorker$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:SettingsViewModel.kt$SettingsViewModel$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:TrackRenderViewModel.kt$TrackRenderViewModel$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:TransformQueue.kt$TransformQueue$e: Exception</ID>
+    <ID>TooGenericExceptionCaught:UnpublishWorker.kt$UnpublishWorker$e: Exception</ID>
+    <ID>TooGenericExceptionThrown:PublishWorker.kt$PublishWorker$throw Exception(completedJob.error ?: "Processing failed")</ID>
+    <ID>TooManyFunctions:AppDatabase.kt$AppDatabase : RoomDatabase</ID>
+    <ID>TooManyFunctions:AppPrefs.kt$AppPrefs</ID>
+    <ID>TooManyFunctions:AppPrefs.kt$AppPrefsImpl : AppPrefs</ID>
+    <ID>TooManyFunctions:AssetEntity.kt$AssetDao</ID>
+    <ID>TooManyFunctions:BackgroundService.kt$BackgroundService : Service</ID>
+    <ID>TooManyFunctions:BackupModule.kt$BackupModule</ID>
+    <ID>TooManyFunctions:BackupStateRepository.kt$BackupStateRepository</ID>
+    <ID>TooManyFunctions:ConsolidateViewModel.kt$ConsolidateViewModel : ViewModel</ID>
+    <ID>TooManyFunctions:KeyStoreCredentialStore.kt$CredentialStore</ID>
+    <ID>TooManyFunctions:PostMediaFileStore.kt$PostMediaFileStore</ID>
+    <ID>TooManyFunctions:PostViewModel.kt$PostViewModel : ViewModel</ID>
+    <ID>TooManyFunctions:RecordingViewModel.kt$RecordingViewModel : ViewModel</ID>
+    <ID>TooManyFunctions:S3Backend.kt$S3Backend : MediaBackend</ID>
+    <ID>TooManyFunctions:SafUtils.kt$de.perigon.companion.util.saf.SafUtils.kt</ID>
+    <ID>TooManyFunctions:SettingsViewModel.kt$SettingsViewModel : ViewModel</ID>
+    <ID>TooManyFunctions:TrackRepository.kt$TrackDao</ID>
+    <ID>TooManyFunctions:TransformJobEntity.kt$TransformJobDao</ID>
+    <ID>UnusedParameter:BackupStateRepository.kt$BackupStateRepository$packNumber: Int</ID>
+    <ID>UnusedParameter:BackupStateRepository.kt$BackupStateRepository$partNumber: Int</ID>
+    <ID>UnusedParameter:BackupStateRepository.kt$BackupStateRepository$sha256: String</ID>
+    <ID>UnusedParameter:CropGeometry.kt$imgH: Float</ID>
+    <ID>UnusedParameter:FixCycleStateMachine.kt$isSingleFixMode: Boolean</ID>
+    <ID>UnusedParameter:ImageTransformer.kt$ImageTransformer$boxPx: Int = 1080</ID>
+    <ID>UnusedParameter:ImageTransformer.kt$ImageTransformer$quality: Int = 85</ID>
+    <ID>UnusedParameter:MediaPickerScreen.kt$navController: NavController</ID>
+    <ID>UnusedParameter:Post.kt$PostShareIntentBuilder$tags: List&lt;String&gt;</ID>
+    <ID>UnusedParameter:Post.kt$PostShareIntentBuilder$teaser: String</ID>
+    <ID>UnusedParameter:PostMediaPuller.kt$contentHash: String</ID>
+    <ID>UnusedParameter:PostScreen.kt$onNavigateBack: () -&gt; Unit</ID>
+    <ID>UnusedParameter:SettingsScreen.kt$label: String</ID>
+    <ID>UnusedPrivateMember:PostViewModel.kt$PostViewModel$private fun githubClient(): GitHubClient?</ID>
+    <ID>UnusedPrivateProperty:AssetListViewModel.kt$AssetListViewModel$@param:ApplicationContext private val ctx: Context</ID>
+    <ID>UnusedPrivateProperty:BackupViewModel.kt$BackupViewModel$@param:ApplicationContext private val ctx: Context</ID>
+    <ID>UnusedPrivateProperty:MediaCaches.kt$TransformPreviewCache$@param:ApplicationContext private val ctx: Context</ID>
+    <ID>UnusedPrivateProperty:PostListViewModel.kt$PostListViewModel$@param:ApplicationContext private val ctx: android.content.Context</ID>
+    <ID>UnusedPrivateProperty:RecordingScreen.kt$val selectionExportPicker = rememberLauncherForActivityResult( ActivityResultContracts.OpenDocumentTree() ) { uri -&gt; if (uri == null) return@rememberLauncherForActivityResult vm.exportSelected(uri) }</ID>
+    <ID>UnusedPrivateProperty:RestoreViewModel.kt$RestoreViewModel$@param:ApplicationContext private val ctx: Context</ID>
+    <ID>UnusedPrivateProperty:SettingsViewModel.kt$SettingsViewModel$private val httpMediaFactory: HttpMediaBackendFactory</ID>
+    <ID>WildcardImport:AppPrefs.kt$import androidx.datastore.preferences.core.*</ID>
+    <ID>WildcardImport:AppScaffold.kt$import androidx.compose.material.icons.filled.*</ID>
+    <ID>WildcardImport:AppScaffold.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:AppScaffold.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:AssetDiffScreen.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:AssetDiffScreen.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:AssetDiffScreen.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:AssetEditScreen.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:AssetEditScreen.kt$import androidx.compose.material.icons.filled.*</ID>
+    <ID>WildcardImport:AssetEditScreen.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:AssetEditScreen.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:AssetEditViewModel.kt$import kotlinx.coroutines.flow.*</ID>
+    <ID>WildcardImport:AssetEntity.kt$import androidx.room.*</ID>
+    <ID>WildcardImport:AssetListScreen.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:AssetListScreen.kt$import androidx.compose.material.icons.filled.*</ID>
+    <ID>WildcardImport:AssetListScreen.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:AssetListScreen.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:AssetListViewModel.kt$import kotlinx.coroutines.flow.*</ID>
+    <ID>WildcardImport:AudioConfigPrefs.kt$import androidx.datastore.preferences.core.*</ID>
+    <ID>WildcardImport:AudioRecordingEntity.kt$import androidx.room.*</ID>
+    <ID>WildcardImport:AudioRecordingScreen.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:AudioRecordingScreen.kt$import androidx.compose.material.icons.filled.*</ID>
+    <ID>WildcardImport:AudioRecordingScreen.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:AudioRecordingScreen.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:BackupSchedulePrefs.kt$import androidx.datastore.preferences.core.*</ID>
+    <ID>WildcardImport:BackupScreen.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:BackupScreen.kt$import androidx.compose.material.icons.filled.*</ID>
+    <ID>WildcardImport:BackupScreen.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:BackupScreen.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:BackupStateRepository.kt$import androidx.room.*</ID>
+    <ID>WildcardImport:BackupViewModel.kt$import androidx.work.*</ID>
+    <ID>WildcardImport:BackupViewModel.kt$import kotlinx.coroutines.flow.*</ID>
+    <ID>WildcardImport:BackupWorker.kt$import androidx.work.*</ID>
+    <ID>WildcardImport:CompanionApp.kt$import androidx.work.*</ID>
+    <ID>WildcardImport:ConsolidateRepository.kt$import androidx.room.*</ID>
+    <ID>WildcardImport:ConsolidateScreen.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:ConsolidateScreen.kt$import androidx.compose.material.icons.filled.*</ID>
+    <ID>WildcardImport:ConsolidateScreen.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:ConsolidateScreen.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:ConsolidateViewModel.kt$import androidx.work.*</ID>
+    <ID>WildcardImport:ConsolidateViewModel.kt$import kotlinx.coroutines.flow.*</ID>
+    <ID>WildcardImport:ConsolidateWorker.kt$import androidx.work.*</ID>
+    <ID>WildcardImport:GitHubClient.kt$import io.ktor.client.*</ID>
+    <ID>WildcardImport:GitHubClient.kt$import io.ktor.client.request.*</ID>
+    <ID>WildcardImport:GitHubClient.kt$import io.ktor.client.statement.*</ID>
+    <ID>WildcardImport:GitHubClient.kt$import io.ktor.http.*</ID>
+    <ID>WildcardImport:GitHubClient.kt$import kotlinx.serialization.json.*</ID>
+    <ID>WildcardImport:GitHubFileWorker.kt$import androidx.work.*</ID>
+    <ID>WildcardImport:GitHubFileWorker.kt$import io.ktor.client.*</ID>
+    <ID>WildcardImport:GpxExportWorker.kt$import androidx.work.*</ID>
+    <ID>WildcardImport:GpxTrack.kt$import kotlin.math.*</ID>
+    <ID>WildcardImport:HttpDigestBackend.kt$import io.ktor.client.*</ID>
+    <ID>WildcardImport:HttpDigestBackend.kt$import io.ktor.client.request.*</ID>
+    <ID>WildcardImport:HttpDigestBackend.kt$import io.ktor.client.statement.*</ID>
+    <ID>WildcardImport:HttpDigestBackend.kt$import io.ktor.http.*</ID>
+    <ID>WildcardImport:MediaPrepScreen.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:MediaPrepScreen.kt$import androidx.compose.foundation.lazy.grid.*</ID>
+    <ID>WildcardImport:MediaPrepScreen.kt$import androidx.compose.material.icons.filled.*</ID>
+    <ID>WildcardImport:MediaPrepScreen.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:MediaPrepScreen.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:MediaPrepScreen.kt$import sh.calvin.reorderable.*</ID>
+    <ID>WildcardImport:MediaPrepViewModel.kt$import kotlinx.coroutines.flow.*</ID>
+    <ID>WildcardImport:NavGraph.kt$import androidx.navigation.*</ID>
+    <ID>WildcardImport:NavGraph.kt$import androidx.navigation.compose.*</ID>
+    <ID>WildcardImport:PermissionGate.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:PermissionGate.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:PermissionGate.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:PostEntity.kt$import androidx.room.*</ID>
+    <ID>WildcardImport:PostListScreen.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:PostListScreen.kt$import androidx.compose.material.icons.filled.*</ID>
+    <ID>WildcardImport:PostListScreen.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:PostListScreen.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:PostMediaEntity.kt$import androidx.room.*</ID>
+    <ID>WildcardImport:PostScreen.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:PostScreen.kt$import androidx.compose.material.icons.filled.*</ID>
+    <ID>WildcardImport:PostScreen.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:PostScreen.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:PostScreen.kt$import sh.calvin.reorderable.*</ID>
+    <ID>WildcardImport:PublishWorker.kt$import androidx.work.*</ID>
+    <ID>WildcardImport:PublishWorker.kt$import io.ktor.client.*</ID>
+    <ID>WildcardImport:QueueScreen.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:QueueScreen.kt$import androidx.compose.material.icons.filled.*</ID>
+    <ID>WildcardImport:QueueScreen.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:QueueScreen.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:RecordingScreen.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:RecordingScreen.kt$import androidx.compose.material.icons.filled.*</ID>
+    <ID>WildcardImport:RecordingScreen.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:RecordingScreen.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:RestoreScreen.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:RestoreScreen.kt$import androidx.compose.material.icons.filled.*</ID>
+    <ID>WildcardImport:RestoreScreen.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:RestoreScreen.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:RestoreViewModel.kt$import androidx.work.*</ID>
+    <ID>WildcardImport:RestoreWorker.kt$import androidx.work.*</ID>
+    <ID>WildcardImport:S3Backend.kt$import io.ktor.client.*</ID>
+    <ID>WildcardImport:S3Backend.kt$import io.ktor.client.request.*</ID>
+    <ID>WildcardImport:S3Backend.kt$import io.ktor.client.statement.*</ID>
+    <ID>WildcardImport:S3Backend.kt$import io.ktor.http.*</ID>
+    <ID>WildcardImport:TileStitcher.kt$import kotlin.math.*</ID>
+    <ID>WildcardImport:TrackConfigPrefs.kt$import androidx.datastore.preferences.core.*</ID>
+    <ID>WildcardImport:TrackRenderScreen.kt$import androidx.compose.foundation.layout.*</ID>
+    <ID>WildcardImport:TrackRenderScreen.kt$import androidx.compose.material3.*</ID>
+    <ID>WildcardImport:TrackRenderScreen.kt$import androidx.compose.runtime.*</ID>
+    <ID>WildcardImport:TrackRepository.kt$import androidx.room.*</ID>
+    <ID>WildcardImport:TransformJobEntity.kt$import androidx.room.*</ID>
+    <ID>WildcardImport:UnpublishWorker.kt$import androidx.work.*</ID>
+    <ID>WildcardImport:UnpublishWorker.kt$import io.ktor.client.*</ID>
+    <ID>WildcardImport:UserNotificationEntity.kt$import androidx.room.*</ID>
+  </CurrentIssues>
+</SmellBaseline>

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark counterpart to values/themes.xml. Without this, the window
+         behind Compose was Theme.Material.Light in dark mode: white flash
+         on every cold start / activity transition. -->
+    <style name="Theme.Companion" parent="android:Theme.Material.NoActionBar" />
+</resources>
