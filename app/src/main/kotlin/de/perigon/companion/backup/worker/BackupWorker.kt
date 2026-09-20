@@ -46,7 +46,12 @@ class BackupWorker @AssistedInject constructor(
 ) : CoroutineWorker(ctx, params) {
 
     companion object {
-        const val WORK_NAME          = "backup"
+        // The single backup EXECUTION slot. Both the manual button and the
+        // periodic BackupTriggerWorker enqueue OneTime work under this name
+        // with KEEP, so two backups can never overlap. Value is "backup_run"
+        // (not "backup") so CompanionApp can unconditionally evict the
+        // pre-funnel periodic that used to live under "backup".
+        const val WORK_NAME          = "backup_run"
 
         const val KEY_PACK_POSITION  = "pack_position"
         const val KEY_PACK_STATE     = "pack_state"

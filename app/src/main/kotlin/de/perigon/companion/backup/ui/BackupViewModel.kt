@@ -14,6 +14,7 @@ import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.ui.SnackbarChannel
 import de.perigon.companion.backup.worker.BackupWorker
+import de.perigon.companion.backup.worker.BackupTriggerWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.*
@@ -81,6 +82,8 @@ class BackupViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
+            // Execution slot: shows progress for BOTH manual and scheduled
+            // runs, since the trigger funnels into WORK_NAME.
             workManager.getWorkInfosForUniqueWorkFlow(BackupWorker.WORK_NAME).collect { infos ->
                 val info = infos.firstOrNull {
                     it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED
@@ -193,6 +196,8 @@ class BackupViewModel @Inject constructor(
     }
 
     fun cancelBackup() {
+        // Cancels the running/queued execution only; the periodic schedule
+        // (SCHEDULE_NAME) is a separate unique name and survives.
         workManager.cancelUniqueWork(BackupWorker.WORK_NAME)
     }
 
@@ -201,7 +206,9 @@ class BackupViewModel @Inject constructor(
             schedulePrefs.setAutoEnabled(enabled)
             _state.update { it.copy(autoEnabled = enabled) }
             if (enabled) applySchedule(schedulePrefs.intervalHours())
-            else workManager.cancelUniqueWork(BackupWorker.WORK_NAME)
+            // Cancels the schedule only; a running manual backup (WORK_NAME)
+            // is untouched.
+            else workManager.cancelUniqueWork(BackupTriggerWorker.SCHEDULE_NAME)
         }
     }
 
@@ -245,8 +252,9 @@ class BackupViewModel @Inject constructor(
     }
 
     private fun applySchedule(hours: Int) {
-        val req = PeriodicWorkRequestBuilder<BackupWorker>(hours.toLong(), TimeUnit.HOURS)
-            .addTag(BackupWorker.WORK_NAME)
+        // Periodic TRIGGER (not the backup itself) under SCHEDULE_NAME. WLAN
+        // gate lives here; the execution it enqueues is unconstrained.
+        val req = PeriodicWorkRequestBuilder<BackupTriggerWorker>(hours.toLong(), TimeUnit.HOURS)
             .setConstraints(
                 Constraints.Builder()
                     .setRequiredNetworkType(NetworkType.UNMETERED)
@@ -254,7 +262,7 @@ class BackupViewModel @Inject constructor(
             )
             .build()
         workManager.enqueueUniquePeriodicWork(
-            BackupWorker.WORK_NAME,
+            BackupTriggerWorker.SCHEDULE_NAME,
             ExistingPeriodicWorkPolicy.UPDATE,
             req,
         )
