@@ -7,6 +7,10 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
+import de.perigon.companion.core.di.ApplicationScope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -17,6 +21,7 @@ import javax.inject.Singleton
 @Singleton
 class KeyStoreCredentialStore @Inject constructor(
     @param:ApplicationContext private val ctx: Context,
+    @ApplicationScope appScope: CoroutineScope,
 ) : CredentialStore {
 
     companion object {
@@ -40,9 +45,18 @@ class KeyStoreCredentialStore @Inject constructor(
     private val prefs: SharedPreferences =
         ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    @Volatile private var keyReady = false
+
     init {
-        ensureKey()
-        migrateLegacyIfNeeded()
+        // Warm off-main. Previously ensureKey() (KeyGenerator) + a legacy
+        // SharedPreferences scan/delete ran in the constructor — synchronous
+        // Keystore + disk I/O on the main thread during Hilt graph construction
+        // at cold start. Getters/setters call ensureKey() lazily (idempotent,
+        // flag-guarded), so a call that races the warm-up still works.
+        appScope.launch(Dispatchers.IO) {
+            ensureKey()
+            migrateLegacyIfNeeded()
+        }
     }
 
     override fun b2RwAppKey(): String? = decrypt(KEY_B2_RW_APP_KEY)
@@ -80,21 +94,26 @@ class KeyStoreCredentialStore @Inject constructor(
     // ---- KeyStore ----
 
     private fun ensureKey() {
-        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        if (ks.containsAlias(KEYSTORE_ALIAS)) return
+        if (keyReady) return
+        synchronized(this) {
+            if (keyReady) return
+            val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            if (!ks.containsAlias(KEYSTORE_ALIAS)) {
+                val spec = KeyGenParameterSpec.Builder(
+                    KEYSTORE_ALIAS,
+                    KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
+                )
+                    .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                    .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                    .setKeySize(256)
+                    .build()
 
-        val spec = KeyGenParameterSpec.Builder(
-            KEYSTORE_ALIAS,
-            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
-        )
-            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-            .setKeySize(256)
-            .build()
-
-        KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
-            .apply { init(spec) }
-            .generateKey()
+                KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+                    .apply { init(spec) }
+                    .generateKey()
+            }
+            keyReady = true
+        }
     }
 
     private fun getKey(): KeyStore.Entry {
@@ -103,6 +122,7 @@ class KeyStoreCredentialStore @Inject constructor(
     }
 
     private fun encrypt(plaintext: String): String {
+        ensureKey()
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, (getKey() as KeyStore.SecretKeyEntry).secretKey)
         val iv = cipher.iv
@@ -115,6 +135,7 @@ class KeyStoreCredentialStore @Inject constructor(
 
     private fun decrypt(key: String): String? {
         val encoded = prefs.getString(key, null) ?: return null
+        ensureKey()
         return try {
             val combined = Base64.decode(encoded, Base64.NO_WRAP)
             val iv = combined.copyOfRange(0, GCM_IV_LENGTH)
