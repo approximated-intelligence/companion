@@ -72,14 +72,12 @@ fun RecordingScreen(
     val exactAlarmLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
-        if (android.os.Build.VERSION.SDK_INT >= 31) {
-            val am = context.getSystemService(android.app.AlarmManager::class.java)
-            if (am.canScheduleExactAlarms()) vm.applyScheduleIfEnabled()
-        }
+        val am = context.getSystemService(android.app.AlarmManager::class.java)
+        if (am.canScheduleExactAlarms()) vm.applyScheduleIfEnabled()
     }
 
     LaunchedEffect(state.config.autoScheduleEnabled) {
-        if (state.config.autoScheduleEnabled && android.os.Build.VERSION.SDK_INT >= 31) {
+        if (state.config.autoScheduleEnabled) {
             val am = context.getSystemService(android.app.AlarmManager::class.java)
             if (!am.canScheduleExactAlarms()) {
                 exactAlarmLauncher.launch(
@@ -272,7 +270,7 @@ fun RecordingScreen(
                     Switch(
                         checked = state.config.autoScheduleEnabled,
                         onCheckedChange = { enabled ->
-                            if (enabled && android.os.Build.VERSION.SDK_INT >= 31) {
+                            if (enabled) {
                                 val am = context.getSystemService(android.app.AlarmManager::class.java)
                                 if (!am.canScheduleExactAlarms()) {
                                     exactAlarmLauncher.launch(
@@ -523,7 +521,7 @@ private fun TrackRow(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(track.name, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                             if (!selectionMode) {
-                                IconButton(onClick = { editingName = true }, modifier = Modifier.size(24.dp)) {
+                                IconButton(onClick = { editingName = true }, modifier = Modifier.size(40.dp)) {
                                     Icon(Icons.Default.Edit, "Rename", modifier = Modifier.size(14.dp),
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
@@ -538,14 +536,14 @@ private fun TrackRow(
                                 else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (!selectionMode && !editingName) {
-                    IconButton(onClick = onShare, modifier = Modifier.size(36.dp)) {
-                        Icon(Icons.Default.Share, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                    IconButton(onClick = onShare, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.Share, "Share track", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                     }
                     IconButton(
                         onClick  = { if (isActive || isPaused) confirmDeleteActive = true else confirmDelete = true },
-                        modifier = Modifier.size(36.dp),
+                        modifier = Modifier.size(40.dp),
                     ) {
-                        Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.outline, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.Delete, "Delete track", tint = MaterialTheme.colorScheme.outline, modifier = Modifier.size(18.dp))
                     }
                 }
             }
@@ -649,7 +647,7 @@ private fun ActiveTrackInfo(
         if (providedFix.accuracyM != null) firstLine += "±%.0fm".format(providedFix.accuracyM)
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(firstLine.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = contentColor, modifier = Modifier.weight(1f))
-            IconButton(onClick = onShareGeo, modifier = Modifier.size(24.dp)) {
+            IconButton(onClick = onShareGeo, modifier = Modifier.size(40.dp)) {
                 Icon(Icons.Default.MyLocation, "Share location", tint = contentColor, modifier = Modifier.size(14.dp))
             }
         }

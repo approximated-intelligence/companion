@@ -48,7 +48,7 @@ class AutoScheduler(
     }
 
     private fun scheduleAlarm(action: String, time: LocalTime, requestCode: Int) {
-        if (android.os.Build.VERSION.SDK_INT >= 31 && !alarmManager.canScheduleExactAlarms()) {
+        if (!alarmManager.canScheduleExactAlarms()) {
             Log.w("AutoScheduler", "Exact alarm permission not granted, skipping")
             return
         }

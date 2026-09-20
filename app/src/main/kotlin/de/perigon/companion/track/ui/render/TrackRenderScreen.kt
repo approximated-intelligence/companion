@@ -27,6 +27,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import coil3.compose.AsyncImage
 import de.perigon.companion.core.prefs.AppPrefs
+import de.perigon.companion.track.data.TrackSummary
 import de.perigon.companion.track.domain.GpxTrack
 import de.perigon.companion.core.ui.AppTopBar
 
@@ -37,8 +38,9 @@ fun TrackRenderScreen(
     incomingGpxUris:       List<Uri> = emptyList(),
     viewModel:             TrackRenderViewModel = hiltViewModel(),
 ) {
-    val state     by viewModel.state.collectAsStateWithLifecycle()
-    val tileState by viewModel.tileState.collectAsStateWithLifecycle()
+    val state          by viewModel.state.collectAsStateWithLifecycle()
+    val tileState      by viewModel.tileState.collectAsStateWithLifecycle()
+    val recordedTracks by viewModel.recordedTracks.collectAsStateWithLifecycle()
 
     LaunchedEffect(incomingGpxUris) {
         if (incomingGpxUris.isNotEmpty() && state is TrackRenderUiState.Idle) {
@@ -68,20 +70,26 @@ fun TrackRenderScreen(
         ) {
             when (val s = state) {
                 is TrackRenderUiState.Idle      -> IdleContent(
-                    onPickFiles    = { gpxPicker.launch(arrayOf("application/gpx+xml", "application/octet-stream", "*/*")) },
-                    onPickRecorded = { viewModel.loadRecordedTracks(it) },
-                    viewModel      = viewModel,
-                    tileState      = tileState,
-                    onPickTileFile = { tilePicker.launch(arrayOf("application/octet-stream", "application/x-sqlite3", "*/*")) },
+                    onPickFiles          = { gpxPicker.launch(arrayOf("application/gpx+xml", "application/octet-stream", "*/*")) },
+                    onPickRecorded       = { viewModel.loadRecordedTracks(it) },
+                    backgroundGpsEnabled = viewModel.backgroundGpsEnabled,
+                    recordedTracks       = recordedTracks,
+                    tileState            = tileState,
+                    onSetTileMode        = viewModel::setTileSourceMode,
+                    onSetTileNetworkUrl  = viewModel::setTileSourceNetworkUrl,
+                    onClearTileLocal     = viewModel::clearTileSourceLocal,
+                    onPickTileFile       = { tilePicker.launch(arrayOf("application/octet-stream", "application/x-sqlite3", "*/*")) },
                 )
                 is TrackRenderUiState.Parsing   -> LoadingContent("Parsing GPX…")
                 is TrackRenderUiState.Loaded    -> LoadedContent(
-                    tracks         = s.tracks,
-                    onRender       = { viewModel.render() },
-                    onReset        = { viewModel.reset() },
-                    tileState      = tileState,
-                    viewModel      = viewModel,
-                    onPickTileFile = { tilePicker.launch(arrayOf("application/octet-stream", "application/x-sqlite3", "*/*")) },
+                    tracks              = s.tracks,
+                    onRender            = { viewModel.render() },
+                    onReset             = { viewModel.reset() },
+                    tileState           = tileState,
+                    onSetTileMode       = viewModel::setTileSourceMode,
+                    onSetTileNetworkUrl = viewModel::setTileSourceNetworkUrl,
+                    onClearTileLocal    = viewModel::clearTileSourceLocal,
+                    onPickTileFile      = { tilePicker.launch(arrayOf("application/octet-stream", "application/x-sqlite3", "*/*")) },
                 )
                 is TrackRenderUiState.Rendering -> LoadingContent("Rendering track…")
                 is TrackRenderUiState.Done      -> DoneContent(
@@ -98,9 +106,11 @@ fun TrackRenderScreen(
 
 @Composable
 private fun TileSourceSection(
-    tileState:      TileSourceState,
-    viewModel:      TrackRenderViewModel,
-    onPickTileFile: () -> Unit,
+    tileState:           TileSourceState,
+    onSetTileMode:       (String) -> Unit,
+    onSetTileNetworkUrl: (String) -> Unit,
+    onClearTileLocal:    () -> Unit,
+    onPickTileFile:      () -> Unit,
 ) {
     Text("Map tiles", style = MaterialTheme.typography.titleMedium)
     Text(
@@ -114,12 +124,12 @@ private fun TileSourceSection(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(
                 selected = tileState.mode == AppPrefs.TILE_MODE_LOCAL,
-                onClick  = { viewModel.setTileSourceMode(AppPrefs.TILE_MODE_LOCAL) },
+                onClick  = { onSetTileMode(AppPrefs.TILE_MODE_LOCAL) },
                 label    = { Text("Local file") },
             )
             FilterChip(
                 selected = tileState.mode == AppPrefs.TILE_MODE_NETWORK,
-                onClick  = { viewModel.setTileSourceMode(AppPrefs.TILE_MODE_NETWORK) },
+                onClick  = { onSetTileMode(AppPrefs.TILE_MODE_NETWORK) },
                 label    = { Text("Network") },
             )
         }
@@ -127,7 +137,7 @@ private fun TileSourceSection(
 
     OutlinedTextField(
         value         = tileState.networkUrl,
-        onValueChange = viewModel::setTileSourceNetworkUrl,
+        onValueChange = onSetTileNetworkUrl,
         label         = { Text("Network tile URL") },
         placeholder   = { Text("https://tile.example.com/{z}/{x}/{y}.png") },
         singleLine    = true,
@@ -141,17 +151,21 @@ private fun TileSourceSection(
         configured = tileState.hasLocalTiles,
         label      = tileState.localLabel,
         onSelect   = onPickTileFile,
-        onClear    = viewModel::clearTileSourceLocal,
+        onClear    = onClearTileLocal,
     )
 }
 
 @Composable
 private fun IdleContent(
-    onPickFiles:    () -> Unit,
-    onPickRecorded: (List<Long>) -> Unit,
-    viewModel:      TrackRenderViewModel,
-    tileState:      TileSourceState,
-    onPickTileFile: () -> Unit,
+    onPickFiles:          () -> Unit,
+    onPickRecorded:       (List<Long>) -> Unit,
+    backgroundGpsEnabled: Boolean,
+    recordedTracks:       List<TrackSummary>,
+    tileState:            TileSourceState,
+    onSetTileMode:        (String) -> Unit,
+    onSetTileNetworkUrl:  (String) -> Unit,
+    onClearTileLocal:     () -> Unit,
+    onPickTileFile:       () -> Unit,
 ) {
     var showTrackPicker by remember { mutableStateOf(false) }
 
@@ -166,7 +180,7 @@ private fun IdleContent(
         Text("Select tracks to render", style = MaterialTheme.typography.titleMedium)
         Button(onClick = onPickFiles) { Text("Open GPX file(s)") }
 
-        if (viewModel.backgroundGpsEnabled) {
+        if (backgroundGpsEnabled) {
             OutlinedButton(onClick = { showTrackPicker = true }) {
                 Icon(Icons.Default.Route, null, Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
@@ -179,15 +193,17 @@ private fun IdleContent(
         HorizontalDivider()
 
         TileSourceSection(
-            tileState      = tileState,
-            viewModel      = viewModel,
-            onPickTileFile = onPickTileFile,
+            tileState           = tileState,
+            onSetTileMode       = onSetTileMode,
+            onSetTileNetworkUrl = onSetTileNetworkUrl,
+            onClearTileLocal    = onClearTileLocal,
+            onPickTileFile      = onPickTileFile,
         )
     }
 
     if (showTrackPicker) {
         RecordedTrackPickerDialog(
-            viewModel = viewModel,
+            tracks    = recordedTracks,
             onSelect  = { trackIds -> showTrackPicker = false; onPickRecorded(trackIds) },
             onDismiss = { showTrackPicker = false },
         )
@@ -196,11 +212,10 @@ private fun IdleContent(
 
 @Composable
 private fun RecordedTrackPickerDialog(
-    viewModel: TrackRenderViewModel,
+    tracks: List<TrackSummary>,
     onSelect: (List<Long>) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val tracks by viewModel.recordedTracks.collectAsStateWithLifecycle()
     // Read-only Set + reassignment: writes to a MutableState<mutable collection>
     // don't recompose (and lint flags it). `+`/`-` return fresh sets.
     var selected by remember { mutableStateOf<Set<Long>>(emptySet()) }
@@ -270,12 +285,14 @@ private fun LoadingContent(label: String) {
 
 @Composable
 private fun LoadedContent(
-    tracks:         List<GpxTrack>,
-    onRender:       () -> Unit,
-    onReset:        () -> Unit,
-    tileState:      TileSourceState,
-    viewModel:      TrackRenderViewModel,
-    onPickTileFile: () -> Unit,
+    tracks:              List<GpxTrack>,
+    onRender:            () -> Unit,
+    onReset:             () -> Unit,
+    tileState:           TileSourceState,
+    onSetTileMode:       (String) -> Unit,
+    onSetTileNetworkUrl: (String) -> Unit,
+    onClearTileLocal:    () -> Unit,
+    onPickTileFile:      () -> Unit,
 ) {
     Column(
         modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -286,9 +303,11 @@ private fun LoadedContent(
         HorizontalDivider()
 
         TileSourceSection(
-            tileState      = tileState,
-            viewModel      = viewModel,
-            onPickTileFile = onPickTileFile,
+            tileState           = tileState,
+            onSetTileMode       = onSetTileMode,
+            onSetTileNetworkUrl = onSetTileNetworkUrl,
+            onClearTileLocal    = onClearTileLocal,
+            onPickTileFile      = onPickTileFile,
         )
 
         HorizontalDivider()

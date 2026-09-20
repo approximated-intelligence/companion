@@ -88,6 +88,12 @@ class BackgroundService : Service() {
         private const val NOTIFICATION_ID      = 4001
         private const val STOP_REQUEST_CODE    = 9002
         private const val CONTENT_REQUEST_CODE = 9003
+        // Safety net only: normal teardown always calls releaseSessionWakeLock()
+        // (pause/stop/onDestroy). This bounds a HELD wakelock in case that path
+        // is ever missed (e.g. process death before onDestroy runs its course),
+        // so a stuck lock cannot silently drain the battery indefinitely. Not a
+        // real operational cap -- recording sessions legitimately run longer.
+        private const val SESSION_WAKELOCK_SAFETY_TIMEOUT_MS = 12 * 60 * 60 * 1000L
 
         private val _status = MutableStateFlow(RecordingStatus())
         val status: StateFlow<RecordingStatus> = _status.asStateFlow()
@@ -572,7 +578,7 @@ class BackgroundService : Service() {
 
     private fun acquireSessionWakeLock() {
         if (sessionWakeLockHeld) return
-        ensureWakeLock().acquire()
+        ensureWakeLock().acquire(SESSION_WAKELOCK_SAFETY_TIMEOUT_MS)
         sessionWakeLockHeld = true
     }
 
