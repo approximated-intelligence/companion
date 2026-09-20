@@ -29,8 +29,9 @@ private val AddedBg       = Color(0x3300C853)
 private val RemovedBg     = Color(0x33D50000)
 private val AddedWordBg   = Color(0x6600C853)
 private val RemovedWordBg = Color(0x66D50000)
-private val GutterBg      = Color(0xFFF5F5F5)
-private val GutterText    = Color(0xFF999999)
+// Gutter bg/text were fixed light-gray/mid-gray -- a light-mode island even
+// with the rest of the UI in dark. Computed in DiffLineRow from
+// MaterialTheme.colorScheme instead (gutterBg/gutterText below).
 
 @Composable
 fun AssetDiffScreen(
@@ -123,6 +124,9 @@ private fun DiffContent(lines: List<DiffLine>) {
 
 @Composable
 private fun DiffLineRow(line: DiffLine, modifier: Modifier = Modifier) {
+    val gutterBg   = MaterialTheme.colorScheme.surfaceVariant
+    val gutterText = MaterialTheme.colorScheme.onSurfaceVariant
+
     val lineBg = when (line.tag) {
         DiffLineTag.DELETE -> RemovedBg
         DiffLineTag.INSERT -> AddedBg
@@ -144,7 +148,7 @@ private fun DiffLineRow(line: DiffLine, modifier: Modifier = Modifier) {
         Box(
             Modifier
                 .width(72.dp)
-                .background(GutterBg)
+                .background(gutterBg)
                 .padding(horizontal = 4.dp, vertical = 2.dp),
         ) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -152,14 +156,14 @@ private fun DiffLineRow(line: DiffLine, modifier: Modifier = Modifier) {
                     line.oldLineNo?.toString() ?: "",
                     style    = MaterialTheme.typography.labelSmall.copy(
                         fontFamily = FontFamily.Monospace, fontSize = 11.sp),
-                    color    = GutterText,
+                    color    = gutterText,
                     modifier = Modifier.width(28.dp),
                 )
                 Text(
                     line.newLineNo?.toString() ?: "",
                     style    = MaterialTheme.typography.labelSmall.copy(
                         fontFamily = FontFamily.Monospace, fontSize = 11.sp),
-                    color    = GutterText,
+                    color    = gutterText,
                     modifier = Modifier.width(28.dp),
                 )
             }
@@ -173,7 +177,7 @@ private fun DiffLineRow(line: DiffLine, modifier: Modifier = Modifier) {
             color    = when (line.tag) {
                 DiffLineTag.DELETE -> Color(0xFFD50000)
                 DiffLineTag.INSERT -> Color(0xFF00C853)
-                DiffLineTag.EQUAL  -> GutterText
+                DiffLineTag.EQUAL  -> gutterText
             },
             modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
         )

@@ -30,9 +30,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import kotlinx.coroutines.launch
 
-private val HighlightBg       = Color(0xFFFFEB3B)
-private val ActiveHighlightBg = Color(0xFFFF9800)
-private val HighlightFg       = Color(0xFF000000)
+// Search-highlight colors were fixed yellow/orange-on-black, unrelated to
+// the surrounding theme. Computed in Editor from MaterialTheme.colorScheme's
+// container/on-container pairs instead -- those carry a correct-contrast
+// dark variant automatically (passiveHighlightBg/Fg, activeHighlightBg/Fg).
 
 @Composable
 fun AssetEditScreen(
@@ -280,6 +281,11 @@ private fun Editor(
         color      = MaterialTheme.colorScheme.onSurface,
     )
 
+    val passiveHighlightBg = MaterialTheme.colorScheme.tertiaryContainer
+    val passiveHighlightFg = MaterialTheme.colorScheme.onTertiaryContainer
+    val activeHighlightBg  = MaterialTheme.colorScheme.primary
+    val activeHighlightFg  = MaterialTheme.colorScheme.onPrimary
+
     var textFieldValue by remember { mutableStateOf(TextFieldValue(content)) }
 
     LaunchedEffect(content) {
@@ -288,8 +294,14 @@ private fun Editor(
         }
     }
 
-    val annotatedText = remember(textFieldValue.text, matchRanges, currentMatchIndex) {
-        buildHighlightedText(textFieldValue.text, matchRanges, currentMatchIndex)
+    val annotatedText = remember(
+        textFieldValue.text, matchRanges, currentMatchIndex,
+        passiveHighlightBg, passiveHighlightFg, activeHighlightBg, activeHighlightFg,
+    ) {
+        buildHighlightedText(
+            textFieldValue.text, matchRanges, currentMatchIndex,
+            passiveHighlightBg, passiveHighlightFg, activeHighlightBg, activeHighlightFg,
+        )
     }
 
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
@@ -365,11 +377,15 @@ private fun buildHighlightedText(
     text:              String,
     matchRanges:       List<IntRange>,
     currentMatchIndex: Int,
+    passiveBg:         Color,
+    passiveFg:         Color,
+    activeBg:          Color,
+    activeFg:          Color,
 ): AnnotatedString {
     if (matchRanges.isEmpty()) return AnnotatedString(text)
 
-    val passiveStyle = SpanStyle(background = HighlightBg, color = HighlightFg)
-    val activeStyle  = SpanStyle(background = ActiveHighlightBg, color = HighlightFg)
+    val passiveStyle = SpanStyle(background = passiveBg, color = passiveFg)
+    val activeStyle  = SpanStyle(background = activeBg, color = activeFg)
 
     return buildAnnotatedString {
         append(text)

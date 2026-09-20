@@ -32,7 +32,7 @@ data class AssetEditUiState(
 @HiltViewModel
 class AssetEditViewModel @Inject constructor(
     private val assetDao: AssetDao,
-    @ApplicationScope private val appScope: CoroutineScope,
+    @param:ApplicationScope private val appScope: CoroutineScope,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AssetEditUiState())

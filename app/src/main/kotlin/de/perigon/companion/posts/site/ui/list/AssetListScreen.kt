@@ -17,6 +17,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import de.perigon.companion.posts.site.data.AssetEntity
 import de.perigon.companion.posts.site.data.AssetSyncState
+import de.perigon.companion.posts.site.domain.canDiff
+import de.perigon.companion.posts.site.domain.canEdit
+import de.perigon.companion.posts.site.domain.canPull
+import de.perigon.companion.posts.site.domain.canPush
 import de.perigon.companion.core.ui.AppTopBar
 import de.perigon.companion.core.ui.NotificationObserver
 import de.perigon.companion.core.ui.Route
@@ -95,43 +99,6 @@ fun AssetListScreen(
                 }
             }
         }
-    }
-}
-
-private fun canPull(asset: AssetEntity): Boolean {
-    if (asset.serverSha.isEmpty()) return false
-    return asset.syncState in listOf(
-        AssetSyncState.SERVER_AHEAD,
-        AssetSyncState.SERVER_ONLY,
-        AssetSyncState.CONFLICT,
-    ) || (!asset.isOnDisk && asset.content.isEmpty())
-}
-
-private fun canDiff(asset: AssetEntity): Boolean {
-    if (asset.isOnDisk) return false
-    if (asset.content.isEmpty()) return false
-    return asset.syncState in listOf(
-        AssetSyncState.LOCAL_AHEAD,
-        AssetSyncState.SERVER_AHEAD,
-        AssetSyncState.CONFLICT,
-    )
-}
-
-private fun canEdit(asset: AssetEntity): Boolean = !asset.isOnDisk
-
-private fun canPush(asset: AssetEntity): Boolean {
-    if (asset.isOnDisk) {
-        return asset.syncState in listOf(
-            AssetSyncState.LOCAL_AHEAD,
-            AssetSyncState.LOCAL_ONLY,
-            AssetSyncState.CONFLICT,
-        )
-    }
-    return when (asset.syncState) {
-        AssetSyncState.LOCAL_AHEAD,
-        AssetSyncState.LOCAL_ONLY -> asset.content.isNotEmpty()
-        AssetSyncState.CONFLICT -> asset.content.isNotEmpty()
-        else -> false
     }
 }
 
