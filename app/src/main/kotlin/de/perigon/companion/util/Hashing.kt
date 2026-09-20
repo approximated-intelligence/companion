@@ -1,6 +1,7 @@
 package de.perigon.companion.util
 
 import java.io.InputStream
+import java.io.OutputStream
 import java.security.MessageDigest
 
 private const val IO_BUF = 64 * 1024
@@ -30,6 +31,21 @@ fun sha256HexWithSize(stream: InputStream): Pair<String, Long> {
         size += n
     }
     return digest.digest().toHex() to size
+}
+
+/**
+ * Copy [input] to [output] while hashing: one read of the source yields both
+ * the copy and its SHA-256 hex digest. Caller closes both streams.
+ */
+fun copyWithSha256(input: InputStream, output: OutputStream): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    val buf = ByteArray(IO_BUF)
+    var n: Int
+    while (input.read(buf).also { n = it } != -1) {
+        digest.update(buf, 0, n)
+        output.write(buf, 0, n)
+    }
+    return digest.digest().toHex()
 }
 
 /** Full SHA-256 hex digest of a byte array. */
