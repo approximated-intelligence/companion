@@ -9,6 +9,7 @@ import io.ktor.http.*
 import kotlinx.serialization.json.*
 
 private const val TAG = "GitHubClient"
+private const val SERVICE = "GitHub"
 
 class TreeFile(val path: String, val content: ByteArray) {
     override fun equals(other: Any?): Boolean =
@@ -34,6 +35,12 @@ private fun JsonObject.requireObject(key: String, context: String): JsonObject =
  *
  * Single-file operations (putFile, deleteFile) for asset sync.
  * Atomic tree commits (commitTree) for post publish/unpublish.
+ *
+ * Retry policy is per operation. Reads and blob creation are idempotent and
+ * retried; createBlob in particular matters on a slow link, where a dropped
+ * connection mid-upload is common and a replay just re-creates the same
+ * content-addressed blob. updateRef is NOT retried: a replay could advance
+ * the branch past a concurrent change.
  */
 class GitHubClient(
     private val http:  HttpClient,
@@ -157,6 +164,9 @@ class GitHubClient(
      * Upload one blob, returning its sha for later [commitTree] via
      * [BlobAddition]. Lets callers stream large files without holding all
      * content in memory until commit time.
+     *
+     * Retried: blobs are content-addressed, so a replay after a dropped
+     * connection yields the same sha and costs only bandwidth.
      */
     suspend fun createBlob(content: ByteArray): String {
         val body = buildJsonObject {
@@ -164,29 +174,40 @@ class GitHubClient(
             put("encoding", "base64")
         }.toString()
 
-        val response = post("$base/repos/$owner/$repo/git/blobs", body)
+        val response = retrying(SERVICE, "createBlob") {
+            post("$base/repos/$owner/$repo/git/blobs", body)
+        }
         return Json.parseToJsonElement(response).jsonObject
             .requireString("sha", "createBlob")
     }
 
+    /** Whether a blob exists at [path] on the default branch. */
+    suspend fun fileExists(path: String): Boolean = getFileSha(path) != null
+
     // ---- Git Trees API internals ----
 
     private suspend fun getRefSha(branch: String): String {
-        val response = get("$base/repos/$owner/$repo/git/ref/heads/$branch")
+        val response = retrying(SERVICE, "getRefSha $branch") {
+            get("$base/repos/$owner/$repo/git/ref/heads/$branch")
+        }
         return Json.parseToJsonElement(response).jsonObject
             .requireObject("object", "getRefSha $branch")
             .requireString("sha", "getRefSha $branch")
     }
 
     private suspend fun getCommitTreeSha(commitSha: String): String {
-        val response = get("$base/repos/$owner/$repo/git/commits/$commitSha")
+        val response = retrying(SERVICE, "getCommitTreeSha") {
+            get("$base/repos/$owner/$repo/git/commits/$commitSha")
+        }
         return Json.parseToJsonElement(response).jsonObject
             .requireObject("tree", "getCommitTreeSha $commitSha")
             .requireString("sha", "getCommitTreeSha $commitSha")
     }
 
     private suspend fun getFullTree(treeSha: String): Pair<List<TreeEntry>, Boolean> {
-        val response = get("$base/repos/$owner/$repo/git/trees/$treeSha?recursive=1")
+        val response = retrying(SERVICE, "getFullTree") {
+            get("$base/repos/$owner/$repo/git/trees/$treeSha?recursive=1")
+        }
         val json = Json.parseToJsonElement(response).jsonObject
         val truncated = json["truncated"]?.jsonPrimitive?.booleanOrNull ?: false
         val tree = json["tree"]?.jsonArray ?: return emptyList<TreeEntry>() to truncated
@@ -229,7 +250,11 @@ class GitHubClient(
             }
         }.toString()
 
-        val response = post("$base/repos/$owner/$repo/git/trees", body)
+        // Creating a tree object has no side effect beyond the object itself;
+        // a replay returns the same sha for the same content.
+        val response = retrying(SERVICE, "createDeltaTree") {
+            post("$base/repos/$owner/$repo/git/trees", body)
+        }
         return Json.parseToJsonElement(response).jsonObject
             .requireString("sha", "createDeltaTree")
     }
@@ -245,25 +270,32 @@ class GitHubClient(
             putJsonArray("parents") { add(parentSha) }
         }.toString()
 
-        val response = post("$base/repos/$owner/$repo/git/commits", body)
+        // A dangling commit object costs nothing until a ref points at it,
+        // so a replay is harmless.
+        val response = retrying(SERVICE, "createCommit") {
+            post("$base/repos/$owner/$repo/git/commits", body)
+        }
         return Json.parseToJsonElement(response).jsonObject
             .requireString("sha", "createCommit")
     }
 
+    /**
+     * NOT retried: this is the one operation that publishes everything else.
+     * A replay after an ambiguous failure could advance the branch over a
+     * change made in between.
+     */
     private suspend fun updateRef(branch: String, commitSha: String) {
         val body = buildJsonObject {
             put("sha", commitSha)
         }.toString()
 
-        val response = http.patch("$base/repos/$owner/$repo/git/refs/heads/$branch") {
-            header(HttpHeaders.Authorization, "Bearer $token")
-            header(HttpHeaders.Accept, "application/vnd.github+json")
-            header("X-GitHub-Api-Version", "2022-11-28")
-            contentType(ContentType.Application.Json)
-            setBody(body)
-        }
-        check(response.status.isSuccess()) {
-            "GitHub PATCH ref/heads/$branch failed: ${response.status} - ${response.bodyAsText()}"
+        classifying(SERVICE, "updateRef $branch") {
+            val response = http.patch("$base/repos/$owner/$repo/git/refs/heads/$branch") {
+                githubHeaders()
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+            if (!response.status.isSuccess()) throw classify(response, SERVICE, "updateRef $branch")
         }
     }
 
@@ -276,6 +308,10 @@ class GitHubClient(
 
     // ---- Single-file Contents API (assets) ----
 
+    /**
+     * Retried: the Contents API upsert is keyed by path and sha, so a replay
+     * either repeats the same write or fails the sha check — never duplicates.
+     */
     suspend fun putFile(
         path:    String,
         content: ByteArray,
@@ -288,77 +324,50 @@ class GitHubClient(
             if (sha != null) put("sha", sha)
         }.toString()
 
-        val response = http.put("$base/repos/$owner/$repo/contents/${path.trimStart('/')}") {
-            header(HttpHeaders.Authorization, "Bearer $token")
-            header(HttpHeaders.Accept, "application/vnd.github+json")
-            header("X-GitHub-Api-Version", "2022-11-28")
-            contentType(ContentType.Application.Json)
-            setBody(body)
-        }
-        check(response.status.isSuccess()) {
-            "GitHub PUT $path failed: ${response.status} - ${response.bodyAsText()}"
+        retrying(SERVICE, "PUT $path") {
+            val response = http.put("$base/repos/$owner/$repo/contents/${path.trimStart('/')}") {
+                githubHeaders()
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+            if (!response.status.isSuccess()) throw classify(response, SERVICE, "PUT $path")
         }
     }
 
-    suspend fun getFileSha(path: String): String? {
-        val response = http.get("$base/repos/$owner/$repo/contents/${path.trimStart('/')}") {
-            header(HttpHeaders.Authorization, "Bearer $token")
-            header(HttpHeaders.Accept, "application/vnd.github+json")
-            header("X-GitHub-Api-Version", "2022-11-28")
-        }
-        if (response.status == HttpStatusCode.NotFound) return null
-        check(response.status.isSuccess()) {
-            "GitHub GET $path failed: ${response.status}"
-        }
-        val json = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        return json["sha"]?.jsonPrimitive?.content
+    suspend fun getFileSha(path: String): String? = retrying(SERVICE, "GET sha $path") {
+        val response = contentsRequest(path)
+        if (response.status == HttpStatusCode.NotFound) return@retrying null
+        if (!response.status.isSuccess()) throw classify(response, SERVICE, "GET sha $path")
+        Json.parseToJsonElement(response.bodyAsText()).jsonObject["sha"]?.jsonPrimitive?.content
     }
 
-    suspend fun getFileContent(path: String): String? {
-        val response = http.get("$base/repos/$owner/$repo/contents/${path.trimStart('/')}") {
-            header(HttpHeaders.Authorization, "Bearer $token")
-            header(HttpHeaders.Accept, "application/vnd.github+json")
-            header("X-GitHub-Api-Version", "2022-11-28")
-        }
-        if (response.status == HttpStatusCode.NotFound) return null
-        check(response.status.isSuccess()) {
-            "GitHub GET $path failed: ${response.status}"
-        }
+    suspend fun getFileContent(path: String): String? = retrying(SERVICE, "GET $path") {
+        val response = contentsRequest(path)
+        if (response.status == HttpStatusCode.NotFound) return@retrying null
+        if (!response.status.isSuccess()) throw classify(response, SERVICE, "GET $path")
         val json    = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        val encoded = json["content"]?.jsonPrimitive?.content ?: return null
+        val encoded = json["content"]?.jsonPrimitive?.content ?: return@retrying null
         val clean   = encoded.replace("\n", "").replace("\r", "")
-        return String(Base64.decode(clean, Base64.DEFAULT), Charsets.UTF_8)
+        String(Base64.decode(clean, Base64.DEFAULT), Charsets.UTF_8)
     }
 
-    suspend fun getFileBinary(path: String): ByteArray? {
-        val response = http.get("$base/repos/$owner/$repo/contents/${path.trimStart('/')}") {
-            header(HttpHeaders.Authorization, "Bearer $token")
-            header(HttpHeaders.Accept, "application/vnd.github+json")
-            header("X-GitHub-Api-Version", "2022-11-28")
-        }
-        if (response.status == HttpStatusCode.NotFound) return null
-        check(response.status.isSuccess()) {
-            "GitHub GET $path failed: ${response.status}"
-        }
+    suspend fun getFileBinary(path: String): ByteArray? = retrying(SERVICE, "GET binary $path") {
+        val response = contentsRequest(path)
+        if (response.status == HttpStatusCode.NotFound) return@retrying null
+        if (!response.status.isSuccess()) throw classify(response, SERVICE, "GET binary $path")
         val json    = Json.parseToJsonElement(response.bodyAsText()).jsonObject
-        val encoded = json["content"]?.jsonPrimitive?.content ?: return null
+        val encoded = json["content"]?.jsonPrimitive?.content ?: return@retrying null
         val clean   = encoded.replace("\n", "").replace("\r", "")
-        return Base64.decode(clean, Base64.DEFAULT)
+        Base64.decode(clean, Base64.DEFAULT)
     }
 
-    suspend fun listDir(path: String): List<FileEntry> {
-        val response = http.get("$base/repos/$owner/$repo/contents/${path.trimStart('/')}") {
-            header(HttpHeaders.Authorization, "Bearer $token")
-            header(HttpHeaders.Accept, "application/vnd.github+json")
-            header("X-GitHub-Api-Version", "2022-11-28")
-        }
-        if (response.status == HttpStatusCode.NotFound) return emptyList()
-        check(response.status.isSuccess()) {
-            "GitHub GET dir $path failed: ${response.status}"
-        }
+    suspend fun listDir(path: String): List<FileEntry> = retrying(SERVICE, "GET dir $path") {
+        val response = contentsRequest(path)
+        if (response.status == HttpStatusCode.NotFound) return@retrying emptyList()
+        if (!response.status.isSuccess()) throw classify(response, SERVICE, "GET dir $path")
         val json = Json.parseToJsonElement(response.bodyAsText())
-        if (json !is JsonArray) return emptyList()
-        return json.mapNotNull { entry ->
+        if (json !is JsonArray) return@retrying emptyList()
+        json.mapNotNull { entry ->
             val obj  = entry.jsonObject
             val type = obj["type"]?.jsonPrimitive?.content
             if (type != "file") return@mapNotNull null
@@ -377,14 +386,16 @@ class GitHubClient(
     suspend fun getTree(branch: String = "main"): List<FileEntry> {
         val headSha = try {
             getRefSha(branch)
-        } catch (_: Exception) {
-            return emptyList() // branch/repo missing — match previous 404 behavior
+        } catch (e: NetworkFailure) {
+            // Only a proven 404 means "no such branch"; anything else must
+            // propagate, or a flaky link silently looks like an empty repo.
+            if (e.kind == NetworkFailure.Kind.NOT_FOUND) return emptyList() else throw e
         }
 
         val cacheKey = "$owner/$repo/$branch@$headSha"
         treeCache?.let { (key, entries) -> if (key == cacheKey) return entries }
 
-        val (entries, truncated) = getFullTree(headSha.let { getCommitTreeSha(it) })
+        val (entries, truncated) = getFullTree(getCommitTreeSha(headSha))
         if (truncated) {
             Log.w(TAG, "getTree: listing truncated by GitHub; results incomplete")
         }
@@ -395,50 +406,50 @@ class GitHubClient(
         return files
     }
 
+    /** Retried: keyed by path and sha, so a replay is a no-op or a sha mismatch. */
     suspend fun deleteFile(path: String, sha: String, message: String) {
         val body = buildJsonObject {
             put("message", message)
             put("sha", sha)
         }.toString()
 
-        val response = http.request("$base/repos/$owner/$repo/contents/${path.trimStart('/')}") {
-            method = HttpMethod.Delete
-            header(HttpHeaders.Authorization, "Bearer $token")
-            header(HttpHeaders.Accept, "application/vnd.github+json")
-            header("X-GitHub-Api-Version", "2022-11-28")
-            contentType(ContentType.Application.Json)
-            setBody(body)
-        }
-        check(response.status.isSuccess()) {
-            "GitHub DELETE $path failed: ${response.status} - ${response.bodyAsText()}"
+        retrying(SERVICE, "DELETE $path") {
+            val response = http.request("$base/repos/$owner/$repo/contents/${path.trimStart('/')}") {
+                method = HttpMethod.Delete
+                githubHeaders()
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+            if (!response.status.isSuccess()) throw classify(response, SERVICE, "DELETE $path")
         }
     }
 
     // ---- Shared HTTP helpers ----
 
+    private fun HttpRequestBuilder.githubHeaders() {
+        header(HttpHeaders.Authorization, "Bearer $token")
+        header(HttpHeaders.Accept, "application/vnd.github+json")
+        header("X-GitHub-Api-Version", "2022-11-28")
+    }
+
+    private suspend fun contentsRequest(path: String): HttpResponse =
+        http.get("$base/repos/$owner/$repo/contents/${path.trimStart('/')}") { githubHeaders() }
+
+    /** Raw GET; callers wrap in [retrying] and classify. */
     private suspend fun get(url: String): String {
-        val response = http.get(url) {
-            header(HttpHeaders.Authorization, "Bearer $token")
-            header(HttpHeaders.Accept, "application/vnd.github+json")
-            header("X-GitHub-Api-Version", "2022-11-28")
-        }
-        check(response.status.isSuccess()) {
-            "GitHub GET $url failed: ${response.status} - ${response.bodyAsText()}"
-        }
+        val response = http.get(url) { githubHeaders() }
+        if (!response.status.isSuccess()) throw classify(response, SERVICE, "GET $url")
         return response.bodyAsText()
     }
 
+    /** Raw POST; callers wrap in [retrying] and classify. */
     private suspend fun post(url: String, body: String): String {
         val response = http.post(url) {
-            header(HttpHeaders.Authorization, "Bearer $token")
-            header(HttpHeaders.Accept, "application/vnd.github+json")
-            header("X-GitHub-Api-Version", "2022-11-28")
+            githubHeaders()
             contentType(ContentType.Application.Json)
             setBody(body)
         }
-        check(response.status.isSuccess()) {
-            "GitHub POST $url failed: ${response.status} - ${response.bodyAsText()}"
-        }
+        if (!response.status.isSuccess()) throw classify(response, SERVICE, "POST $url")
         return response.bodyAsText()
     }
 

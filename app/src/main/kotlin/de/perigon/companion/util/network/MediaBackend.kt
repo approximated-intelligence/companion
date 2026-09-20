@@ -14,4 +14,15 @@ interface MediaBackend {
      * surface undeleted keys to the user.
      */
     suspend fun deleteMedia(key: String): Boolean = false
+
+    /**
+     * Whether [key] is already present. Lets a retried publish skip media it
+     * already uploaded instead of re-sending it — the difference between
+     * "resumes" and "starts over" on a slow link.
+     *
+     * Throws (does NOT return false) when presence cannot be determined:
+     * treating an unreachable server as "absent" would re-upload everything
+     * on every flaky attempt.
+     */
+    suspend fun objectExists(key: String): Boolean
 }

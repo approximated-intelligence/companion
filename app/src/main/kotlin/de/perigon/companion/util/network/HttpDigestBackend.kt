@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Plain HTTP media backend with Basic or Digest auth.
- * Implements [MediaBackend] (PUT + DELETE).
+ * Implements [MediaBackend] (PUT + DELETE + HEAD).
  *
  * Digest flow per request:
  *   1. Request → expect 401 with WWW-Authenticate: Digest
@@ -19,6 +19,10 @@ import java.util.concurrent.atomic.AtomicInteger
  *   round-trips. Challenge and counter travel together in one immutable
  *   session object behind a single volatile reference, so concurrent
  *   calls can never pair a counter with the wrong nonce.
+ *
+ * All three operations are idempotent, so all three are retried. Note the
+ * 401 handshake is NOT a failure and never counts against the retry budget:
+ * it is part of one logical attempt.
  */
 class HttpMediaBackend(
     private val http:     HttpClient,
@@ -27,6 +31,8 @@ class HttpMediaBackend(
     private val password: String,
     private val authType: String = "digest",
 ) : MediaBackend {
+
+    private val service = "media server"
 
     private class DigestSession(val challenge: DigestAuth.Challenge) {
         private val counter = AtomicInteger(0)
@@ -37,14 +43,24 @@ class HttpMediaBackend(
     private var session: DigestSession? = null
 
     override suspend fun putObject(key: String, data: ByteArray, contentType: String?) {
-        val resp = requestWithAuth(HttpMethod.Put, key, data, contentType)
-        check(resp.status.isSuccess()) { "PUT $key failed: ${resp.status} - ${resp.bodyAsText()}" }
+        retrying(service, "PUT $key") {
+            val resp = requestWithAuth(HttpMethod.Put, key, data, contentType)
+            if (!resp.status.isSuccess()) throw classify(resp, service, "PUT $key")
+        }
     }
 
-    override suspend fun deleteMedia(key: String): Boolean {
+    override suspend fun deleteMedia(key: String): Boolean = retrying(service, "DELETE $key") {
         val resp = requestWithAuth(HttpMethod.Delete, key, data = null, contentType = null)
         // Already gone counts as deleted.
-        return resp.status.isSuccess() || resp.status == HttpStatusCode.NotFound
+        if (resp.status.isSuccess() || resp.status == HttpStatusCode.NotFound) return@retrying true
+        throw classify(resp, service, "DELETE $key")
+    }
+
+    override suspend fun objectExists(key: String): Boolean = retrying(service, "HEAD $key") {
+        val resp = requestWithAuth(HttpMethod.Head, key, data = null, contentType = null)
+        if (resp.status == HttpStatusCode.NotFound) return@retrying false
+        if (!resp.status.isSuccess()) throw classify(resp, service, "HEAD $key")
+        true
     }
 
     // ---- Auth orchestration ----
@@ -93,7 +109,11 @@ class HttpMediaBackend(
         if (initialResp.status != HttpStatusCode.Unauthorized) return initialResp
 
         val wwwAuth = initialResp.headers["WWW-Authenticate"]
-            ?: error("${method.value} $key: 401 without WWW-Authenticate header")
+            ?: throw NetworkFailure(
+                NetworkFailure.Kind.AUTH,
+                "Media server asked for authentication but sent no challenge",
+                "${method.value} $key: 401 without WWW-Authenticate header",
+            )
         val fresh = DigestSession(DigestAuth.parseChallenge(wwwAuth))
         session = fresh
 
