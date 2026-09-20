@@ -68,7 +68,17 @@ fun BackupScreen(
                 dcimUri = state.dcimUri,
                 onGranted = { uri -> vm.onDcimGranted(uri) },
             ) {
-                BackupContent(state = state, vm = vm, folderPicker = { folderPicker.launch(null) })
+                BackupContent(
+                    state            = state,
+                    onCancelBackup   = vm::cancelBackup,
+                    onStartBackup    = vm::startBackup,
+                    onSetAutoEnabled = vm::setAutoEnabled,
+                    onSetInterval    = vm::setInterval,
+                    onSetNumParts    = vm::setNumPartsPerPack,
+                    onToggleFolder   = vm::toggleFolder,
+                    onRemoveFolder   = vm::removeFolder,
+                    folderPicker     = { folderPicker.launch(null) },
+                )
             }
         }
     }
@@ -77,7 +87,13 @@ fun BackupScreen(
 @Composable
 private fun BackupContent(
     state: BackupUiState,
-    vm: BackupViewModel,
+    onCancelBackup: () -> Unit,
+    onStartBackup: () -> Unit,
+    onSetAutoEnabled: (Boolean) -> Unit,
+    onSetInterval: (Int) -> Unit,
+    onSetNumParts: (Int) -> Unit,
+    onToggleFolder: (Long, Boolean) -> Unit,
+    onRemoveFolder: (Long) -> Unit,
     folderPicker: () -> Unit,
 ) {
     LazyColumn(
@@ -172,11 +188,11 @@ private fun BackupContent(
 
         item {
             if (state.isRunning) {
-                OutlinedButton(onClick = vm::cancelBackup, modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(onClick = onCancelBackup, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Default.Stop, null); Spacer(Modifier.width(8.dp)); Text("Cancel")
                 }
             } else {
-                Button(onClick = vm::startBackup, modifier = Modifier.fillMaxWidth()) {
+                Button(onClick = onStartBackup, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Default.CloudUpload, null); Spacer(Modifier.width(8.dp)); Text("Back up now")
                 }
             }
@@ -195,7 +211,7 @@ private fun BackupContent(
                         color = if (state.autoEnabled) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Switch(checked = state.autoEnabled, onCheckedChange = vm::setAutoEnabled)
+                Switch(checked = state.autoEnabled, onCheckedChange = onSetAutoEnabled)
             }
         }
 
@@ -207,7 +223,7 @@ private fun BackupContent(
                     BackupSchedulePrefs.INTERVAL_OPTIONS.forEach { h ->
                         FilterChip(
                             selected = state.intervalHours == h,
-                            onClick = { vm.setInterval(h) },
+                            onClick = { onSetInterval(h) },
                             label = { Text(if (h < 24) "${h}h" else "${h}h") },
                         )
                     }
@@ -229,7 +245,7 @@ private fun BackupContent(
                 BackupSchedulePrefs.NUM_PARTS_OPTIONS.forEach { n ->
                     FilterChip(
                         selected = state.numPartsPerPack == n,
-                        onClick = { vm.setNumPartsPerPack(n) },
+                        onClick = { onSetNumParts(n) },
                         label = { Text("$n") },
                     )
                 }
@@ -261,7 +277,7 @@ private fun BackupContent(
             items(defaultFolders, key = { it.id }) { folder ->
                 DefaultFolderRow(
                     folder = folder,
-                    onToggle = { vm.toggleFolder(folder.id, it) },
+                    onToggle = { onToggleFolder(folder.id, it) },
                 )
             }
         }
@@ -274,8 +290,8 @@ private fun BackupContent(
             }
             items(customFolders, key = { it.id }) { folder ->
                 FolderRow(folder = folder,
-                    onToggle = { vm.toggleFolder(folder.id, it) },
-                    onRemove = { vm.removeFolder(folder.id) })
+                    onToggle = { onToggleFolder(folder.id, it) },
+                    onRemove = { onRemoveFolder(folder.id) })
             }
         } else {
             item {
@@ -328,8 +344,8 @@ private fun FolderRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Switch(checked = folder.includeInBackup, onCheckedChange = onToggle)
-            IconButton(onClick = onRemove, modifier = Modifier.size(36.dp)) {
-                Icon(Icons.Default.Delete, null,
+            IconButton(onClick = onRemove, modifier = Modifier.size(40.dp)) {
+                Icon(Icons.Default.Delete, "Remove folder",
                     tint = MaterialTheme.colorScheme.outline, modifier = Modifier.size(18.dp))
             }
         }

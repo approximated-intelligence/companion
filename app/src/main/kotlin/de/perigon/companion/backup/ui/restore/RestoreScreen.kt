@@ -143,7 +143,11 @@ private fun RestoreMainContent(
         }
 
         if (state.hasFiles) {
-            val selectedCount = state.tree.selectedCount()
+            // Memoized on the tree reference: without this, ANY unrelated state
+            // change (e.g. per-tick isRunning/fileIndex/currentFile updates while
+            // a restore is in progress) re-walked the whole tree on every
+            // recomposition even though selection was unchanged and locked.
+            val selectedCount = remember(state.tree) { state.tree.selectedCount() }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically) {
                 Text("$selectedCount selected", style = MaterialTheme.typography.titleSmall)

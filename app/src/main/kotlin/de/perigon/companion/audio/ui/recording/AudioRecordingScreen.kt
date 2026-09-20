@@ -148,7 +148,13 @@ fun AudioRecordingScreen(
             }
 
             item { HorizontalDivider() }
-            item { AdvancedAudioProcessing(state.config, vm) }
+            item {
+                AdvancedAudioProcessing(
+                    config                = state.config,
+                    onSetNoiseSuppression = vm::setNoiseSuppression,
+                    onSetAutoGain         = vm::setAutoGain,
+                )
+            }
 
             item { HorizontalDivider() }
             item { Text("Storage folder", style = MaterialTheme.typography.titleSmall) }
@@ -273,11 +279,18 @@ private fun ControlsCard(
 }
 
 @Composable
-private fun AdvancedAudioProcessing(config: AudioConfigEntity, vm: AudioRecordingViewModel) {
+private fun AdvancedAudioProcessing(
+    config: AudioConfigEntity,
+    onSetNoiseSuppression: (Boolean) -> Unit,
+    onSetAutoGain: (Boolean) -> Unit,
+) {
     var expanded by remember { mutableStateOf(false) }
 
-    val nsAvailable = android.media.audiofx.NoiseSuppressor.isAvailable()
-    val agcAvailable = android.media.audiofx.AutomaticGainControl.isAvailable()
+    // remember: static per-device capability checks. This composable sits in a
+    // LazyColumn item, so it recomposes on every unrelated state change --
+    // re-querying these each time was pure waste.
+    val nsAvailable = remember { android.media.audiofx.NoiseSuppressor.isAvailable() }
+    val agcAvailable = remember { android.media.audiofx.AutomaticGainControl.isAvailable() }
 
     Column {
         Row(
@@ -318,7 +331,7 @@ private fun AdvancedAudioProcessing(config: AudioConfigEntity, vm: AudioRecordin
                            else "Not available on this device.",
                 checked  = config.noiseSuppression && nsAvailable,
                 enabled  = nsAvailable,
-                onCheckedChange = vm::setNoiseSuppression,
+                onCheckedChange = onSetNoiseSuppression,
             )
             Spacer(Modifier.height(4.dp))
             ToggleRow(
@@ -327,7 +340,7 @@ private fun AdvancedAudioProcessing(config: AudioConfigEntity, vm: AudioRecordin
                            else "Not available on this device.",
                 checked  = config.autoGain && agcAvailable,
                 enabled  = agcAvailable,
-                onCheckedChange = vm::setAutoGain,
+                onCheckedChange = onSetAutoGain,
             )
         }
     }
@@ -496,7 +509,7 @@ private fun RecordingRow(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(rec.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
                             if (!selectionMode) {
-                                IconButton(onClick = { editing = true }, modifier = Modifier.size(24.dp)) {
+                                IconButton(onClick = { editing = true }, modifier = Modifier.size(40.dp)) {
                                     Icon(Icons.Default.Edit, "Rename", modifier = Modifier.size(14.dp),
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
@@ -515,11 +528,11 @@ private fun RecordingRow(
                                 else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (!selectionMode && !editing && !isActive) {
-                    IconButton(onClick = onShare, modifier = Modifier.size(36.dp)) {
-                        Icon(Icons.Default.Share, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                    IconButton(onClick = onShare, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.Share, "Share recording", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                     }
-                    IconButton(onClick = { confirmDelete = true }, modifier = Modifier.size(36.dp)) {
-                        Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.outline, modifier = Modifier.size(18.dp))
+                    IconButton(onClick = { confirmDelete = true }, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.Delete, "Delete recording", tint = MaterialTheme.colorScheme.outline, modifier = Modifier.size(18.dp))
                     }
                 }
             }

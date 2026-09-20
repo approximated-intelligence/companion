@@ -322,6 +322,12 @@ class AudioRecordingService : Service() {
 
     // ---- SAF file creation ----
 
+    // Lint's Recycle check wants a .close() before this function returns, but
+    // the fd's lifetime legitimately crosses the boundary: it becomes `pfd`
+    // in the caller and is closed on every exit path (cleanupRecorderState on
+    // start failure, stopRecording's IO-scope close, onDestroy). Suppressed,
+    // not fixed-by-closing -- closing here would hand MediaRecorder a dead fd.
+    @Suppress("Recycle")
     private fun createFile(folderUri: Uri, name: String, format: AudioFormat): Pair<Uri, ParcelFileDescriptor>? {
         return try {
             val tree = DocumentFile.fromTreeUri(this, folderUri) ?: return null
