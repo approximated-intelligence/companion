@@ -25,7 +25,6 @@ import de.perigon.companion.backup.data.BackupFolderEntity
 import de.perigon.companion.core.ui.AppTopBar
 import de.perigon.companion.core.ui.NotificationObserver
 import de.perigon.companion.backup.worker.BackupWorker
-import de.perigon.companion.util.saf.DcimGate
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -59,27 +58,24 @@ fun BackupScreen(
         vm.addFolder(uri, display)
     }
 
+    // No DcimGate here: AppAccessGate wraps the whole nav graph, so reaching
+    // this screen already implies a writable DCIM grant.
     Scaffold(
         topBar       = { AppTopBar(navController) },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            DcimGate(
-                dcimUri = state.dcimUri,
-                onGranted = { uri -> vm.onDcimGranted(uri) },
-            ) {
-                BackupContent(
-                    state            = state,
-                    onCancelBackup   = vm::cancelBackup,
-                    onStartBackup    = vm::startBackup,
-                    onSetAutoEnabled = vm::setAutoEnabled,
-                    onSetInterval    = vm::setInterval,
-                    onSetNumParts    = vm::setNumPartsPerPack,
-                    onToggleFolder   = vm::toggleFolder,
-                    onRemoveFolder   = vm::removeFolder,
-                    folderPicker     = { folderPicker.launch(null) },
-                )
-            }
+            BackupContent(
+                state            = state,
+                onCancelBackup   = vm::cancelBackup,
+                onStartBackup    = vm::startBackup,
+                onSetAutoEnabled = vm::setAutoEnabled,
+                onSetInterval    = vm::setInterval,
+                onSetNumParts    = vm::setNumPartsPerPack,
+                onToggleFolder   = vm::toggleFolder,
+                onRemoveFolder   = vm::removeFolder,
+                folderPicker     = { folderPicker.launch(null) },
+            )
         }
     }
 }

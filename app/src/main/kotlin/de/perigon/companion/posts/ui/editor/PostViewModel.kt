@@ -3,6 +3,7 @@ package de.perigon.companion.posts.ui.editor
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.util.Log
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -27,6 +28,7 @@ import de.perigon.companion.core.ui.SnackbarChannel
 import de.perigon.companion.util.network.GitHubClient
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.ktor.client.HttpClient
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.channels.Channel
@@ -51,6 +53,11 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import javax.inject.Inject
+
+private const val TAG = "PostViewModel"
+
+/** Consecutive silent autosave failures before the user is told. */
+private const val AUTOSAVE_FAILURES_BEFORE_WARNING = 3
 
 @Immutable
 data class PostUiState(
@@ -117,6 +124,8 @@ class PostViewModel @Inject constructor(
 
     private val _needsPermission = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val needsPermission: SharedFlow<Unit> = _needsPermission.asSharedFlow()
+
+    private var consecutiveAutosaveFailures = 0
 
     init {
         loadJourneyContext()
@@ -378,8 +387,25 @@ class PostViewModel @Inject constructor(
 
     // ---- Save / Publish ----
 
+    /**
+     * Autosave. Failures stay out of the user's way — an autosave is not
+     * something they asked for — but they are LOGGED, and after a few in a
+     * row the user is told, because silently not saving a post someone is
+     * typing into is the worst possible failure here.
+     */
     private suspend fun saveDraftSilently() {
-        try { persistDraft() } catch (_: Exception) { }
+        try {
+            persistDraft()
+            consecutiveAutosaveFailures = 0
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            consecutiveAutosaveFailures++
+            Log.w(TAG, "autosave failed (#$consecutiveAutosaveFailures)", e)
+            if (consecutiveAutosaveFailures == AUTOSAVE_FAILURES_BEFORE_WARNING) {
+                snackbar.send("Draft isn't saving — copy your text somewhere safe")
+            }
+        }
     }
 
     fun saveDraft(onComplete: (() -> Unit)? = null) {
@@ -387,11 +413,13 @@ class PostViewModel @Inject constructor(
             _state.update { it.copy(isSaving = true) }
             try {
                 persistDraft()
+                consecutiveAutosaveFailures = 0
                 _state.update { it.copy(isSaving = false) }
                 snackbar.send("Draft saved")
                 onComplete?.invoke()
             } catch (e: Exception) {
                 _state.update { it.copy(isSaving = false) }
+                Log.w(TAG, "saveDraft failed", e)
                 snackbar.send("Save failed: ${e.message}")
             }
         }
@@ -430,7 +458,10 @@ class PostViewModel @Inject constructor(
             // Persist inline and await it before reading the id.
             try {
                 persistDraft()
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
+                Log.w(TAG, "publish: pre-save failed", e)
                 snackbar.send("Save failed: ${e.message}")
                 return@launch
             }

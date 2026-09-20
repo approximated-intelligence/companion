@@ -1,5 +1,6 @@
 package de.perigon.companion.track.domain
 
+import android.util.Log
 import de.perigon.companion.track.data.TrackPointEntity
 import java.io.InputStream
 import javax.xml.XMLConstants
@@ -7,6 +8,8 @@ import javax.xml.parsers.SAXParserFactory
 import org.xml.sax.Attributes
 import org.xml.sax.helpers.DefaultHandler
 import kotlin.math.*
+
+private const val TAG = "GpxTrack"
 
 data class LatLon(val lat: Float, val lon: Float)
 
@@ -78,8 +81,11 @@ fun parseGpx(stream: InputStream): GpxTrack {
 private fun SAXParserFactory.setFeatureQuietly(feature: String, value: Boolean) {
     try {
         setFeature(feature, value)
-    } catch (_: Exception) {
-        // Parser doesn't know this feature — the others still apply.
+    } catch (e: Exception) {
+        // Parser doesn't know this feature — the others still apply. Logged
+        // because a silently unset hardening flag is worth noticing if a
+        // malformed-GPX report ever comes in.
+        Log.d(TAG, "SAX feature unsupported: $feature (${e.javaClass.simpleName})")
     }
 }
 
@@ -116,9 +122,15 @@ private class GpxHandler : DefaultHandler() {
         }
         if (tag == "time" && inTime) {
             if (firstTimestamp == null) {
+                val raw = chars.toString().trim()
                 try {
-                    firstTimestamp = java.time.Instant.parse(chars.toString().trim()).toEpochMilli()
-                } catch (_: Exception) { }
+                    firstTimestamp = java.time.Instant.parse(raw).toEpochMilli()
+                } catch (e: Exception) {
+                    // Non-ISO-8601 timestamp: the track still renders, it just
+                    // has no date. Logged so "why is my track undated" is
+                    // answerable.
+                    Log.d(TAG, "unparseable GPX time '$raw' (${e.javaClass.simpleName})")
+                }
             }
             inTime = false
         }

@@ -31,7 +31,6 @@ import de.perigon.companion.backup.worker.BackupWorker
 import de.perigon.companion.core.ui.AppTopBar
 import de.perigon.companion.core.ui.NotificationObserver
 import de.perigon.companion.media.data.SafeToDeleteView
-import de.perigon.companion.util.saf.DcimGate
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -105,6 +104,8 @@ fun ConsolidateScreen(
         )
     }
 
+    // No DcimGate here: AppAccessGate wraps the whole nav graph, so reaching
+    // this screen already implies a writable DCIM grant.
     Scaffold(
         topBar = {
             if (state.selectionMode) {
@@ -122,43 +123,37 @@ fun ConsolidateScreen(
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            DcimGate(
-                dcimUri = state.dcimUri,
-                onGranted = { uri -> vm.onDcimGranted(uri) },
-                writeAccess = true,
-            ) {
-                when (state.viewMode) {
-                    ViewMode.LIST -> ListContent(
-                        padding              = PaddingValues(),
-                        state                = state,
-                        onStartConsolidate   = vm::startConsolidate,
-                        onStartBackup        = vm::startBackup,
-                        onStartBoth          = vm::startConsolidateAndBackup,
-                        onSetViewMode        = vm::setViewMode,
-                        onSetSortField       = vm::setSortField,
-                        onEnterSelectionMode = vm::enterSelectionMode,
-                        onToggleSelected     = vm::toggleSelected,
-                        onShowPreview        = vm::showPreview,
-                        onProtect            = vm::protect,
-                        onRequestUnprotect   = vm::requestUnprotect,
-                        onBackfillExisting   = vm::backfillExisting,
-                    )
-                    ViewMode.GRID -> GridContent(
-                        padding              = PaddingValues(),
-                        state                = state,
-                        onStartConsolidate   = vm::startConsolidate,
-                        onStartBackup        = vm::startBackup,
-                        onStartBoth          = vm::startConsolidateAndBackup,
-                        onSetViewMode        = vm::setViewMode,
-                        onSetSortField       = vm::setSortField,
-                        onEnterSelectionMode = vm::enterSelectionMode,
-                        onToggleSelected     = vm::toggleSelected,
-                        onShowPreview        = vm::showPreview,
-                        onProtect            = vm::protect,
-                        onRequestUnprotect   = vm::requestUnprotect,
-                        onBackfillExisting   = vm::backfillExisting,
-                    )
-                }
+            when (state.viewMode) {
+                ViewMode.LIST -> ListContent(
+                    padding              = PaddingValues(),
+                    state                = state,
+                    onStartConsolidate   = vm::startConsolidate,
+                    onStartBackup        = vm::startBackup,
+                    onStartBoth          = vm::startConsolidateAndBackup,
+                    onSetViewMode        = vm::setViewMode,
+                    onSetSortField       = vm::setSortField,
+                    onEnterSelectionMode = vm::enterSelectionMode,
+                    onToggleSelected     = vm::toggleSelected,
+                    onShowPreview        = vm::showPreview,
+                    onProtect            = vm::protect,
+                    onRequestUnprotect   = vm::requestUnprotect,
+                    onBackfillExisting   = vm::backfillExisting,
+                )
+                ViewMode.GRID -> GridContent(
+                    padding              = PaddingValues(),
+                    state                = state,
+                    onStartConsolidate   = vm::startConsolidate,
+                    onStartBackup        = vm::startBackup,
+                    onStartBoth          = vm::startConsolidateAndBackup,
+                    onSetViewMode        = vm::setViewMode,
+                    onSetSortField       = vm::setSortField,
+                    onEnterSelectionMode = vm::enterSelectionMode,
+                    onToggleSelected     = vm::toggleSelected,
+                    onShowPreview        = vm::showPreview,
+                    onProtect            = vm::protect,
+                    onRequestUnprotect   = vm::requestUnprotect,
+                    onBackfillExisting   = vm::backfillExisting,
+                )
             }
         }
     }

@@ -21,7 +21,6 @@ import androidx.navigation.NavController
 import de.perigon.companion.backup.worker.RestoreNotifier
 import de.perigon.companion.core.ui.AccessibilityGate
 import de.perigon.companion.core.ui.SecureWindow
-import de.perigon.companion.util.saf.DcimGate
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -51,6 +50,8 @@ private fun RestoreScreenContent(
         vm.snackbar.events.collect { snackbarHost.showSnackbar(it) }
     }
 
+    // No DcimGate here: AppAccessGate wraps the whole nav graph, so reaching
+    // this screen already implies a writable DCIM grant.
     Scaffold(
         topBar = {
             TopAppBar(
@@ -65,13 +66,7 @@ private fun RestoreScreenContent(
         snackbarHost = { SnackbarHost(snackbarHost) },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
-            DcimGate(
-                dcimUri = state.dcimUri,
-                onGranted = { uri -> vm.onDcimGranted(uri) },
-                writeAccess = true,
-            ) {
-                RestoreMainContent(state = state, vm = vm)
-            }
+            RestoreMainContent(state = state, vm = vm)
         }
     }
 }

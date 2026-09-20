@@ -211,13 +211,18 @@ class AudioRecordingService : Service() {
         val resolver = applicationContext.contentResolver
         appScope.launch(Dispatchers.IO) {
             try { rec.stop() } catch (e: Exception) { Log.w(TAG, "MediaRecorder.stop failed: ${e.message}") }
+            // Teardown: a throw here would mask the real failure above and
+            // there is nothing left to salvage.
             try { rec.release() } catch (_: Exception) {}
             try { capturedPfd?.close() } catch (_: Exception) {}
 
             val sizeBytes = capturedUri?.let { uri ->
                 try {
                     resolver.openFileDescriptor(uri, "r")?.use { it.statSize }
-                } catch (_: Exception) { null }
+                } catch (e: Exception) {
+                    Log.w(TAG, "cannot stat recording $uri", e)
+                    null
+                }
             } ?: 0L
             if (capturedId > 0L) {
                 repository.finalize(capturedId, durationMs, sizeBytes)
@@ -294,18 +299,29 @@ class AudioRecordingService : Service() {
 
     private fun attachEffects(cfg: AudioConfigEntity) {
         // MediaRecorder doesn't expose its AudioSession directly, so effects
-        // are attached via session 0 (global). On devices where this fails,
-        // we silently skip.
+        // are attached via session 0 (global). Devices vary in whether that
+        // works; a failure only means the effect is off, so recording
+        // continues — but it IS logged, since "noise suppression is enabled
+        // in settings and doing nothing" is otherwise invisible.
         if (cfg.noiseSuppression && NoiseSuppressor.isAvailable()) {
-            try { noiseSuppressor = NoiseSuppressor.create(0)?.apply { enabled = true } }
-            catch (_: Exception) {}
+            try {
+                noiseSuppressor = NoiseSuppressor.create(0)?.apply { enabled = true }
+            } catch (e: Exception) {
+                Log.w(TAG, "noise suppressor unavailable on this device", e)
+            }
         }
         if (cfg.autoGain && AutomaticGainControl.isAvailable()) {
-            try { autoGainControl = AutomaticGainControl.create(0)?.apply { enabled = true } }
-            catch (_: Exception) {}
+            try {
+                autoGainControl = AutomaticGainControl.create(0)?.apply { enabled = true }
+            } catch (e: Exception) {
+                Log.w(TAG, "automatic gain control unavailable on this device", e)
+            }
         }
     }
 
+    // Teardown paths below: exceptions are deliberately swallowed. Releasing
+    // an already-dead effect/fd is expected, and throwing would abort the rest
+    // of the cleanup.
     private fun detachEffects() {
         try { noiseSuppressor?.release() } catch (_: Exception) {}
         try { autoGainControl?.release() } catch (_: Exception) {}
