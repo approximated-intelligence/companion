@@ -10,14 +10,14 @@ plugins {
 
 android {
     namespace = "de.perigon.companion"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "de.perigon.companion"
-        minSdk = 31
+        minSdk = 34
         targetSdk = 36
         versionCode = 1
-        versionName = "0.1.1"
+        versionName = "0.1.3"
     }
 
     buildTypes {

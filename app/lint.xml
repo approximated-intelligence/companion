@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Media3's Transformer / effects API surface is entirely @UnstableApi. We use
+  it deliberately (VideoTransformer, MediaEditScreen video effects), so opt in
+  project-wide rather than annotating every call site. This keeps the signal:
+  any NON-media3 opt-in-required API still fails the build.
+-->
+<lint>
+    <issue id="UnsafeOptInUsageError">
+        <option name="opt-in" value="androidx.media3.common.util.UnstableApi" />
+    </issue>
+</lint>
