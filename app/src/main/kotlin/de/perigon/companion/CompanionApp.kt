@@ -45,7 +45,7 @@ class CompanionApp : Application(), Configuration.Provider {
         applyBackupSchedule()
         resumeBackground()
         migrateBackgroundPrefs()
-        adoptLegacyOriginals()
+        repairPostState()
     }
 
     private fun applyBackupSchedule() {
@@ -66,12 +66,18 @@ class CompanionApp : Application(), Configuration.Provider {
     }
 
     /**
-     * Copy originals of media added before import existed into
-     * PostMedia/Originals, while their gallery/share sources are still
-     * readable. Idempotent and cheap once done (owned rows skip without IO).
+     * Post-state repair, once per launch:
+     *  - adopt originals of media added before import existed, while their
+     *    gallery/share sources are still readable;
+     *  - clear posts stuck at QUEUED whose worker is gone (killed by the
+     *    execution cap, process death, force-stop) — nothing else ever
+     *    writes that state back, so the UI spins forever.
      */
-    private fun adoptLegacyOriginals() {
-        appScope.launch(Dispatchers.IO) { postRepository.adoptLegacyOriginals() }
+    private fun repairPostState() {
+        appScope.launch(Dispatchers.IO) {
+            postRepository.reconcileQueuedPosts()
+            postRepository.adoptLegacyOriginals()
+        }
     }
 
     /**
