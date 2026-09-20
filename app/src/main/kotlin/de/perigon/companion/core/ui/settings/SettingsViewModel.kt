@@ -71,6 +71,17 @@ class SettingsViewModel @Inject constructor(
         val httpMediaHasPassword:  Boolean = false,
         val httpMediaAuthType:     String  = "digest",
         val mediaPickerMode:       String  = AppPrefs.MEDIA_PICKER_SYSTEM,
+        val pendingBootstrap:      PendingBootstrap? = null,
+    )
+
+    /** Parsed-but-unapplied bootstrap payload awaiting user confirmation. */
+    data class PendingBootstrap(
+        val raw:             String,
+        val naclFingerprint: String?,
+        val b2:              String?,   // "endpoint / bucket"
+        val github:          String?,   // "owner/repo"
+        val s3:              String?,   // endpoint
+        val http:            String?,   // endpoint
     )
 
     private val _state = MutableStateFlow(buildState())
@@ -184,8 +195,11 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun setHttpMediaPassword(password: String) {
-        creds.setHttpMediaPassword(password)
-        _state.value = buildState()
+        // KeyStore encryption is disk I/O — off the main thread.
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { creds.setHttpMediaPassword(password) }
+            _state.value = buildState()
+        }
     }
     fun setHttpMediaAuthType(type: String) {
         viewModelScope.launch {
@@ -359,72 +373,100 @@ class SettingsViewModel @Inject constructor(
             val obj  = Json.parseToJsonElement(raw).jsonObject
             val type = obj["type"]?.jsonPrimitive?.content
             require(type == "companion_bootstrap_v1") { "Expected bootstrap QR, got: $type" }
-
-            viewModelScope.launch {
-                obj["nacl_public_key_hex"]?.jsonPrimitive?.content?.let { hex ->
-                    require(hex.length == 64) { "Expected 32-byte hex key" }
-                    handleNaclKey(hex)
-                }
-
-                obj["b2"]?.jsonObject?.let { b2 ->
-                    val keyId    = b2["key_id"]?.jsonPrimitive?.content         ?: error("Bootstrap missing b2.key_id")
-                    val appKey   = b2["application_key"]?.jsonPrimitive?.content ?: error("Bootstrap missing b2.application_key")
-                    val endpoint = b2["endpoint"]?.jsonPrimitive?.content
-                    val bucket   = b2["bucket"]?.jsonPrimitive?.content
-                    val region   = b2["region"]?.jsonPrimitive?.content
-                    appPrefs.setB2Config(endpoint = endpoint, keyId = keyId, bucket = bucket, region = region)
-                    creds.setB2AppKey(appKey)
-                }
-
-                obj["github"]?.jsonObject?.let { gh ->
-                    val token = gh["token"]?.jsonPrimitive?.content ?: error("Bootstrap missing github.token")
-                    val owner = gh["owner"]?.jsonPrimitive?.content ?: error("Bootstrap missing github.owner")
-                    val repo  = gh["repo"]?.jsonPrimitive?.content  ?: error("Bootstrap missing github.repo")
-                    appPrefs.setGithubRepo(owner = owner, repo = repo)
-                    creds.setGithubToken(token)
-                    fetchCname(token, owner, repo)
-                }
-
-                obj["s3"]?.jsonObject?.let { s3 ->
-                    val endpoint  = s3["endpoint"]?.jsonPrimitive?.content   ?: error("Bootstrap missing s3.endpoint")
-                    val staticUrl = s3["static_url"]?.jsonPrimitive?.content ?: error("Bootstrap missing s3.static_url")
-                    val bucket    = s3["bucket"]?.jsonPrimitive?.content      ?: error("Bootstrap missing s3.bucket")
-                    val keyId     = s3["key_id"]?.jsonPrimitive?.content      ?: error("Bootstrap missing s3.key_id")
-                    val secretKey = s3["secret_key"]?.jsonPrimitive?.content  ?: error("Bootstrap missing s3.secret_key")
-                    val region    = s3["region"]?.jsonPrimitive?.content      ?: error("Bootstrap missing s3.region")
-                    appPrefs.setS3Config(endpoint, staticUrl, bucket, keyId, region)
-                    creds.setS3SecretKey(secretKey)
-                }
-
-                obj["http"]?.jsonObject?.let { h ->
-                    val endpoint  = h["endpoint"]?.jsonPrimitive?.content   ?: error("Bootstrap missing http.endpoint")
-                    val staticUrl = h["static_url"]?.jsonPrimitive?.content ?: error("Bootstrap missing http.static_url")
-                    val user      = h["user"]?.jsonPrimitive?.content       ?: error("Bootstrap missing http.user")
-                    val password  = h["password"]?.jsonPrimitive?.content   ?: error("Bootstrap missing http.password")
-                    appPrefs.setHttpMediaConfig(endpoint, staticUrl, user)
-                    creds.setHttpMediaPassword(password)
-                }
-
-                ensurePhoneKeypair()
-                _state.value = buildState()
-                snackbar.send("Bootstrap configuration imported")
-            }
+            // Stage only — do NOT apply. One scan could otherwise silently
+            // redirect all future backups to attacker storage, encrypted to an
+            // attacker key: handleNaclKey's bucket-empty safety check runs
+            // against the bucket the QR itself names, so it cannot protect
+            // against this. The human verifying fingerprint + endpoints is the
+            // actual check (see confirmBootstrap).
+            _state.update { it.copy(pendingBootstrap = PendingBootstrap(
+                raw             = raw,
+                naclFingerprint = obj["nacl_public_key_hex"]?.jsonPrimitive?.content?.fingerprint(),
+                b2     = obj["b2"]?.jsonObject?.let { b -> "${b["endpoint"]?.jsonPrimitive?.content ?: "?"} / ${b["bucket"]?.jsonPrimitive?.content ?: "?"}" },
+                github = obj["github"]?.jsonObject?.let { g -> "${g["owner"]?.jsonPrimitive?.content}/${g["repo"]?.jsonPrimitive?.content}" },
+                s3     = obj["s3"]?.jsonObject?.get("endpoint")?.jsonPrimitive?.content,
+                http   = obj["http"]?.jsonObject?.get("endpoint")?.jsonPrimitive?.content,
+            ))}
         }.getOrElse { e ->
             _state.value = buildState()
             snackbar.send("Bootstrap QR not recognised: ${e.message}")
         }
     }
 
+    fun confirmBootstrap() {
+        val pending = _state.value.pendingBootstrap ?: return
+        _state.update { it.copy(pendingBootstrap = null) }
+        viewModelScope.launch { applyBootstrap(pending.raw) }
+    }
+
+    fun dismissBootstrap() { _state.update { it.copy(pendingBootstrap = null) } }
+
+    private suspend fun applyBootstrap(raw: String) {
+        runCatching {
+            val obj = Json.parseToJsonElement(raw).jsonObject
+
+            obj["nacl_public_key_hex"]?.jsonPrimitive?.content?.let { hex ->
+                require(hex.length == 64) { "Expected 32-byte hex key" }
+                handleNaclKey(hex)
+            }
+
+            obj["b2"]?.jsonObject?.let { b2 ->
+                val keyId    = b2["key_id"]?.jsonPrimitive?.content         ?: error("Bootstrap missing b2.key_id")
+                val appKey   = b2["application_key"]?.jsonPrimitive?.content ?: error("Bootstrap missing b2.application_key")
+                val endpoint = b2["endpoint"]?.jsonPrimitive?.content
+                val bucket   = b2["bucket"]?.jsonPrimitive?.content
+                val region   = b2["region"]?.jsonPrimitive?.content
+                appPrefs.setB2Config(endpoint = endpoint, keyId = keyId, bucket = bucket, region = region)
+                creds.setB2AppKey(appKey)
+            }
+
+            obj["github"]?.jsonObject?.let { gh ->
+                val token = gh["token"]?.jsonPrimitive?.content ?: error("Bootstrap missing github.token")
+                val owner = gh["owner"]?.jsonPrimitive?.content ?: error("Bootstrap missing github.owner")
+                val repo  = gh["repo"]?.jsonPrimitive?.content  ?: error("Bootstrap missing github.repo")
+                appPrefs.setGithubRepo(owner = owner, repo = repo)
+                creds.setGithubToken(token)
+                fetchCname(token, owner, repo)
+            }
+
+            obj["s3"]?.jsonObject?.let { s3 ->
+                val endpoint  = s3["endpoint"]?.jsonPrimitive?.content   ?: error("Bootstrap missing s3.endpoint")
+                val staticUrl = s3["static_url"]?.jsonPrimitive?.content ?: error("Bootstrap missing s3.static_url")
+                val bucket    = s3["bucket"]?.jsonPrimitive?.content      ?: error("Bootstrap missing s3.bucket")
+                val keyId     = s3["key_id"]?.jsonPrimitive?.content      ?: error("Bootstrap missing s3.key_id")
+                val secretKey = s3["secret_key"]?.jsonPrimitive?.content  ?: error("Bootstrap missing s3.secret_key")
+                val region    = s3["region"]?.jsonPrimitive?.content      ?: error("Bootstrap missing s3.region")
+                appPrefs.setS3Config(endpoint, staticUrl, bucket, keyId, region)
+                creds.setS3SecretKey(secretKey)
+            }
+
+            obj["http"]?.jsonObject?.let { h ->
+                val endpoint  = h["endpoint"]?.jsonPrimitive?.content   ?: error("Bootstrap missing http.endpoint")
+                val staticUrl = h["static_url"]?.jsonPrimitive?.content ?: error("Bootstrap missing http.static_url")
+                val user      = h["user"]?.jsonPrimitive?.content       ?: error("Bootstrap missing http.user")
+                val password  = h["password"]?.jsonPrimitive?.content   ?: error("Bootstrap missing http.password")
+                appPrefs.setHttpMediaConfig(endpoint, staticUrl, user)
+                creds.setHttpMediaPassword(password)
+            }
+
+            ensurePhoneKeypair()
+        }.onSuccess {
+            _state.value = buildState()
+            snackbar.send("Bootstrap configuration imported")
+        }.onFailure { e ->
+            _state.value = buildState()
+            snackbar.send("Bootstrap import failed: ${e.message}")
+        }
+    }
+
     fun onAnyQrScanned(raw: String): Boolean {
         return runCatching {
-            val obj  = Json.parseToJsonElement(raw).jsonObject
-            val type = obj["type"]?.jsonPrimitive?.content
-            when (type) {
-                "companion_bootstrap_v1" -> { onBootstrapQrScanned(raw); true }
-                "s3_media"               -> { onS3QrScanned(raw); true }
-                "http_media"             -> { onHttpMediaQrScanned(raw); true }
-                else                     -> false
-            }
+            val type = Json.parseToJsonElement(raw).jsonObject["type"]?.jsonPrimitive?.content
+            // Bootstrap-only: it now merely stages + asks for confirmation.
+            // Cross-type credential QRs (s3_media / http_media) must go through
+            // the specific scan the user chose — auto-applying them from any
+            // scan context was silent credential injection.
+            if (type == "companion_bootstrap_v1") { onBootstrapQrScanned(raw); true } else false
         }.getOrDefault(false)
     }
 
@@ -500,9 +542,12 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun clearSecrets() {
-        creds.clearAll()
-        _state.value = buildState()
-        snackbar.send("Secrets cleared (B2 app key + GitHub token + phone key + S3 secret + HTTP password)")
+        // KeyStore clear is disk I/O — off the main thread.
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { creds.clearAll() }
+            _state.value = buildState()
+            snackbar.send("Secrets cleared (B2 app key + GitHub token + phone key + S3 secret + HTTP password)")
+        }
     }
 
     fun clearAll() {

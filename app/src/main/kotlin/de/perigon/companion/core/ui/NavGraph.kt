@@ -3,6 +3,12 @@ package de.perigon.companion.core.ui
 import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.navigation.*
 import androidx.navigation.compose.*
 import de.perigon.companion.audio.ui.recording.AudioRecordingScreen
@@ -33,25 +39,33 @@ fun NavGraph(
         NavHost(navController = navController, startDestination = startRoute) {
             composable<Route.MediaPrep> { backStackEntry ->
                 val route = backStackEntry.toRoute<Route.MediaPrep>()
-                val trackUri = navController.currentBackStackEntry
-                    ?.savedStateHandle
-                    ?.remove<String>("track_uri")
-                    ?.let { Uri.parse(it) }
-                val pickedUrisJson = navController.currentBackStackEntry
-                    ?.savedStateHandle
-                    ?.remove<String>("picked_uris")
-                val pickedUris = pickedUrisJson
-                    ?.split("\n")
-                    ?.filter { it.isNotBlank() }
-                    ?.map { Uri.parse(it) }
-                    ?: emptyList()
                 val initialUris = if (startRoute is Route.MediaPrep) incomingUris else emptyList()
-                val combined = initialUris + pickedUris + listOfNotNull(trackUri)
+
+                // Read picked/track URIs off the composition path. The previous
+                // inline savedStateHandle.remove() ran DURING composition, so a
+                // discarded composition consumed (and dropped) the picked URIs.
+                // The three sources (share intent / in-app picker / track render)
+                // are mutually exclusive, so a single combined list fed to
+                // MediaPrepScreen never double-adds.
+                var extraUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
+                var consumed  by rememberSaveable { mutableStateOf(false) }
+                LaunchedEffect(backStackEntry) {
+                    if (consumed) return@LaunchedEffect
+                    val handle = backStackEntry.savedStateHandle
+                    val trackUri = handle.remove<String>("track_uri")?.let { Uri.parse(it) }
+                    val picked = handle.remove<String>("picked_uris")
+                        ?.split("\n")
+                        ?.filter { it.isNotBlank() }
+                        ?.map { Uri.parse(it) }
+                        ?: emptyList()
+                    extraUris = picked + listOfNotNull(trackUri)
+                    consumed = true
+                }
 
                 MediaPrepScreen(
                     navController = navController,
                     postId        = route.postId,
-                    incomingUris  = combined,
+                    incomingUris  = initialUris + extraUris,
                 )
             }
             composable<Route.MediaPicker> {

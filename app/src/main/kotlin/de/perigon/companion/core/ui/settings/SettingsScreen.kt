@@ -1,5 +1,6 @@
 package de.perigon.companion.core.ui.settings
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -49,6 +50,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -103,6 +105,8 @@ fun SettingsScreen(
     SecureWindow()
 
     activeScan?.let { scanType ->
+        // Gesture back closes the scanner, not the whole Settings screen.
+        BackHandler { activeScan = null }
         AccessibilityGate {
             val prompt = when (scanType) {
                 ScanType.NACL       -> "Scan NaCl public key from setup_report.pdf"
@@ -451,6 +455,33 @@ fun SettingsScreen(
                 )
             }
         }
+    }
+
+    // Bootstrap QR is staged (not applied) until confirmed here. Verifying the
+    // key fingerprint + destinations against setup_report.pdf is the only thing
+    // preventing a malicious QR from redirecting all future backups.
+    state.pendingBootstrap?.let { p ->
+        AlertDialog(
+            onDismissRequest = vm::dismissBootstrap,
+            title = { Text("Apply bootstrap configuration?") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Verify against setup_report.pdf before accepting:")
+                    p.naclFingerprint?.let { Text("Backup key: $it", fontFamily = FontFamily.Monospace) }
+                    p.b2?.let     { Text("B2: $it") }
+                    p.github?.let { Text("GitHub: $it") }
+                    p.s3?.let     { Text("S3: $it") }
+                    p.http?.let   { Text("HTTP: $it") }
+                    Text(
+                        "Future backups will flow to this destination, encrypted to this key.",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            },
+            confirmButton = { TextButton(onClick = vm::confirmBootstrap) { Text("Apply") } },
+            dismissButton = { TextButton(onClick = vm::dismissBootstrap) { Text("Cancel") } },
+        )
     }
 
     if (showDatePicker) {

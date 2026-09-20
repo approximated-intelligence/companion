@@ -93,7 +93,15 @@ fun EmbeddedQrScanner(
 
     var decoded by remember { mutableStateOf(false) }
     val executor = remember { Executors.newSingleThreadExecutor() }
+    val mainExecutor = remember { ContextCompat.getMainExecutor(context) }
     val reader = remember { MultiFormatReader() }
+
+    // Held so onDispose can unbind. The camera is bound to the (still-RESUMED)
+    // back-stack entry's lifecycle, so without an explicit unbind it stayed on
+    // after the scanner closed, and ImageAnalysis kept posting to a shut-down
+    // executor.
+    var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    var imageAnalysis  by remember { mutableStateOf<ImageAnalysis?>(null) }
 
     Box(Modifier.fillMaxSize()) {
         AndroidView(
@@ -102,7 +110,8 @@ fun EmbeddedQrScanner(
 
                 val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
                 cameraProviderFuture.addListener({
-                    val cameraProvider = cameraProviderFuture.get()
+                    val provider = cameraProviderFuture.get()
+                    cameraProvider = provider
 
                     val preview = Preview.Builder().build().also {
                         it.surfaceProvider = previewView.surfaceProvider
@@ -121,6 +130,7 @@ fun EmbeddedQrScanner(
                         .setResolutionSelector(resolutionSelector)
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .build()
+                    imageAnalysis = analysis
 
                     analysis.setAnalyzer(executor) { imageProxy ->
                         if (decoded) {
@@ -148,17 +158,6 @@ fun EmbeddedQrScanner(
                                 }
                             }
                         }
-                        // disabled // val bytes = if (rowStride == width) {
-                        // disabled //     ByteArray(buffer.remaining()).also { buffer.get(it) }
-                        // disabled // } else {
-                        // disabled //     ByteArray(width * height).also { dest ->
-                        // disabled //         val row = ByteArray(rowStride)
-                        // disabled //         for (y in 0 until height) {
-                        // disabled //             buffer.get(row)
-                        // disabled //             row.copyInto(dest, y * width, 0, width)
-                        // disabled //         }
-                        // disabled //     }
-                        // disabled // }
 
                         val source = PlanarYUVLuminanceSource(
                             bytes, width, height, 0, 0, width, height, false,
@@ -168,7 +167,9 @@ fun EmbeddedQrScanner(
                         try {
                             val result = reader.decodeWithState(bitmap)
                             decoded = true
-                            onResult(result.text)
+                            // Hop to main: onResult drives VM/KeyStore work and
+                            // Compose state; it must not run on the analyzer thread.
+                            mainExecutor.execute { onResult(result.text) }
                         } catch (_: NotFoundException) {
                             // No QR found in this frame
                         } finally {
@@ -176,42 +177,9 @@ fun EmbeddedQrScanner(
                             imageProxy.close()
                         }
                     }
-                    // disabled // analysis.setAnalyzer(executor) { imageProxy ->
-                    // disabled //     if (decoded) {
-                    // disabled //         imageProxy.close()
-                    // disabled //         return@setAnalyzer
-                    // disabled //     }
 
-                    // disabled //     val plane = imageProxy.planes[0]
-                    // disabled //     val buffer = plane.buffer
-                    // disabled //     val bytes = ByteArray(buffer.remaining())
-                    // disabled //     buffer.get(bytes)
-
-                    // disabled //     val source = PlanarYUVLuminanceSource(
-                    // disabled //         bytes,
-                    // disabled //         imageProxy.width,
-                    // disabled //         imageProxy.height,
-                    // disabled //         0, 0,
-                    // disabled //         imageProxy.width,
-                    // disabled //         imageProxy.height,
-                    // disabled //         false,
-                    // disabled //     )
-                    // disabled //     val bitmap = BinaryBitmap(HybridBinarizer(source))
-
-                    // disabled //     try {
-                    // disabled //         val result = reader.decodeWithState(bitmap)
-                    // disabled //         decoded = true
-                    // disabled //         onResult(result.text)
-                    // disabled //     } catch (_: NotFoundException) {
-                    // disabled //         // No QR found in this frame
-                    // disabled //     } finally {
-                    // disabled //         reader.reset()
-                    // disabled //         imageProxy.close()
-                    // disabled //     }
-                    // disabled // }
-
-                    cameraProvider.unbindAll()
-                    cameraProvider.bindToLifecycle(
+                    provider.unbindAll()
+                    provider.bindToLifecycle(
                         lifecycleOwner,
                         CameraSelector.DEFAULT_BACK_CAMERA,
                         preview,
@@ -251,6 +219,8 @@ fun EmbeddedQrScanner(
 
     DisposableEffect(Unit) {
         onDispose {
+            imageAnalysis?.clearAnalyzer()
+            cameraProvider?.unbindAll()
             executor.shutdown()
         }
     }
