@@ -1,5 +1,3 @@
-// app/src/main/kotlin/de/perigon/companion/posts/ui/list/PostListViewModel.kt
-
 package de.perigon.companion.posts.ui.list
 
 import android.content.Intent
@@ -22,12 +20,16 @@ import de.perigon.companion.posts.data.PublishResult
 import de.perigon.companion.posts.domain.PostPublishState
 import de.perigon.companion.posts.domain.PostShareIntentBuilder
 import de.perigon.companion.util.network.GitHubClient
+import de.perigon.companion.util.network.NetworkFailure
+import de.perigon.companion.util.network.isTransportFailure
 import de.perigon.companion.core.ui.SnackbarChannel
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import io.ktor.client.HttpClient
 import io.ktor.client.request.head
+import io.ktor.http.HttpStatusCode
 import io.ktor.http.isSuccess
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,6 +44,13 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+
+/** A media presence probe that distinguishes "absent" from "couldn't ask". */
+private sealed interface Presence {
+    data object Present : Presence
+    data object Absent : Presence
+    data object Unknown : Presence
+}
 
 @HiltViewModel
 class PostListViewModel @Inject constructor(
@@ -118,9 +127,10 @@ class PostListViewModel @Inject constructor(
 
     fun publishPost(postId: Long) {
         viewModelScope.launch {
-            when (postRepository.publish(postId)) {
+            when (val result = postRepository.publish(postId)) {
                 PublishResult.Queued -> { /* flows update UI */ }
                 PublishResult.NeedsDcimPermission -> _needsPermission.tryEmit(postId)
+                is PublishResult.Failed -> snackbar.send("Couldn't start publishing: ${result.reason}")
             }
         }
     }
@@ -128,7 +138,15 @@ class PostListViewModel @Inject constructor(
     fun retryPublish(postId: Long) = publishPost(postId)
 
     fun unpublishPost(post: PostEntity) {
-        viewModelScope.launch { postRepository.unpublish(post) }
+        viewModelScope.launch {
+            try {
+                postRepository.unpublish(post)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                snackbar.send("Couldn't start unpublishing: ${e.message}")
+            }
+        }
     }
 
     fun deletePost(post: PostEntity) {
@@ -141,10 +159,14 @@ class PostListViewModel @Inject constructor(
      * fetchable at any URL the published markdown could reference —
      * recorded/current static base or GitHub — regardless of upload
      * mechanism. Names probed: processedHash.
+     *
+     * A verdict is only written when every probe returned a definite answer.
+     * Previously any exception collapsed to "absent", so verifying on a bad
+     * connection demoted perfectly good published posts to NEEDS_FIXING.
      */
     fun verifyPost(post: PostEntity) {
         val github = githubClient() ?: run {
-            snackbar.send("GitHub credentials not configured")
+            snackbar.send("GitHub is not configured — scan the GitHub QR in Settings")
             return
         }
         viewModelScope.launch {
@@ -160,14 +182,16 @@ class PostListViewModel @Inject constructor(
                 ).distinct()
 
                 val mediaList = postRepository.getMediaForPost(post.id)
-                val missingMedia = mediaList.count { media ->
-                    val ext = if (media.mimeType.startsWith("video")) "mp4" else "jpg"
-                    val names = listOfNotNull(media.processedHash).map { "$it.$ext" }
-                    val present = names.any { name ->
-                        bases.any { base -> headOk("$base/static/${post.slug}/$name") } ||
-                            runCatching { github.getFileSha("static/${post.slug}/$name") != null }.getOrDefault(false)
+                var missingMedia = 0
+                for (media in mediaList) {
+                    when (mediaPresence(media, post.slug, bases, github)) {
+                        Presence.Present -> {}
+                        Presence.Absent -> missingMedia++
+                        Presence.Unknown -> {
+                            snackbar.send("Verify incomplete — couldn't reach the server. Post left as-is.")
+                            return@launch
+                        }
                     }
-                    !present
                 }
 
                 val newState = when {
@@ -184,6 +208,10 @@ class PostListViewModel @Inject constructor(
                     publishedAt ?: post.publishedAt ?: System.currentTimeMillis(),
                 )
                 snackbar.send("Verified: ${newState.name.lowercase().replace('_', ' ')}")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: NetworkFailure) {
+                snackbar.send(e.userMessage)
             } catch (e: Exception) {
                 snackbar.send("Verify failed: ${e.message}")
             } finally {
@@ -192,10 +220,51 @@ class PostListViewModel @Inject constructor(
         }
     }
 
-    private suspend fun headOk(url: String): Boolean = try {
-        http.head(url).status.isSuccess()
-    } catch (_: Exception) {
-        false
+    /**
+     * Probe one media across every URL the published markdown could use.
+     * Unknown wins over Absent: if any probe was inconclusive we cannot
+     * claim the file is missing.
+     */
+    private suspend fun mediaPresence(
+        media: PostMediaEntity,
+        slug: String,
+        bases: List<String>,
+        github: GitHubClient,
+    ): Presence {
+        val hash = media.processedHash ?: return Presence.Absent // never published
+        val ext = if (media.mimeType.startsWith("video")) "mp4" else "jpg"
+        val name = "$hash.$ext"
+
+        var sawUnknown = false
+        for (base in bases) {
+            when (headPresence("$base/static/$slug/$name")) {
+                Presence.Present -> return Presence.Present
+                Presence.Unknown -> sawUnknown = true
+                Presence.Absent -> {}
+            }
+        }
+
+        try {
+            if (github.getFileSha("static/$slug/$name") != null) return Presence.Present
+        } catch (e: NetworkFailure) {
+            if (e.kind != NetworkFailure.Kind.NOT_FOUND) sawUnknown = true
+        }
+
+        return if (sawUnknown) Presence.Unknown else Presence.Absent
+    }
+
+    private suspend fun headPresence(url: String): Presence = try {
+        val status = http.head(url).status
+        when {
+            status.isSuccess() -> Presence.Present
+            status == HttpStatusCode.NotFound -> Presence.Absent
+            // 5xx, 401, 403: the file may well be there; we simply cannot tell.
+            else -> Presence.Unknown
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        if (e.isTransportFailure()) Presence.Unknown else Presence.Absent
     }
 
     fun buildShareIntent(post: PostEntity) {

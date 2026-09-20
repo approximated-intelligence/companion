@@ -1,6 +1,7 @@
 package de.perigon.companion.posts.worker
 
 import android.content.Context
+import android.util.Log
 import androidx.hilt.work.HiltWorker
 import androidx.work.*
 import de.perigon.companion.core.data.UserNotificationDao
@@ -12,11 +13,16 @@ import de.perigon.companion.posts.data.PostMediaDao
 import de.perigon.companion.util.network.GitHubClient
 import de.perigon.companion.util.network.HttpMediaBackendFactory
 import de.perigon.companion.util.network.MediaBackend
+import de.perigon.companion.util.network.NetworkFailure
 import de.perigon.companion.util.network.S3BackendFactory
 import de.perigon.companion.posts.domain.PostPublishState
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import io.ktor.client.*
+import kotlinx.coroutines.CancellationException
+import java.util.concurrent.TimeUnit
+
+private const val TAG = "UnpublishWorker"
 
 @HiltWorker
 class UnpublishWorker @AssistedInject constructor(
@@ -57,8 +63,11 @@ class UnpublishWorker @AssistedInject constructor(
                 .setConstraints(Constraints.Builder()
                     .setRequiredNetworkType(NetworkType.CONNECTED)
                     .build())
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
                 .build()
     }
+
+    private val notifier = unpublishNotifier(applicationContext)
 
     private fun githubClient(): GitHubClient? {
         val token = credentialStore.githubToken() ?: return null
@@ -87,7 +96,12 @@ class UnpublishWorker @AssistedInject constructor(
         val localDate   = inputData.getString(KEY_LOCAL_DATE) ?: return fail("Missing local date")
         val deleteLocal = inputData.getBoolean(KEY_DELETE_LOCAL, false)
 
-        val github = githubClient() ?: return fail("GitHub credentials not configured")
+        // Foreground: deleting many media keys one by one has been slow in
+        // practice, and the background cap would abort it half-done.
+        setForeground(notifier.foregroundInfo("Unpublishing…", slug))
+
+        val github = githubClient()
+            ?: return fail("GitHub is not configured — scan the GitHub QR in Settings")
 
         val post        = if (postId != -1L) postDao.getById(postId) else null
         val derivedPath = "_posts/$localDate-$slug.md"
@@ -105,6 +119,19 @@ class UnpublishWorker @AssistedInject constructor(
                 deleteWhere = { path -> path.startsWith("_posts/") && path.endsWith("-$slug.md") },
                 stalePrefix = mediaPrefix,
             )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: NetworkFailure) {
+            // Transient: the post is still published and still QUEUED; a
+            // re-run repeats the same delta commit harmlessly.
+            if (e.isTransient) {
+                Log.i(TAG, "unpublish $slug deferred: ${e.userMessage}")
+                return Result.retry()
+            }
+            if (postId != -1L) {
+                postDao.updatePublishState(postId, PostPublishState.NEEDS_FIXING)
+            }
+            return fail(e.userMessage, e.detail)
         } catch (e: Exception) {
             if (postId != -1L) {
                 postDao.updatePublishState(postId, PostPublishState.NEEDS_FIXING)
@@ -147,11 +174,16 @@ class UnpublishWorker @AssistedInject constructor(
         }
 
         val undeleted = mutableListOf<String>()
-        for (key in keys) {
+        for ((index, key) in keys.withIndex()) {
+            setForeground(notifier.foregroundInfo(
+                "Unpublishing…", "Removing media ${index + 1} of ${keys.size}",
+            ))
             val gone = try {
                 backend.deleteMedia(key)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                android.util.Log.w("UnpublishWorker", "deleteMedia $key failed: ${e.message}")
+                Log.w(TAG, "deleteMedia $key failed: ${e.message}")
                 false
             }
             if (!gone) undeleted += key
@@ -176,8 +208,8 @@ class UnpublishWorker @AssistedInject constructor(
         }
     }
 
-    private suspend fun fail(error: String): Result {
-        UserNotifications.error(notificationDao, "unpublish", "Unpublish failed: $error")
+    private suspend fun fail(error: String, detail: String? = null): Result {
+        UserNotifications.error(notificationDao, "unpublish", "Unpublish failed: $error", detail)
         return Result.failure(workDataOf(KEY_ERROR to error))
     }
 }

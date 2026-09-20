@@ -467,13 +467,15 @@ class PostViewModel @Inject constructor(
             }
             val id = _state.value.id
             if (id == 0L) return@launch
-            when (postRepository.publish(id)) {
+            when (val result = postRepository.publish(id)) {
                 PublishResult.Queued -> {
                     _state.update { it.copy(publishState = PostPublishState.QUEUED) }
                     snackbar.send("Publishing…")
                     onComplete?.invoke()
                 }
                 PublishResult.NeedsDcimPermission -> _needsPermission.tryEmit(Unit)
+                is PublishResult.Failed ->
+                    snackbar.send("Couldn't start publishing: ${result.reason}")
             }
         }
     }

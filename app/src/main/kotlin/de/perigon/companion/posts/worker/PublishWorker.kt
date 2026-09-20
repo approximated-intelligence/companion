@@ -5,6 +5,7 @@ import android.net.Uri
 import android.graphics.BitmapFactory
 import android.media.MediaDataSource
 import android.media.MediaMetadataRetriever
+import android.util.Log
 import androidx.hilt.work.HiltWorker
 import androidx.work.*
 import de.perigon.companion.core.data.UserNotificationDao
@@ -19,6 +20,7 @@ import de.perigon.companion.posts.data.PostMediaEntity
 import de.perigon.companion.posts.data.toDomain
 import de.perigon.companion.util.network.BlobAddition
 import de.perigon.companion.util.network.GitHubClient
+import de.perigon.companion.util.network.NetworkFailure
 import de.perigon.companion.util.network.TreeFile
 import de.perigon.companion.util.network.MediaBackend
 import de.perigon.companion.util.network.S3BackendFactory
@@ -35,6 +37,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import java.io.File
+
+private const val TAG = "PublishWorker"
 
 @HiltWorker
 class PublishWorker @AssistedInject constructor(
@@ -69,6 +73,9 @@ class PublishWorker @AssistedInject constructor(
         const val STAGE_COMMITTING       = "COMMITTING"
         const val STAGE_DONE             = "DONE"
 
+        /** Unique work name — one publish in flight per post. */
+        fun workName(postId: Long) = "publish_$postId"
+
         fun buildRequest(postId: Long): OneTimeWorkRequest =
             OneTimeWorkRequestBuilder<PublishWorker>()
                 .addTag(WORK_TAG)
@@ -76,8 +83,13 @@ class PublishWorker @AssistedInject constructor(
                 .setConstraints(Constraints.Builder()
                     .setRequiredNetworkType(NetworkType.CONNECTED)
                     .build())
+                // Backoff for Result.retry(): a publish that hit a dead link
+                // waits and resumes rather than stranding the post.
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, java.util.concurrent.TimeUnit.SECONDS)
                 .build()
     }
+
+    private val notifier = publishNotifier(applicationContext)
 
     private fun githubClient(): GitHubClient? {
         val token = credentialStore.githubToken() ?: return null
@@ -106,8 +118,13 @@ class PublishWorker @AssistedInject constructor(
         val postId = inputData.getLong(KEY_POST_ID, -1L)
         if (postId == -1L) return fail(postId, "Missing post ID")
 
+        // Foreground: publishing a post with video over a slow uplink runs
+        // far past WorkManager's ten-minute background cap, and being killed
+        // there is exactly what left posts stuck showing "Queued" forever.
+        setForeground(notifier.foregroundInfo("Publishing…"))
+
         val github = githubClient()
-            ?: return fail(postId, "GitHub credentials not configured")
+            ?: return fail(postId, "GitHub is not configured — scan the GitHub QR in Settings")
 
         val post = postDao.getById(postId)
             ?: return fail(postId, "Post $postId not found")
@@ -142,6 +159,10 @@ class PublishWorker @AssistedInject constructor(
         for ((index, media) in sorted.withIndex()) {
             val ext = if (media.mimeType.startsWith("video")) "mp4" else "jpg"
 
+            setForeground(notifier.foregroundInfo(
+                "Publishing ${post.title.ifBlank { "post" }}",
+                "Media ${index + 1} of ${sorted.size}",
+            ))
             emitProgress(
                 stage       = STAGE_PROCESSING_MEDIA,
                 progress    = index * 80 / sorted.size.coerceAtLeast(1),
@@ -149,6 +170,29 @@ class PublishWorker @AssistedInject constructor(
                 filesTotal  = sorted.size,
                 currentFile = "${media.contentHash.take(12)}….$ext",
             )
+
+            // Already uploaded? A retried publish must resume, not restart:
+            // re-sending megabytes already on the server is the difference
+            // between finishing and never finishing on a slow link. Only a
+            // PROVEN presence skips; an unreachable server throws instead of
+            // reporting "absent" (see MediaBackend.objectExists).
+            val existingHash = media.processedHash
+            if (existingHash != null) {
+                val key = "static/${post.slug}/$existingHash.$ext"
+                val present = try {
+                    if (backendPair != null) backendPair.first.objectExists(key)
+                    else github.fileExists(key)
+                } catch (e: NetworkFailure) {
+                    if (e.isTransient) return retryLater(postId, e)
+                    false
+                }
+                if (present) {
+                    val (w, h) = storedDimensions(media)
+                    shipped += ShippedMedia("$existingHash.$ext", media.mimeType, w, h, blobSha = null)
+                    Log.i(TAG, "skipping already-uploaded $key")
+                    continue
+                }
+            }
 
             val bytes: ByteArray
             var warning: String? = null
@@ -188,6 +232,10 @@ class PublishWorker @AssistedInject constructor(
 
             var blobSha: String? = null
             if (bytes.isNotEmpty()) {
+                setForeground(notifier.foregroundInfo(
+                    "Uploading ${index + 1} of ${sorted.size}",
+                    "${bytes.size / 1024} KB",
+                ))
                 emitProgress(
                     stage       = STAGE_UPLOADING_MEDIA,
                     progress    = index * 80 / sorted.size.coerceAtLeast(1),
@@ -206,6 +254,12 @@ class PublishWorker @AssistedInject constructor(
                         }
                     } catch (e: CancellationException) {
                         throw e
+                    } catch (e: NetworkFailure) {
+                        // Transient: stop now and let WorkManager re-run with
+                        // the network back. Everything uploaded so far is
+                        // recorded, so the re-run resumes here.
+                        if (e.isTransient) return retryLater(postId, e)
+                        uploadErrors += "$filename: ${e.userMessage}"
                     } catch (e: Exception) {
                         uploadErrors += "$filename: upload failed - ${e.message}"
                     }
@@ -214,6 +268,9 @@ class PublishWorker @AssistedInject constructor(
                         blobSha = github.createBlob(bytes)
                     } catch (e: CancellationException) {
                         throw e
+                    } catch (e: NetworkFailure) {
+                        if (e.isTransient) return retryLater(postId, e)
+                        uploadErrors += "$filename: ${e.userMessage}"
                     } catch (e: Exception) {
                         uploadErrors += "$filename: blob upload failed - ${e.message}"
                     }
@@ -246,6 +303,7 @@ class PublishWorker @AssistedInject constructor(
         val postPath   = "_posts/${post.localDate}-${post.slug}.md"
 
         // ---- Phase 3: Commit to GitHub ----
+        setForeground(notifier.foregroundInfo("Publishing…", "Committing to GitHub"))
         emitProgress(stage = STAGE_COMMITTING, progress = 85)
 
         try {
@@ -282,6 +340,12 @@ class PublishWorker @AssistedInject constructor(
             // State on the server is unknown but a re-publish is idempotent;
             // leaving QUEUED intact is correct — do not mark NEEDS_FIXING.
             throw e
+        } catch (e: NetworkFailure) {
+            // Transient at commit time: media is already uploaded, so a
+            // re-run skips straight back to here.
+            if (e.isTransient) return retryLater(postId, e)
+            postDao.updatePublishState(postId, PostPublishState.NEEDS_FIXING)
+            return fail(postId, e.userMessage, e.detail ?: "")
         } catch (e: Exception) {
             postDao.updatePublishState(postId, PostPublishState.NEEDS_FIXING)
             return fail(postId, "Git commit failed: ${e.message}")
@@ -335,6 +399,31 @@ class PublishWorker @AssistedInject constructor(
         }
 
         return Result.success()
+    }
+
+    /**
+     * Stop and let WorkManager re-run when the network is back. The post
+     * stays QUEUED — which is TRUE: work is still pending. Only a permanent
+     * failure moves it to NEEDS_FIXING.
+     */
+    private suspend fun retryLater(postId: Long, failure: NetworkFailure): Result {
+        Log.i(TAG, "publish $postId deferred: ${failure.userMessage} (${failure.detail})")
+        // Notify only once, on the first deferral, so a long outage does not
+        // fill the ledger with identical entries.
+        if (runAttemptCount == 0) {
+            UserNotifications.info(
+                notificationDao, "publish",
+                "Publishing paused: ${failure.userMessage}",
+                "Will continue automatically when the connection returns.",
+            )
+        }
+        return Result.retry()
+    }
+
+    private fun storedDimensions(media: PostMediaEntity): Pair<Int?, Int?> {
+        // Dimensions are only needed for the markdown's width/height hints;
+        // for already-uploaded media we do not re-download to measure.
+        return null to null
     }
 
     private data class ProcessedMediaResult(val bytes: ByteArray, val warning: String? = null)
@@ -406,7 +495,7 @@ class PublishWorker @AssistedInject constructor(
             tempFile.delete()
             throw e
         } catch (e: Exception) {
-            android.util.Log.e("PublishWorker", "persistToPostMedia failed", e)
+            Log.e(TAG, "persistToPostMedia failed", e)
             tempFile.delete()
             null
         }
@@ -429,14 +518,14 @@ class PublishWorker @AssistedInject constructor(
     private fun isReadable(uriStr: String): Boolean = try {
         mediaStore.openInputStream(uriStr)?.use { true } ?: false
     } catch (e: Exception) {
-        android.util.Log.w("PublishWorker", "not readable: $uriStr", e)
+        Log.w(TAG, "not readable: $uriStr", e)
         false
     }
 
     private fun tryReadUri(uriStr: String): ByteArray? = try {
         mediaStore.openInputStream(uriStr)?.use { it.readBytes() }
     } catch (e: Exception) {
-        android.util.Log.e("PublishWorker", "tryReadUri failed: $uriStr", e)
+        Log.e(TAG, "tryReadUri failed: $uriStr", e)
         null
     }
 

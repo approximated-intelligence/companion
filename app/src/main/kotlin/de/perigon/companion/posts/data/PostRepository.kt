@@ -1,9 +1,12 @@
 package de.perigon.companion.posts.data
 
 import android.net.Uri
+import android.util.Log
 import androidx.room.withTransaction
 import androidx.work.ExistingWorkPolicy
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import androidx.work.await
 import de.perigon.companion.core.db.AppDatabase
 import de.perigon.companion.media.domain.TransformIntent
 import de.perigon.companion.posts.domain.PostPublishState
@@ -13,9 +16,12 @@ import kotlinx.coroutines.CancellationException
 import javax.inject.Inject
 import javax.inject.Singleton
 
+private const val TAG = "PostRepository"
+
 sealed class PublishResult {
     object Queued : PublishResult()
     object NeedsDcimPermission : PublishResult()
+    data class Failed(val reason: String) : PublishResult()
 }
 
 /**
@@ -164,7 +170,7 @@ class PostRepository @Inject constructor(
                     localDate = post.localDate,
                     deleteLocal = true,
                 ),
-            )
+            ).await()
         }
     }
 
@@ -185,31 +191,83 @@ class PostRepository @Inject constructor(
 
     // ── Publish / Unpublish ──
 
+    /**
+     * Enqueue a publish and mark the post QUEUED — in that order, and only
+     * if the enqueue actually lands.
+     *
+     * Previously the state was written first and the returned Operation was
+     * discarded, so a failed enqueue left the post showing "Queued" with no
+     * work behind it and no way back. REPLACE (not KEEP) because a user
+     * pressing Publish again means "try again now": KEEP silently dropped
+     * the retry whenever a stale unique-work record still existed.
+     */
     suspend fun publish(postId: Long): PublishResult {
         if (!mediaFileStore.hasWritePermission()) {
             return PublishResult.NeedsDcimPermission
         }
-        postDao.updatePublishState(postId, PostPublishState.QUEUED)
-        workManager.enqueueUniqueWork(
-            "publish_$postId",
-            ExistingWorkPolicy.KEEP,
-            PublishWorker.buildRequest(postId),
-        )
-        return PublishResult.Queued
+        return try {
+            workManager.enqueueUniqueWork(
+                PublishWorker.workName(postId),
+                ExistingWorkPolicy.REPLACE,
+                PublishWorker.buildRequest(postId),
+            ).await()
+            postDao.updatePublishState(postId, PostPublishState.QUEUED)
+            PublishResult.Queued
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e(TAG, "failed to enqueue publish for $postId", e)
+            PublishResult.Failed(e.message ?: "could not schedule publishing")
+        }
     }
 
     suspend fun unpublish(post: PostEntity) {
-        postDao.updatePublishState(post.id, PostPublishState.QUEUED)
         workManager.enqueueUniqueWork(
             "unpublish_${post.id}",
-            ExistingWorkPolicy.KEEP,
+            ExistingWorkPolicy.REPLACE,
             UnpublishWorker.buildRequest(
                 postId = post.id,
                 slug = post.slug,
                 localDate = post.localDate,
                 deleteLocal = false,
             ),
-        )
+        ).await()
+        postDao.updatePublishState(post.id, PostPublishState.QUEUED)
+    }
+
+    /**
+     * Clear posts stuck at QUEUED with no work behind them.
+     *
+     * A worker killed by the system (process death, the background execution
+     * cap, a force-stop) leaves the row at QUEUED forever: nothing else ever
+     * writes that state back. The UI then shows a spinner for work that will
+     * never run — which is exactly how a publish from a previous session
+     * ends up spinning days later.
+     *
+     * Runs at app start. A post whose work is still ENQUEUED/RUNNING/BLOCKED
+     * is left alone; anything else becomes NEEDS_FIXING, which is the state
+     * that offers a Re-publish button.
+     */
+    suspend fun reconcileQueuedPosts() {
+        val queued = postDao.getQueued()
+        if (queued.isEmpty()) return
+
+        for (post in queued) {
+            val live = try {
+                workManager.getWorkInfosForUniqueWork(PublishWorker.workName(post.id))
+                    .await()
+                    .any { !it.state.isFinished }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "cannot query work state for post ${post.id}", e)
+                true // uncertain — leave the row alone rather than mislabel it
+            }
+            if (!live) {
+                Log.i(TAG, "post ${post.id} was QUEUED with no live work; marking NEEDS_FIXING")
+                postDao.updatePublishState(post.id, PostPublishState.NEEDS_FIXING)
+            }
+        }
     }
 
     // ── Originals lifecycle ──
