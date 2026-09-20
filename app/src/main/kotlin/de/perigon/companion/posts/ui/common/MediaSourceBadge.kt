@@ -51,7 +51,7 @@ fun MediaSourceBadge(
                 val (icon, tint) = when (status) {
                     MediaSourceStatus.ORIGINAL -> Icons.Default.CameraAlt to Color.White
                     MediaSourceStatus.POST_MEDIA -> Icons.Default.Inventory2 to MaterialTheme.colorScheme.primary
-                    else -> return
+                    MediaSourceStatus.GONE -> return
                 }
                 Surface(
                     color = Color.Black.copy(alpha = 0.5f),

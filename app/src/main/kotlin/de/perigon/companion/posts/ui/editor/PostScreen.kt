@@ -500,7 +500,7 @@ private fun CarouselCard(
             }
         }
 
-        IconButton(onClick = onPin, modifier = Modifier.align(Alignment.TopStart).size(36.dp)) {
+        IconButton(onClick = onPin, modifier = Modifier.align(Alignment.TopStart).size(40.dp)) {
             Icon(
                 imageVector        = if (isPinned) Icons.Default.Star else Icons.Default.StarBorder,
                 contentDescription = "Pin as lead",
@@ -509,7 +509,7 @@ private fun CarouselCard(
             )
         }
 
-        IconButton(onClick = onRemove, modifier = Modifier.align(Alignment.TopEnd).size(36.dp)) {
+        IconButton(onClick = onRemove, modifier = Modifier.align(Alignment.TopEnd).size(40.dp)) {
             Icon(Icons.Default.Close, "Remove", tint = Color.White, modifier = Modifier.size(20.dp))
         }
 

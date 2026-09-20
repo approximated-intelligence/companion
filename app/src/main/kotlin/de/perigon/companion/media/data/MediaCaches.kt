@@ -64,7 +64,7 @@ private fun PostMediaEntity.key(slug: String?) =
 class MediaResolutionCache @Inject constructor(
     private val mediaFileStore: PostMediaFileStore,
     private val appPrefs: AppPrefs,
-    @ApplicationScope private val scope: CoroutineScope,
+    @param:ApplicationScope private val scope: CoroutineScope,
 ) {
     private val _resolved = MutableStateFlow<Map<Long, ResolvedMedia>>(emptyMap())
     val resolved: StateFlow<Map<Long, ResolvedMedia>> = _resolved.asStateFlow()
@@ -171,7 +171,7 @@ private fun PostMediaEntity.previewKey() = PreviewKey(id, toTransformIntent().ha
 class TransformPreviewCache @Inject constructor(
     @param:ApplicationContext private val ctx: Context,
     private val generator: TransformPreviewGenerator,
-    @ApplicationScope private val scope: CoroutineScope,
+    @param:ApplicationScope private val scope: CoroutineScope,
 ) {
     private val lru = object : LruCache<PreviewKey, Bitmap>(PREVIEW_CACHE_BYTES) {
         override fun sizeOf(key: PreviewKey, value: Bitmap): Int = value.byteCount
