@@ -30,10 +30,10 @@ import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import javax.inject.Inject
 
+/** An editable media item: its own original, which the invariant guarantees exists. */
 data class EditRequest(
     val media: PostMediaEntity,
     val uri: Uri,
-    val isFallback: Boolean,
 )
 
 @Immutable
@@ -43,7 +43,6 @@ data class MediaPrepUiState(
     // URIs currently being imported. Guards concurrent double delivery only;
     // real dedup is by content hash against the post's rows.
     val inFlightUris: Set<Uri> = emptySet(),
-    val pendingFallbackEdit: EditRequest? = null,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -172,7 +171,7 @@ class MediaPrepViewModel @Inject constructor(
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Exception) {
-                        snackbar.send("Failed to add media: ${e.message}")
+                        snackbar.send("Couldn't add media: ${e.message}")
                     }
                 }
             } finally {
@@ -202,42 +201,23 @@ class MediaPrepViewModel @Inject constructor(
         }
     }
 
-    // ---- Edit: resolve URI and handle fallback ----
+    // ---- Edit ----
 
+    /**
+     * Editing always targets the item's own original. The former
+     * "original is missing, edit the transformed copy instead" fallback is
+     * gone: ingestion guarantees the original exists, so an unreadable one is
+     * genuinely broken state and is reported as such rather than silently
+     * degrading to a re-encode of a re-encode.
+     */
     fun requestEdit(media: PostMediaEntity) {
-        // resolveEditUri probes streams (openInputStream) — off the main thread.
         viewModelScope.launch {
-            val request = withContext(Dispatchers.IO) { resolveEditUri(media) }
-            if (request == null) {
-                snackbar.send("Media unavailable — both source and transformed files are missing")
+            val readable = withContext(Dispatchers.IO) { isUriReadable(media.sourceUri) }
+            if (!readable) {
+                snackbar.send("This media file is missing — remove it and add it again")
                 return@launch
             }
-            if (request.isFallback) {
-                _state.update { it.copy(pendingFallbackEdit = request) }
-            } else {
-                _editRequests.tryEmit(request)
-            }
-        }
-    }
-
-    fun confirmFallbackEdit() {
-        val request = _state.value.pendingFallbackEdit ?: return
-        _state.update { it.copy(pendingFallbackEdit = null) }
-        _editRequests.tryEmit(request)
-    }
-
-    fun dismissFallbackEdit() {
-        _state.update { it.copy(pendingFallbackEdit = null) }
-    }
-
-    private fun resolveEditUri(media: PostMediaEntity): EditRequest? {
-        val sourceOk = isUriReadable(media.sourceUri)
-        val mediaStoreOk = isUriReadable(media.mediaStoreUri)
-
-        return when {
-            sourceOk -> EditRequest(media, Uri.parse(media.sourceUri), isFallback = false)
-            mediaStoreOk -> EditRequest(media, Uri.parse(media.mediaStoreUri), isFallback = true)
-            else -> null
+            _editRequests.tryEmit(EditRequest(media, Uri.parse(media.sourceUri)))
         }
     }
 

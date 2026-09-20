@@ -1,7 +1,6 @@
 package de.perigon.companion.media.ui.prep
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.activity.compose.BackHandler
@@ -72,10 +71,10 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.exifinterface.media.ExifInterface
 import androidx.media3.common.MediaItem as ExoMediaItem
 import androidx.media3.common.Effect
 import androidx.media3.effect.ScaleAndRotateTransformation
@@ -85,12 +84,14 @@ import de.perigon.companion.media.domain.CropHandle
 import de.perigon.companion.media.domain.CropRect
 import de.perigon.companion.media.domain.FrameGrabber
 import de.perigon.companion.media.domain.GrabResult
+import de.perigon.companion.media.domain.ImageLoad
 import de.perigon.companion.media.domain.MediaType
 import de.perigon.companion.media.domain.OrientationTransform
 import de.perigon.companion.media.domain.PixelCrop
 import de.perigon.companion.media.domain.TransformIntent
 import de.perigon.companion.media.domain.centeredToCanvas
 import de.perigon.companion.media.domain.computeImageRect
+import de.perigon.companion.media.domain.decodeBounded
 import de.perigon.companion.media.domain.drawDimWithQuadCutout
 import de.perigon.companion.media.domain.drawOrientationArrow
 import de.perigon.companion.media.domain.drawQuadCornerHandles
@@ -104,8 +105,6 @@ import de.perigon.companion.media.domain.projectCropCorners
 import de.perigon.companion.media.domain.rotatedDimensions
 import de.perigon.companion.media.domain.toPixelCrop
 import de.perigon.companion.media.domain.toNormalized
-import de.perigon.companion.util.applyExifOrientation
-import de.perigon.companion.util.exifSwapsAxes
 import de.perigon.companion.util.media.VideoProbe
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -139,6 +138,19 @@ private val OrientationTransformSaver = listSaver<OrientationTransform, Any>(
     restore = { OrientationTransform(it[0] as Int, it[1] as Boolean) },
 )
 
+/**
+ * Non-destructive editor for ONE media item.
+ *
+ * Images are decoded through [decodeBounded], which bounds the resolution and
+ * applies EXIF itself — so everything below (display, crop geometry, the
+ * normalized crop written back) works in already-upright pixels and only ever
+ * deals with the user's own rotation.
+ *
+ * A decode that fails ends in an error state with a way out. It never leaves
+ * a spinner running: the previous version funnelled every failure into
+ * "rawBitmap stays null", which rendered as an eternal spinner with no hint
+ * of a cause.
+ */
 @Composable
 fun MediaEditScreen(
     uri: Uri,
@@ -169,8 +181,9 @@ fun MediaEditScreen(
     var durationMs by remember { mutableLongStateOf(0L) }
     var trimInitialApplied by rememberSaveable { mutableStateOf(false) }
 
-    var rawBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var exifOrientation by remember { mutableIntStateOf(ExifInterface.ORIENTATION_NORMAL) }
+    // null while the decode is in flight; Loaded/Failed once it settles.
+    var imageLoad by remember(uri) { mutableStateOf<ImageLoad?>(null) }
+    val rawBitmap = (imageLoad as? ImageLoad.Loaded)?.bitmap
 
     var frames by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
     var isPlaying by remember { mutableStateOf(false) }
@@ -260,20 +273,12 @@ fun MediaEditScreen(
         player.prepare()
     }
 
+    // Single decode path. Result is always assigned — success or failure —
+    // so the UI can never wait on a bitmap that is not coming.
     LaunchedEffect(uri, mediaType) {
-        if (mediaType == MediaType.IMAGE) {
-            withContext(Dispatchers.IO) {
-                try {
-                    val resolver = context.contentResolver
-                    val exif = resolver.openInputStream(uri)?.use { stream ->
-                        ExifInterface(stream).getAttributeInt(
-                            ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL
-                        )
-                    } ?: ExifInterface.ORIENTATION_NORMAL
-                    exifOrientation = exif
-                    rawBitmap = decodeSampledBitmap(resolver, uri, MAX_EDIT_DIMENSION_PX)
-                } catch (_: Exception) {}
-            }
+        if (mediaType != MediaType.IMAGE) return@LaunchedEffect
+        imageLoad = withContext(Dispatchers.IO) {
+            decodeBounded(context.contentResolver, uri, MAX_EDIT_DIMENSION_PX)
         }
     }
 
@@ -302,7 +307,8 @@ fun MediaEditScreen(
                         if (frame != null) extracted += frame
                     }
                     frames = extracted
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    android.util.Log.w("MediaEditScreen", "trim strip extraction failed", e)
                 } finally { retriever.release() }
             }
         }
@@ -340,16 +346,21 @@ fun MediaEditScreen(
     val trimStartMs = (trimStartFraction * durationMs).toLong()
     val trimEndMs = (trimEndFraction * durationMs).toLong()
 
+    // Nothing to apply until the media is actually usable — otherwise a
+    // failed image would silently write an identity crop over the real one.
+    val canConfirm = when (mediaType) {
+        MediaType.VIDEO -> true
+        MediaType.IMAGE -> imageLoad is ImageLoad.Loaded
+    }
+
     fun confirm() {
         val crop = pixelCrop
         val raw = rawBitmap
         val normCrop = if (crop != null && raw != null) {
-            // Normalize in the SAME space the overlay's pixel crop lives in:
-            // raw → EXIF → user coarse orientation (exactly what
-            // applyCoarseTransform builds for display). Dimensions only — no
-            // second bitmap allocation. Ignoring EXIF here normalized
-            // EXIF-rotated portrait photos against swapped axes.
-            val (unrotW, unrotH) = coarseDimensions(raw.width, raw.height, exifOrientation, orientation)
+            // The decoded bitmap is already EXIF-upright, so only the user's
+            // coarse rotation can swap the axes here. Dimensions only — no
+            // second full-bitmap rotate just to measure.
+            val (unrotW, unrotH) = coarseDimensions(raw.width, raw.height, orientation)
             val (rotW, rotH) = rotatedDimensions(unrotW, unrotH, fineRotation)
             crop.toNormalized(rotW, rotH)
         } else if (crop != null && probedVideoSize != IntSize.Zero) {
@@ -430,30 +441,39 @@ fun MediaEditScreen(
                     }
                 }
             }
-            IconButton(onClick = ::confirm) { Icon(Icons.Default.Check, "Apply", tint = Color.White) }
+            IconButton(onClick = ::confirm, enabled = canConfirm) {
+                Icon(
+                    Icons.Default.Check, "Apply",
+                    tint = if (canConfirm) Color.White else Color.White.copy(alpha = 0.3f),
+                )
+            }
         }
 
         // Media content area
         when (mediaType) {
             MediaType.IMAGE -> {
-                if (rawBitmap != null) {
-                    ImageCropOverlay(
-                        rawBitmap = rawBitmap!!,
-                        exifOrientation = exifOrientation,
+                val padding = Modifier.fillMaxSize().padding(
+                    top = 64.dp, bottom = 200.dp,
+                    start = MEDIA_PADDING_DP.dp, end = MEDIA_PADDING_DP.dp,
+                )
+                when (val load = imageLoad) {
+                    null -> Box(padding, contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = Color.White)
+                    }
+                    is ImageLoad.Failed -> MediaLoadError(
+                        message = load.message,
+                        onCancel = onCancel,
+                        modifier = padding,
+                    )
+                    is ImageLoad.Loaded -> ImageCropOverlay(
+                        bitmap = load.bitmap,
                         orientation = orientation,
                         fineRotation = fineRotation,
                         pixelCrop = pixelCrop,
                         onPixelCropChanged = { pixelCrop = it },
                         onInitPixelCrop = { w, h -> initPixelCrop(w, h) },
-                        modifier = Modifier.fillMaxSize().padding(
-                            top = 64.dp, bottom = 200.dp,
-                            start = MEDIA_PADDING_DP.dp, end = MEDIA_PADDING_DP.dp,
-                        ),
+                        modifier = padding,
                     )
-                } else {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = Color.White)
-                    }
                 }
             }
             MediaType.VIDEO -> {
@@ -523,10 +543,16 @@ fun MediaEditScreen(
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = { applyOrientation(orientation.rotate90Ccw()) }) {
+                IconButton(
+                    onClick = { applyOrientation(orientation.rotate90Ccw()) },
+                    enabled = canConfirm,
+                ) {
                     Icon(Icons.AutoMirrored.Filled.RotateLeft, "Rotate left", tint = Color.White)
                 }
-                IconButton(onClick = { applyOrientation(orientation.rotate90Cw()) }) {
+                IconButton(
+                    onClick = { applyOrientation(orientation.rotate90Cw()) },
+                    enabled = canConfirm,
+                ) {
                     Icon(Icons.AutoMirrored.Filled.RotateRight, "Rotate right", tint = Color.White)
                 }
                 if (mediaType == MediaType.VIDEO) {
@@ -547,11 +573,17 @@ fun MediaEditScreen(
                 } else {
                     IconButton(onClick = {}, enabled = false) { Spacer(Modifier) }
                 }
-                IconButton(onClick = { applyOrientation(orientation.toggleFlipHorizontal()) }) {
+                IconButton(
+                    onClick = { applyOrientation(orientation.toggleFlipHorizontal()) },
+                    enabled = canConfirm,
+                ) {
                     Icon(Icons.Default.Flip, "Flip horizontal",
                         tint = if (orientation.flipHorizontal) MaterialTheme.colorScheme.primary else Color.White)
                 }
-                IconButton(onClick = { applyOrientation(orientation.toggleFlipVertical()) }) {
+                IconButton(
+                    onClick = { applyOrientation(orientation.toggleFlipVertical()) },
+                    enabled = canConfirm,
+                ) {
                     Icon(Icons.Default.Flip, "Flip vertical", tint = Color.White,
                         modifier = Modifier.graphicsLayer { rotationZ = 90f })
                 }
@@ -570,6 +602,7 @@ fun MediaEditScreen(
                     value = fineRotation,
                     onValueChange = { fineRotation = applyFineRotation(it) },
                     valueRange = -FINE_ROTATION_RANGE..FINE_ROTATION_RANGE,
+                    enabled = canConfirm,
                     modifier = Modifier.weight(1f),
                     colors = SliderDefaults.colors(
                         thumbColor = Color.White,
@@ -579,7 +612,7 @@ fun MediaEditScreen(
                 )
                 IconButton(
                     onClick = { fineRotation = 0f }, modifier = Modifier.size(32.dp),
-                    enabled = fineRotation != 0f,
+                    enabled = canConfirm && fineRotation != 0f,
                 ) {
                     Icon(Icons.Default.Refresh, "Reset rotation",
                         tint = if (fineRotation != 0f) Color.White else Color.White.copy(alpha = 0.3f),
@@ -641,8 +674,38 @@ fun MediaEditScreen(
                 OutlinedButton(onClick = onCancel, modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
                 ) { Text("Cancel") }
-                Button(onClick = ::confirm, modifier = Modifier.weight(1f)) { Text("Apply") }
+                Button(onClick = ::confirm, enabled = canConfirm, modifier = Modifier.weight(1f)) {
+                    Text("Apply")
+                }
             }
+        }
+    }
+}
+
+// ===== Load failure =====
+
+@Composable
+private fun MediaLoadError(message: String, onCancel: () -> Unit, modifier: Modifier = Modifier) {
+    Box(modifier, contentAlignment = Alignment.Center) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                "Can't open this image",
+                style = MaterialTheme.typography.titleMedium,
+                color = Color.White,
+            )
+            Text(
+                message,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color.White.copy(alpha = 0.7f),
+                textAlign = TextAlign.Center,
+            )
+            OutlinedButton(
+                onClick = onCancel,
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+            ) { Text("Back") }
         }
     }
 }
@@ -781,7 +844,7 @@ private fun formatTimeMs(ms: Long): String {
 
 @Composable
 private fun ImageCropOverlay(
-    rawBitmap: Bitmap, exifOrientation: Int,
+    bitmap: Bitmap,
     orientation: OrientationTransform,
     fineRotation: Float,
     pixelCrop: PixelCrop?,
@@ -799,26 +862,17 @@ private fun ImageCropOverlay(
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
 
     // Computed off-main: applyCoarseTransform allocates + rotates a full
-    // bitmap. Previously this ran synchronously inside remember{} during
-    // composition -- every 90 degree tap froze the frame on a full-resolution
-    // rotate. The old bitmap stays visible (not reset to null) while the new
-    // one computes, so there is no flash-to-blank on each tap.
-    var displayBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    LaunchedEffect(rawBitmap, exifOrientation, orientation) {
-        val transformed = withContext(Dispatchers.Default) {
-            applyCoarseTransform(rawBitmap, exifOrientation, orientation)
+    // bitmap, which at full resolution froze the frame on every 90 degree tap.
+    // The previous bitmap stays visible while the new one computes, so there
+    // is no flash-to-blank.
+    var displayBitmap by remember(bitmap) { mutableStateOf(bitmap) }
+    LaunchedEffect(bitmap, orientation) {
+        displayBitmap = withContext(Dispatchers.Default) {
+            applyCoarseTransform(bitmap, orientation)
         }
-        displayBitmap = transformed
     }
 
     val bmp = displayBitmap
-    if (bmp == null) {
-        Box(modifier, contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(color = Color.White)
-        }
-        return
-    }
-
     val imageBmp = remember(bmp) { bmp.asImageBitmap() }
     val unrotW = bmp.width.toFloat()
     val unrotH = bmp.height.toFloat()
@@ -1061,63 +1115,31 @@ private fun TrimStrip(
     }
 }
 
-// ===== Bounded image decode =====
-
-/**
- * Decode-bounds-then-decode-scaled: two separate stream opens (SAF/MediaStore
- * streams are not reliably resettable) -- first pass reads only the header via
- * inJustDecodeBounds, second decodes at the smallest power-of-two inSampleSize
- * that keeps the long side within maxDimension. Editing needs enough
- * resolution to crop/rotate/preview crisply, not the original megapixels --
- * without this a modern 12-48MP photo was decoded (and rotated, per-tap) at
- * full size.
- */
-private fun decodeSampledBitmap(
-    resolver: android.content.ContentResolver,
-    uri: Uri,
-    maxDimension: Int,
-): Bitmap? {
-    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-        ?: return null
-
-    var sampleSize = 1
-    val longSide = maxOf(bounds.outWidth, bounds.outHeight)
-    while (longSide / sampleSize > maxDimension) sampleSize *= 2
-
-    val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-    return resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, decodeOptions) }
-}
-
 // ===== Coarse transform for display bitmap =====
 
-private fun applyCoarseTransform(raw: Bitmap, exifOrientation: Int, orientation: OrientationTransform): Bitmap {
-    var bmp = applyExifOrientation(raw, exifOrientation)
-    if (!orientation.isIdentity) {
-        val m = android.graphics.Matrix()
-        if (orientation.flipHorizontal) m.postScale(-1f, 1f)
-        if (orientation.rotationDegrees != 0) m.postRotate(orientation.rotationDegrees.toFloat())
-        val oriented = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
-        if (oriented !== bmp && bmp !== raw) bmp.recycle()
-        bmp = oriented
-    }
-    return bmp
+/**
+ * The user's coarse rotation/flip only. EXIF is NOT applied here: the
+ * decoder already delivered upright pixels.
+ */
+private fun applyCoarseTransform(source: Bitmap, orientation: OrientationTransform): Bitmap {
+    if (orientation.isIdentity) return source
+    val m = android.graphics.Matrix()
+    if (orientation.flipHorizontal) m.postScale(-1f, 1f)
+    if (orientation.rotationDegrees != 0) m.postRotate(orientation.rotationDegrees.toFloat())
+    return Bitmap.createBitmap(source, 0, 0, source.width, source.height, m, true)
 }
 
 /**
  * Pure twin of [applyCoarseTransform]: the dimensions it would produce,
- * without allocating a bitmap. EXIF and the user's coarse rotation can each
- * swap the axes; two swaps cancel out.
+ * without allocating. 90/270 swap the axes, 0/180 don't.
  */
 private fun coarseDimensions(
     width: Int,
     height: Int,
-    exifOrientation: Int,
     orientation: OrientationTransform,
 ): Pair<Float, Float> {
-    val normalizedUser = ((orientation.rotationDegrees % 360) + 360) % 360
-    val userSwaps = normalizedUser == 90 || normalizedUser == 270
-    return if (exifSwapsAxes(exifOrientation) xor userSwaps) {
+    val normalized = ((orientation.rotationDegrees % 360) + 360) % 360
+    return if (normalized == 90 || normalized == 270) {
         height.toFloat() to width.toFloat()
     } else {
         width.toFloat() to height.toFloat()

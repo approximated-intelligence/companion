@@ -70,30 +70,14 @@ fun MediaPrepScreen(
         ActivityResultContracts.PickMultipleVisualMedia()
     ) { uris -> if (uris.isNotEmpty()) viewModel.addItems(uris) }
 
-    // Fallback warning dialog
-    state.pendingFallbackEdit?.let { request ->
-        AlertDialog(
-            onDismissRequest = viewModel::dismissFallbackEdit,
-            title = { Text("Original file missing") },
-            text = { Text("You'll be editing the previously transformed version. Quality may be reduced.") },
-            confirmButton = {
-                TextButton(onClick = viewModel::confirmFallbackEdit) { Text("Edit anyway") }
-            },
-            dismissButton = {
-                TextButton(onClick = viewModel::dismissFallbackEdit) { Text("Cancel") }
-            },
-        )
-    }
-
     // Editor — replaces whole screen
     activeEditRequest?.let { request ->
         val item = state.items.find { it.entity.id == request.media.id }
         val mediaType = item?.type ?: if (request.media.mimeType.startsWith("video")) MediaType.VIDEO else MediaType.IMAGE
-        val intent = request.media.toTransformIntent()
         MediaEditScreen(
             uri = request.uri,
             mediaType = mediaType,
-            initialIntent = if (request.isFallback) de.perigon.companion.media.domain.TransformIntent() else intent,
+            initialIntent = request.media.toTransformIntent(),
             onConfirm = { result ->
                 viewModel.applyEditResult(request.media.id, result)
                 activeEditRequest = null
@@ -221,21 +205,33 @@ private fun MediaCell(
 ) {
     val isVideo = item.type == MediaType.VIDEO
     val hasEdits = item.hasEdits
+    val isGone = sourceStatus == MediaSourceStatus.GONE
 
     Box(
         modifier = modifier
             .aspectRatio(1f)
             .clickable(onClick = onTap),
     ) {
-        if (editPreview != null) {
-            androidx.compose.foundation.Image(
+        when {
+            editPreview != null -> androidx.compose.foundation.Image(
                 bitmap = editPreview.asImageBitmap(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
             )
-        } else {
-            AsyncImage(
+            // Broken state is shown, not hidden: the file this row points at
+            // could not be resolved at all.
+            isGone -> Box(
+                Modifier.fillMaxSize().background(MaterialTheme.colorScheme.errorContainer),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Default.BrokenImage, "Media file missing",
+                    tint = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.size(28.dp),
+                )
+            }
+            else -> AsyncImage(
                 model = displayUri,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,

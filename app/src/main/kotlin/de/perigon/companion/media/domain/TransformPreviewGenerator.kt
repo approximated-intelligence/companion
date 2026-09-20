@@ -2,9 +2,9 @@ package de.perigon.companion.media.domain
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.util.Log
 import androidx.exifinterface.media.ExifInterface
 import de.perigon.companion.posts.data.PostMediaEntity
 import de.perigon.companion.util.media.ImageTransformParams
@@ -15,8 +15,11 @@ import javax.inject.Singleton
 
 /**
  * Generates preview thumbnails for media items with transform intents.
- * Delegates to [ImageTransformer.applyPipeline] for the actual transform,
- * then scales the result down to preview size.
+ *
+ * Decoding goes through [decodeBounded], the same path the editor uses — one
+ * decoder, one set of format support, one failure mode. Because that decoder
+ * applies EXIF itself, the pipeline below is told ORIENTATION_NORMAL: the
+ * bitmap it receives is already upright.
  *
  * No state, no side effects beyond reading the source file.
  */
@@ -26,6 +29,7 @@ class TransformPreviewGenerator @Inject constructor(
 ) {
 
     companion object {
+        private const val TAG = "TransformPreview"
         private const val DEFAULT_PREVIEW_SIZE_PX = 256
     }
 
@@ -44,10 +48,16 @@ class TransformPreviewGenerator @Inject constructor(
         }
     }
 
-    /**
-     * Generate preview for an image using [ImageTransformer.applyPipeline].
-     * Subsamples on decode to avoid loading full-resolution bitmaps for previews.
-     */
+    private fun paramsOf(intent: TransformIntent) = ImageTransformParams(
+        orientationDegrees = intent.orientation.rotationDegrees,
+        flipHorizontal = intent.orientation.flipHorizontal,
+        fineRotationDegrees = intent.fineRotationDegrees,
+        cropLeft = intent.cropRect.left,
+        cropTop = intent.cropRect.top,
+        cropRight = intent.cropRect.right,
+        cropBottom = intent.cropRect.bottom,
+    )
+
     private fun generateImagePreview(
         entity: PostMediaEntity,
         intent: TransformIntent,
@@ -56,59 +66,31 @@ class TransformPreviewGenerator @Inject constructor(
         val uriStr = entity.sourceUri.ifEmpty { entity.mediaStoreUri }
         if (uriStr.isEmpty()) return null
 
-        return try {
-            val uri = Uri.parse(uriStr)
-
-            // Read EXIF
-            val exifOrientation = context.contentResolver.openInputStream(uri)?.use { stream ->
-                ExifInterface(stream).getAttributeInt(
-                    ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL
-                )
-            } ?: ExifInterface.ORIENTATION_NORMAL
-
-            // Decode subsampled
-            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            context.contentResolver.openInputStream(uri)?.use {
-                BitmapFactory.decodeStream(it, null, opts)
+        // Decode straight to roughly preview scale: the sampler picks the
+        // smallest power of two that still covers the target.
+        val load = decodeBounded(context.contentResolver, Uri.parse(uriStr), previewSizePx * 2)
+        val decoded = when (load) {
+            is ImageLoad.Failed -> {
+                Log.w(TAG, "preview decode failed for media ${entity.id}: ${load.message}")
+                return null
             }
-            val srcW = opts.outWidth
-            val srcH = opts.outHeight
-            if (srcW <= 0 || srcH <= 0) return null
+            is ImageLoad.Loaded -> load.bitmap
+        }
 
-            val maxDim = maxOf(srcW, srcH)
-            var sampleSize = 1
-            while (maxDim / sampleSize > previewSizePx * 2) sampleSize *= 2
-
-            val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-            var bmp = context.contentResolver.openInputStream(uri)?.use {
-                BitmapFactory.decodeStream(it, null, decodeOpts)
-            } ?: return null
-
-            // Apply full transform pipeline via ImageTransformer
-            val params = ImageTransformParams(
-                orientationDegrees = intent.orientation.rotationDegrees,
-                flipHorizontal = intent.orientation.flipHorizontal,
-                fineRotationDegrees = intent.fineRotationDegrees,
-                cropLeft = intent.cropRect.left,
-                cropTop = intent.cropRect.top,
-                cropRight = intent.cropRect.right,
-                cropBottom = intent.cropRect.bottom,
+        return try {
+            // ORIENTATION_NORMAL: decodeBounded already applied EXIF.
+            val transformed = ImageTransformer.applyPipeline(
+                decoded, ExifInterface.ORIENTATION_NORMAL, paramsOf(intent)
             )
-            val transformed = ImageTransformer.applyPipeline(bmp, exifOrientation, params)
-            if (transformed !== bmp) bmp.recycle()
-            bmp = transformed
-
-            // Scale to preview size
-            scaleToPreview(bmp, previewSizePx)
-        } catch (_: Exception) {
+            if (transformed !== decoded) decoded.recycle()
+            scaleToPreview(transformed, previewSizePx)
+        } catch (e: Exception) {
+            Log.w(TAG, "preview transform failed for media ${entity.id}", e)
+            decoded.recycle()
             null
         }
     }
 
-    /**
-     * Generate preview for a video: extract a frame, apply transforms via
-     * [ImageTransformer.applyPipeline], scale to preview size.
-     */
     private fun generateVideoPreview(
         entity: PostMediaEntity,
         intent: TransformIntent,
@@ -123,21 +105,16 @@ class TransformPreviewGenerator @Inject constructor(
             try {
                 retriever.setDataSource(context, uri)
                 val timeUs = if (intent.trimStartMs > 0L) intent.trimStartMs * 1000L else 0L
-                var bmp = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                    ?: return null
+                // Scaled extraction — a full-resolution frame only to shrink it
+                // to 256px is pure waste.
+                var bmp = retriever.getScaledFrameAtTime(
+                    timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                    previewSizePx * 2, previewSizePx * 2,
+                ) ?: return null
 
                 // Video frames have no EXIF — pass ORIENTATION_NORMAL
-                val params = ImageTransformParams(
-                    orientationDegrees = intent.orientation.rotationDegrees,
-                    flipHorizontal = intent.orientation.flipHorizontal,
-                    fineRotationDegrees = intent.fineRotationDegrees,
-                    cropLeft = intent.cropRect.left,
-                    cropTop = intent.cropRect.top,
-                    cropRight = intent.cropRect.right,
-                    cropBottom = intent.cropRect.bottom,
-                )
                 val transformed = ImageTransformer.applyPipeline(
-                    bmp, ExifInterface.ORIENTATION_NORMAL, params
+                    bmp, ExifInterface.ORIENTATION_NORMAL, paramsOf(intent)
                 )
                 if (transformed !== bmp) bmp.recycle()
                 bmp = transformed
@@ -146,7 +123,8 @@ class TransformPreviewGenerator @Inject constructor(
             } finally {
                 retriever.release()
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "video preview failed for media ${entity.id}", e)
             null
         }
     }

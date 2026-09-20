@@ -12,6 +12,14 @@ fun scaleToFit(bmp: Bitmap, maxPx: Int): Bitmap {
     )
 }
 
+/**
+ * Apply an EXIF orientation to already-decoded pixels.
+ *
+ * Only needed where the decoder did NOT do it — i.e. BitmapFactory paths such
+ * as the publish transform pipeline. Anything decoded through
+ * media.domain.decodeBounded (ImageDecoder) is already upright and must be
+ * passed ORIENTATION_NORMAL instead, or it gets rotated twice.
+ */
 fun applyExifOrientation(bmp: Bitmap, orientation: Int): Bitmap {
     val matrix = Matrix()
     when (orientation) {
@@ -29,17 +37,4 @@ fun applyExifOrientation(bmp: Bitmap, orientation: Int): Bitmap {
         else -> return bmp
     }
     return Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
-}
-
-/**
- * Whether [applyExifOrientation] swaps width and height for this EXIF
- * orientation — every case that contains a quarter turn. Kept next to
- * applyExifOrientation so the two can't drift apart.
- */
-fun exifSwapsAxes(orientation: Int): Boolean = when (orientation) {
-    ExifInterface.ORIENTATION_ROTATE_90,
-    ExifInterface.ORIENTATION_ROTATE_270,
-    ExifInterface.ORIENTATION_TRANSPOSE,
-    ExifInterface.ORIENTATION_TRANSVERSE -> true
-    else -> false
 }
