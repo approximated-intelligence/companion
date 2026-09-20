@@ -4,7 +4,6 @@ import android.net.Uri
 import android.util.Log
 import androidx.room.withTransaction
 import androidx.work.ExistingWorkPolicy
-import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.await
 import de.perigon.companion.core.db.AppDatabase
@@ -13,6 +12,7 @@ import de.perigon.companion.posts.domain.PostPublishState
 import de.perigon.companion.posts.worker.PublishWorker
 import de.perigon.companion.posts.worker.UnpublishWorker
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -254,8 +254,10 @@ class PostRepository @Inject constructor(
 
         for (post in queued) {
             val live = try {
-                workManager.getWorkInfosForUniqueWork(PublishWorker.workName(post.id))
-                    .await()
+                // first() on the unique-work flow: one snapshot of current
+                // state, no ListenableFuture bridging.
+                workManager.getWorkInfosForUniqueWorkFlow(PublishWorker.workName(post.id))
+                    .first()
                     .any { !it.state.isFinished }
             } catch (e: CancellationException) {
                 throw e
