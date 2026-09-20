@@ -51,8 +51,8 @@ _PAX_BLOCK = 512
 _PAX2_MAGIC = b"PX2\n"
 
 SEALBYTES = 16 + 32  # crypto_box_seal overhead
-BOX_MACBYTES = 16     # crypto_box MAC
-BOX_NONCEBYTES = 24   # crypto_box nonce
+BOX_MACBYTES = 16  # crypto_box MAC
+BOX_NONCEBYTES = 24  # crypto_box nonce
 
 _LEGACY_PART_SIZE = 8 * 1024 * 1024
 _PART_PAX_CAPACITY = _LEGACY_PART_SIZE - _PAX_BLOCK
@@ -211,7 +211,13 @@ def extract_entries(buf: bytes, is_pack_end: bool) -> tuple[list[PaxEntry], byte
 
         log.debug(
             "  entry: path=%r real_size=%d offset=%d chunk=%d padded=%d pos=%d buf=%d",
-            path, real_size, file_offset, chunk_data_len, padded_len, pos, len(buf),
+            path,
+            real_size,
+            file_offset,
+            chunk_data_len,
+            padded_len,
+            pos,
+            len(buf),
         )
 
         if not is_pack_end and len(buf) - pos < _PAX_BLOCK + padded_len:
@@ -407,7 +413,11 @@ def iter_plaintext_chunks(
 
             log.debug(
                 "  chunk: key=%r part=%d/%d is_last=%s plain_len=%d",
-                key, part_num, num_parts, part_num == num_parts, len(plain),
+                key,
+                part_num,
+                num_parts,
+                part_num == num_parts,
+                len(plain),
             )
 
             yield PlaintextChunk(
@@ -488,7 +498,8 @@ class RestoreState:
         if actual_size != self.inflight.offset:
             log.warning(
                 "Inflight temp file size mismatch: expected %d, got %d",
-                self.inflight.offset, actual_size,
+                self.inflight.offset,
+                actual_size,
             )
             return False
         return True
@@ -538,7 +549,12 @@ def restore_from_chunks(
     # Resume inflight file if valid
     if state.inflight and state.validate_inflight():
         inf = state.inflight
-        log.info("Resuming inflight file: %s (%d/%d bytes)", inf.path, inf.offset, inf.real_size)
+        log.info(
+            "Resuming inflight file: %s (%d/%d bytes)",
+            inf.path,
+            inf.offset,
+            inf.real_size,
+        )
         accum = FileAccum(
             path=inf.path,
             mtime=0,
@@ -633,7 +649,9 @@ def restore_from_chunks(
                 execute(action)
         if is_pack_end and buf:
             if buf != b"\x00" * len(buf):
-                warnings.append(f"Skipped {len(buf)} bytes of non-PAX data at end of {current_pack_key}")
+                warnings.append(
+                    f"Skipped {len(buf)} bytes of non-PAX data at end of {current_pack_key}"
+                )
             buf = b""
 
     def save_progress():
@@ -696,7 +714,9 @@ def restore_from_chunks(
             )
             log.info(
                 "Inflight: %s (%d/%d bytes) — will resume on next run",
-                accum.path, accum.offset, accum.real_size,
+                accum.path,
+                accum.offset,
+                accum.real_size,
             )
         else:
             state.inflight = None
@@ -888,16 +908,16 @@ def main() -> None:
     p.add_argument("--output", default="./restored")
     p.add_argument("--list", action="store_true")
     p.add_argument("--restore", action="store_true")
-    p.add_argument("--prefix", help="Device prefix (phone public key hex or 'packs' for legacy)")
+    p.add_argument(
+        "--prefix", help="Device prefix (phone public key hex or 'packs' for legacy)"
+    )
     p.add_argument("--no-cache", action="store_true", help="Disable download cache")
     p.add_argument("--offline", action="store_true", help="Only use cached packs")
     p.add_argument("--fresh", action="store_true", help="Ignore saved restore state")
     p.add_argument(
         "--dump-pax", metavar="DIR", help="Write decrypted plaintext per pack"
     )
-    p.add_argument(
-        "-v", "--verbose", action="store_true", help="Enable debug logging"
-    )
+    p.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
     args = p.parse_args()
 
     logging.basicConfig(
@@ -973,8 +993,12 @@ def main() -> None:
         if state.completed_packs:
             log.info("Resuming: %d packs already completed", len(state.completed_packs))
         if state.inflight:
-            log.info("Inflight file: %s (%d/%d bytes)",
-                     state.inflight.path, state.inflight.offset, state.inflight.real_size)
+            log.info(
+                "Inflight file: %s (%d/%d bytes)",
+                state.inflight.path,
+                state.inflight.offset,
+                state.inflight.real_size,
+            )
 
     print("Listing pack versions\u2026")
     versions_by_key = b2_list_pack_versions(s3, bucket, prefix)
@@ -1005,7 +1029,9 @@ def main() -> None:
         args.offline,
         skip_packs=skip_packs,
     )
-    file_count, warnings = restore_from_chunks(chunks, output, dump_pax, state, state_path)
+    file_count, warnings = restore_from_chunks(
+        chunks, output, dump_pax, state, state_path
+    )
 
     print(f"\n\u2713 {file_count} files restored to {output} (sha256 verified)")
     if warnings:
