@@ -57,6 +57,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -120,11 +122,21 @@ private const val CORNER_DOT_RADIUS_DP = 6f
 private const val TRIM_HANDLE_WIDTH_DP = 14f
 private const val TRIM_HIT_SLOP_DP = 30f
 private const val FRAME_COUNT = 12
+private const val MAX_EDIT_DIMENSION_PX = 2048
+private const val TRIM_FRAME_TARGET_W = 320
+private const val TRIM_FRAME_TARGET_H = 180
 private const val FINE_ROTATION_RANGE = 15f
 private const val FINE_ROTATION_SNAP_ZONE = 0.5f
 private const val MEDIA_PADDING_DP = 24f
 
 private enum class VideoEditMode { TRIM, FRAME_GRAB }
+
+// OrientationTransform is a plain data class (Int + Boolean), not Parcelable --
+// this is the cheapest way to make it Saveable without adding kotlinx-parcelize.
+private val OrientationTransformSaver = listSaver<OrientationTransform, Any>(
+    save = { listOf(it.rotationDegrees, it.flipHorizontal) },
+    restore = { OrientationTransform(it[0] as Int, it[1] as Boolean) },
+)
 
 @Composable
 fun MediaEditScreen(
@@ -141,12 +153,20 @@ fun MediaEditScreen(
     val context = LocalContext.current
     val grabScope = rememberCoroutineScope()
 
-    var orientation by remember { mutableStateOf(initialIntent.orientation) }
-    var fineRotation by remember { mutableFloatStateOf(initialIntent.fineRotationDegrees) }
-    var trimStartFraction by remember { mutableFloatStateOf(0f) }
-    var trimEndFraction by remember { mutableFloatStateOf(1f) }
+    // Saveable: process death mid-edit (the camera app killing this one is
+    // routine) previously reset orientation/rotation/trim back to whatever the
+    // post already had, discarding in-progress adjustments. trimInitialApplied
+    // MUST travel with the trim fractions -- restoring the fractions but not
+    // this flag lets the seed-from-initialIntent effect below fire again on
+    // restart and clobber the values just restored.
+    var orientation by rememberSaveable(stateSaver = OrientationTransformSaver) {
+        mutableStateOf(initialIntent.orientation)
+    }
+    var fineRotation by rememberSaveable { mutableFloatStateOf(initialIntent.fineRotationDegrees) }
+    var trimStartFraction by rememberSaveable { mutableFloatStateOf(0f) }
+    var trimEndFraction by rememberSaveable { mutableFloatStateOf(1f) }
     var durationMs by remember { mutableLongStateOf(0L) }
-    var trimInitialApplied by remember { mutableStateOf(false) }
+    var trimInitialApplied by rememberSaveable { mutableStateOf(false) }
 
     var rawBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var exifOrientation by remember { mutableIntStateOf(ExifInterface.ORIENTATION_NORMAL) }
@@ -250,7 +270,7 @@ fun MediaEditScreen(
                         )
                     } ?: ExifInterface.ORIENTATION_NORMAL
                     exifOrientation = exif
-                    rawBitmap = resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it) }
+                    rawBitmap = decodeSampledBitmap(resolver, uri, MAX_EDIT_DIMENSION_PX)
                 } catch (_: Exception) {}
             }
         }
@@ -269,7 +289,15 @@ fun MediaEditScreen(
                     val extracted = mutableListOf<Bitmap>()
                     for (i in 0 until FRAME_COUNT) {
                         val timeUs = (dur * 1000L * i) / FRAME_COUNT
-                        val frame = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                        // Scaled extraction: the strip renders at 48.dp tall, so there
+                        // is no reason to decode/retain each frame at the source video's
+                        // native resolution (12 unscaled frames from a 4K source was
+                        // ~30MB EACH). getScaledFrameAtTime fits within the box,
+                        // preserving aspect ratio, at extraction time -- not after.
+                        val frame = retriever.getScaledFrameAtTime(
+                            timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                            TRIM_FRAME_TARGET_W, TRIM_FRAME_TARGET_H,
+                        )
                         if (frame != null) extracted += frame
                     }
                     frames = extracted
@@ -314,8 +342,17 @@ fun MediaEditScreen(
     fun confirm() {
         val crop = pixelCrop
         val normCrop = if (crop != null && rawBitmap != null) {
-            val bmp = applyCoarseTransform(rawBitmap!!, exifOrientation, orientation)
-            val (rotW, rotH) = rotatedDimensions(bmp.width.toFloat(), bmp.height.toFloat(), fineRotation)
+            // Dimensions only -- no need to allocate/rotate the actual bitmap a
+            // second time (ImageCropOverlay already did that once for preview).
+            // A coarse rotation is 0/90/180/270: 90/270 swap width and height,
+            // 0/180 don't -- pure arithmetic, not a pixel operation.
+            val raw = rawBitmap!!
+            val coarse = ((orientation.rotationDegrees % 360) + 360) % 360
+            val (unrotW, unrotH) = if (coarse == 90 || coarse == 270)
+                raw.height.toFloat() to raw.width.toFloat()
+            else
+                raw.width.toFloat() to raw.height.toFloat()
+            val (rotW, rotH) = rotatedDimensions(unrotW, unrotH, fineRotation)
             crop.toNormalized(rotW, rotH)
         } else if (crop != null && probedVideoSize != IntSize.Zero) {
             val (uw, uh) = effectiveVideoDimensions()
@@ -763,12 +800,30 @@ private fun ImageCropOverlay(
 
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
 
-    val displayBitmap = remember(rawBitmap, exifOrientation, orientation) {
-        applyCoarseTransform(rawBitmap, exifOrientation, orientation)
+    // Computed off-main: applyCoarseTransform allocates + rotates a full
+    // bitmap. Previously this ran synchronously inside remember{} during
+    // composition -- every 90 degree tap froze the frame on a full-resolution
+    // rotate. The old bitmap stays visible (not reset to null) while the new
+    // one computes, so there is no flash-to-blank on each tap.
+    var displayBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(rawBitmap, exifOrientation, orientation) {
+        val transformed = withContext(Dispatchers.Default) {
+            applyCoarseTransform(rawBitmap, exifOrientation, orientation)
+        }
+        displayBitmap = transformed
     }
-    val imageBmp = remember(displayBitmap) { displayBitmap.asImageBitmap() }
-    val unrotW = displayBitmap.width.toFloat()
-    val unrotH = displayBitmap.height.toFloat()
+
+    val bmp = displayBitmap
+    if (bmp == null) {
+        Box(modifier, contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(color = Color.White)
+        }
+        return
+    }
+
+    val imageBmp = remember(bmp) { bmp.asImageBitmap() }
+    val unrotW = bmp.width.toFloat()
+    val unrotH = bmp.height.toFloat()
     val (rotW, rotH) = remember(unrotW, unrotH, fineRotation) {
         rotatedDimensions(unrotW, unrotH, fineRotation)
     }
@@ -777,8 +832,8 @@ private fun ImageCropOverlay(
         if (pixelCrop == null) onInitPixelCrop(unrotW, unrotH)
     }
 
-    val imageRect = remember(canvasSize, displayBitmap.width, displayBitmap.height) {
-        computeImageRect(displayBitmap.width, displayBitmap.height, canvasSize)
+    val imageRect = remember(canvasSize, bmp.width, bmp.height) {
+        computeImageRect(bmp.width, bmp.height, canvasSize)
     }
 
     val crop = pixelCrop ?: fullFramePixelCrop(rotW, rotH)
@@ -826,7 +881,7 @@ private fun ImageCropOverlay(
 
             drawImage(
                 image = imageBmp,
-                srcSize = androidx.compose.ui.unit.IntSize(displayBitmap.width, displayBitmap.height),
+                srcSize = androidx.compose.ui.unit.IntSize(bmp.width, bmp.height),
                 dstOffset = androidx.compose.ui.unit.IntOffset(
                     imageRect.left.roundToInt(), imageRect.top.roundToInt()),
                 dstSize = androidx.compose.ui.unit.IntSize(
@@ -1006,6 +1061,34 @@ private fun TrimStrip(
             }
         }
     }
+}
+
+// ===== Bounded image decode =====
+
+/**
+ * Decode-bounds-then-decode-scaled: two separate stream opens (SAF/MediaStore
+ * streams are not reliably resettable) -- first pass reads only the header via
+ * inJustDecodeBounds, second decodes at the smallest power-of-two inSampleSize
+ * that keeps the long side within maxDimension. Editing needs enough
+ * resolution to crop/rotate/preview crisply, not the original megapixels --
+ * without this a modern 12-48MP photo was decoded (and rotated, per-tap) at
+ * full size.
+ */
+private fun decodeSampledBitmap(
+    resolver: android.content.ContentResolver,
+    uri: Uri,
+    maxDimension: Int,
+): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        ?: return null
+
+    var sampleSize = 1
+    val longSide = maxOf(bounds.outWidth, bounds.outHeight)
+    while (longSide / sampleSize > maxDimension) sampleSize *= 2
+
+    val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+    return resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, decodeOptions) }
 }
 
 // ===== Coarse transform for display bitmap =====

@@ -128,8 +128,36 @@ fun ConsolidateScreen(
                 writeAccess = true,
             ) {
                 when (state.viewMode) {
-                    ViewMode.LIST -> ListContent(PaddingValues(), state, vm)
-                    ViewMode.GRID -> GridContent(PaddingValues(), state, vm)
+                    ViewMode.LIST -> ListContent(
+                        padding              = PaddingValues(),
+                        state                = state,
+                        onStartConsolidate   = vm::startConsolidate,
+                        onStartBackup        = vm::startBackup,
+                        onStartBoth          = vm::startConsolidateAndBackup,
+                        onSetViewMode        = vm::setViewMode,
+                        onSetSortField       = vm::setSortField,
+                        onEnterSelectionMode = vm::enterSelectionMode,
+                        onToggleSelected     = vm::toggleSelected,
+                        onShowPreview        = vm::showPreview,
+                        onProtect            = vm::protect,
+                        onRequestUnprotect   = vm::requestUnprotect,
+                        onBackfillExisting   = vm::backfillExisting,
+                    )
+                    ViewMode.GRID -> GridContent(
+                        padding              = PaddingValues(),
+                        state                = state,
+                        onStartConsolidate   = vm::startConsolidate,
+                        onStartBackup        = vm::startBackup,
+                        onStartBoth          = vm::startConsolidateAndBackup,
+                        onSetViewMode        = vm::setViewMode,
+                        onSetSortField       = vm::setSortField,
+                        onEnterSelectionMode = vm::enterSelectionMode,
+                        onToggleSelected     = vm::toggleSelected,
+                        onShowPreview        = vm::showPreview,
+                        onProtect            = vm::protect,
+                        onRequestUnprotect   = vm::requestUnprotect,
+                        onBackfillExisting   = vm::backfillExisting,
+                    )
                 }
             }
         }
@@ -167,7 +195,17 @@ private fun SelectionTopBar(
 private fun ListContent(
     padding: PaddingValues,
     state: ConsolidateUiState,
-    vm: ConsolidateViewModel,
+    onStartConsolidate: () -> Unit,
+    onStartBackup: () -> Unit,
+    onStartBoth: () -> Unit,
+    onSetViewMode: (ViewMode) -> Unit,
+    onSetSortField: (SortField) -> Unit,
+    onEnterSelectionMode: (Long) -> Unit,
+    onToggleSelected: (Long) -> Unit,
+    onShowPreview: (String) -> Unit,
+    onProtect: (Long) -> Unit,
+    onRequestUnprotect: (Long) -> Unit,
+    onBackfillExisting: () -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier
@@ -188,11 +226,11 @@ private fun ListContent(
         }
 
         item { StatusCard(state) }
-        item { ActionButtons(state, vm) }
+        item { ActionButtons(state, onStartConsolidate, onStartBackup, onStartBoth) }
 
         if (state.sortedSafeToDelete.isNotEmpty()) {
             item { HorizontalDivider() }
-            item { FileListHeader(state, vm) }
+            item { FileListHeader(state, onSetViewMode, onSetSortField) }
 
             items(state.sortedSafeToDelete, key = { it.id }) { file ->
                 SafeToDeleteListRow(
@@ -200,18 +238,18 @@ private fun ListContent(
                     isProtected = file.isProtected,
                     isSelected = file.id in state.selectedIds,
                     selectionMode = state.selectionMode,
-                    onLongPress = { if (!file.isProtected) vm.enterSelectionMode(file.id) },
+                    onLongPress = { if (!file.isProtected) onEnterSelectionMode(file.id) },
                     onTap = {
-                        if (state.selectionMode && !file.isProtected) vm.toggleSelected(file.id)
-                        else vm.showPreview(file.uri)
+                        if (state.selectionMode && !file.isProtected) onToggleSelected(file.id)
+                        else onShowPreview(file.uri)
                     },
-                    onProtect = { vm.protect(file.id) },
-                    onUnprotect = { vm.requestUnprotect(file.id) },
+                    onProtect = { onProtect(file.id) },
+                    onUnprotect = { onRequestUnprotect(file.id) },
                 )
             }
         }
 
-        item { BackfillButton(state, vm) }
+        item { BackfillButton(state, onBackfillExisting) }
     }
 }
 
@@ -219,7 +257,17 @@ private fun ListContent(
 private fun GridContent(
     padding: PaddingValues,
     state: ConsolidateUiState,
-    vm: ConsolidateViewModel,
+    onStartConsolidate: () -> Unit,
+    onStartBackup: () -> Unit,
+    onStartBoth: () -> Unit,
+    onSetViewMode: (ViewMode) -> Unit,
+    onSetSortField: (SortField) -> Unit,
+    onEnterSelectionMode: (Long) -> Unit,
+    onToggleSelected: (Long) -> Unit,
+    onShowPreview: (String) -> Unit,
+    onProtect: (Long) -> Unit,
+    onRequestUnprotect: (Long) -> Unit,
+    onBackfillExisting: () -> Unit,
 ) {
     // Single LazyVerticalGrid as the root — the previous LazyVerticalGrid
     // nested in a LazyColumn behind heightIn(max = 10000.dp) forced every cell
@@ -248,11 +296,11 @@ private fun GridContent(
         }
 
         item(span = fullSpan) { StatusCard(state) }
-        item(span = fullSpan) { ActionButtons(state, vm) }
+        item(span = fullSpan) { ActionButtons(state, onStartConsolidate, onStartBackup, onStartBoth) }
 
         if (state.sortedSafeToDelete.isNotEmpty()) {
             item(span = fullSpan) { HorizontalDivider() }
-            item(span = fullSpan) { FileListHeader(state, vm) }
+            item(span = fullSpan) { FileListHeader(state, onSetViewMode, onSetSortField) }
 
             items(state.sortedSafeToDelete, key = { it.id }) { file ->
                 SafeToDeleteGridCell(
@@ -260,18 +308,18 @@ private fun GridContent(
                     isProtected = file.isProtected,
                     isSelected = file.id in state.selectedIds,
                     selectionMode = state.selectionMode,
-                    onLongPress = { if (!file.isProtected) vm.enterSelectionMode(file.id) },
+                    onLongPress = { if (!file.isProtected) onEnterSelectionMode(file.id) },
                     onTap = {
-                        if (state.selectionMode && !file.isProtected) vm.toggleSelected(file.id)
-                        else vm.showPreview(file.uri)
+                        if (state.selectionMode && !file.isProtected) onToggleSelected(file.id)
+                        else onShowPreview(file.uri)
                     },
-                    onProtect = { vm.protect(file.id) },
-                    onUnprotect = { vm.requestUnprotect(file.id) },
+                    onProtect = { onProtect(file.id) },
+                    onUnprotect = { onRequestUnprotect(file.id) },
                 )
             }
         }
 
-        item(span = fullSpan) { BackfillButton(state, vm) }
+        item(span = fullSpan) { BackfillButton(state, onBackfillExisting) }
     }
 }
 
@@ -352,49 +400,58 @@ private fun StatusCard(state: ConsolidateUiState) {
 }
 
 @Composable
-private fun ActionButtons(state: ConsolidateUiState, vm: ConsolidateViewModel) {
+private fun ActionButtons(
+    state: ConsolidateUiState,
+    onStartConsolidate: () -> Unit,
+    onStartBackup: () -> Unit,
+    onStartBoth: () -> Unit,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilledTonalButton(onClick = vm::startConsolidate, enabled = !state.consolidateRunning, modifier = Modifier.weight(1f)) {
+            FilledTonalButton(onClick = onStartConsolidate, enabled = !state.consolidateRunning, modifier = Modifier.weight(1f)) {
                 Icon(Icons.Default.Compress, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Consolidate")
             }
-            FilledTonalButton(onClick = vm::startBackup, enabled = !state.backupRunning, modifier = Modifier.weight(1f)) {
+            FilledTonalButton(onClick = onStartBackup, enabled = !state.backupRunning, modifier = Modifier.weight(1f)) {
                 Icon(Icons.Default.CloudUpload, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Back up")
             }
         }
-        Button(onClick = vm::startConsolidateAndBackup, enabled = !state.consolidateRunning && !state.backupRunning, modifier = Modifier.fillMaxWidth()) {
+        Button(onClick = onStartBoth, enabled = !state.consolidateRunning && !state.backupRunning, modifier = Modifier.fillMaxWidth()) {
             Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Consolidate + Back up")
         }
     }
 }
 
 @Composable
-private fun FileListHeader(state: ConsolidateUiState, vm: ConsolidateViewModel) {
+private fun FileListHeader(
+    state: ConsolidateUiState,
+    onSetViewMode: (ViewMode) -> Unit,
+    onSetSortField: (SortField) -> Unit,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Text("${state.safeToDelete.size} safe to delete", style = MaterialTheme.typography.titleSmall)
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                IconButton(onClick = { vm.setViewMode(ViewMode.LIST) }) {
+                IconButton(onClick = { onSetViewMode(ViewMode.LIST) }) {
                     Icon(Icons.AutoMirrored.Filled.ViewList, "List view", tint = if (state.viewMode == ViewMode.LIST) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                IconButton(onClick = { vm.setViewMode(ViewMode.GRID) }) {
+                IconButton(onClick = { onSetViewMode(ViewMode.GRID) }) {
                     Icon(Icons.Default.GridView, "Grid view", tint = if (state.viewMode == ViewMode.GRID) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            SortChip("Name", SortField.NAME, state, vm)
-            SortChip("Date", SortField.MODIFIED, state, vm)
-            SortChip("Size", SortField.SIZE, state, vm)
-            SortChip("Type", SortField.TYPE, state, vm)
+            SortChip("Name", SortField.NAME, state, onSetSortField)
+            SortChip("Date", SortField.MODIFIED, state, onSetSortField)
+            SortChip("Size", SortField.SIZE, state, onSetSortField)
+            SortChip("Type", SortField.TYPE, state, onSetSortField)
         }
     }
 }
 
 @Composable
-private fun SortChip(label: String, field: SortField, state: ConsolidateUiState, vm: ConsolidateViewModel) {
+private fun SortChip(label: String, field: SortField, state: ConsolidateUiState, onSetSortField: (SortField) -> Unit) {
     val isActive = state.sortField == field
-    FilterChip(selected = isActive, onClick = { vm.setSortField(field) }, label = {
+    FilterChip(selected = isActive, onClick = { onSetSortField(field) }, label = {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(label)
             if (isActive) { Icon(if (state.sortDirection == SortDirection.ASC) Icons.Default.ArrowUpward else Icons.Default.ArrowDownward, null, modifier = Modifier.size(14.dp)) }
@@ -441,9 +498,9 @@ private fun SafeToDeleteGridCell(file: SafeToDeleteView, isProtected: Boolean, i
 }
 
 @Composable
-private fun BackfillButton(state: ConsolidateUiState, vm: ConsolidateViewModel) {
+private fun BackfillButton(state: ConsolidateUiState, onBackfillExisting: () -> Unit) {
     Spacer(Modifier.height(8.dp))
-    OutlinedButton(onClick = vm::backfillExisting, enabled = !state.backfillRunning, modifier = Modifier.fillMaxWidth()) {
+    OutlinedButton(onClick = onBackfillExisting, enabled = !state.backfillRunning, modifier = Modifier.fillMaxWidth()) {
         if (state.backfillRunning) {
             CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("Scanning…")
         } else {

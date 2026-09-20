@@ -283,8 +283,8 @@ private fun MediaCell(
             }
         }
 
-        IconButton(onClick = onRemove, modifier = Modifier.align(Alignment.TopEnd).size(32.dp)) {
-            Icon(Icons.Default.Close, null, tint = Color.White, modifier = Modifier.size(18.dp))
+        IconButton(onClick = onRemove, modifier = Modifier.align(Alignment.TopEnd).size(40.dp)) {
+            Icon(Icons.Default.Close, "Remove", tint = Color.White, modifier = Modifier.size(18.dp))
         }
 
         dragHandle(

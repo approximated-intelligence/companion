@@ -105,7 +105,7 @@ class ConsolidateViewModel @Inject constructor(
     private val notificationDao: UserNotificationDao,
     private val appPrefs: AppPrefs,
     private val hasher: FileHasher,
-    @ApplicationScope private val appScope: CoroutineScope,
+    @param:ApplicationScope private val appScope: CoroutineScope,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ConsolidateUiState(dcimUri = appPrefs.dcimTreeUri()))
