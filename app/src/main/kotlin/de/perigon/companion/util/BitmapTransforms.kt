@@ -30,3 +30,16 @@ fun applyExifOrientation(bmp: Bitmap, orientation: Int): Bitmap {
     }
     return Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
 }
+
+/**
+ * Whether [applyExifOrientation] swaps width and height for this EXIF
+ * orientation — every case that contains a quarter turn. Kept next to
+ * applyExifOrientation so the two can't drift apart.
+ */
+fun exifSwapsAxes(orientation: Int): Boolean = when (orientation) {
+    ExifInterface.ORIENTATION_ROTATE_90,
+    ExifInterface.ORIENTATION_ROTATE_270,
+    ExifInterface.ORIENTATION_TRANSPOSE,
+    ExifInterface.ORIENTATION_TRANSVERSE -> true
+    else -> false
+}

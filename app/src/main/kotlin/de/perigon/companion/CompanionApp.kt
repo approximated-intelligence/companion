@@ -6,7 +6,7 @@ import android.content.Intent
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.*
 import de.perigon.companion.backup.data.BackupSchedulePrefs
-import de.perigon.companion.backup.worker.BackupTriggerWorker
+import de.perigon.companion.backup.worker.syncBackupSchedule
 import de.perigon.companion.core.di.ApplicationScope
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.ui.NotificationChannels
@@ -17,7 +17,6 @@ import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import java.io.File
-import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
 @HiltAndroidApp
@@ -49,31 +48,16 @@ class CompanionApp : Application(), Configuration.Provider {
         val wm = WorkManager.getInstance(this)
 
         // Evict the pre-funnel periodic that shared the execution slot
-        // "backup". Now that execution lives under BackupWorker.WORK_NAME
-        // ("backup_run") and the schedule under SCHEDULE_NAME, nothing else
-        // uses "backup" — so this is a one-time cleanup and a harmless no-op
-        // forever after.
+        // "backup". Execution now lives under BackupWorker.WORK_NAME
+        // ("backup_run") and the schedule under SCHEDULE_NAME; nothing else
+        // uses "backup", so this is a harmless no-op after the first run.
         wm.cancelUniqueWork("backup")
 
-        if (!schedulePrefs.autoEnabled()) {
-            wm.cancelUniqueWork(BackupTriggerWorker.SCHEDULE_NAME)
-            return
-        }
-
-        val req = PeriodicWorkRequestBuilder<BackupTriggerWorker>(
-            schedulePrefs.intervalHours().toLong(), TimeUnit.HOURS
-        )
-            .setConstraints(
-                Constraints.Builder()
-                    .setRequiredNetworkType(NetworkType.UNMETERED)
-                    .build()
-            )
-            .build()
-
-        wm.enqueueUniquePeriodicWork(
-            BackupTriggerWorker.SCHEDULE_NAME,
-            ExistingPeriodicWorkPolicy.KEEP,
-            req,
+        // KEEP: re-registering on every launch must not reset the timer.
+        wm.syncBackupSchedule(
+            enabled       = schedulePrefs.autoEnabled(),
+            intervalHours = schedulePrefs.intervalHours(),
+            policy        = ExistingPeriodicWorkPolicy.KEEP,
         )
     }
 

@@ -29,6 +29,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import javax.inject.Inject
+import kotlin.coroutines.cancellation.CancellationException
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -74,15 +75,26 @@ class SettingsViewModel @Inject constructor(
         val pendingBootstrap:      PendingBootstrap? = null,
     )
 
-    /** Parsed-but-unapplied bootstrap payload awaiting user confirmation. */
-    data class PendingBootstrap(
-        val raw:             String,
-        val naclFingerprint: String?,
-        val b2:              String?,   // "endpoint / bucket"
-        val github:          String?,   // "owner/repo"
-        val s3:              String?,   // endpoint
-        val http:            String?,   // endpoint
-    )
+    /**
+     * Parsed, validated, NOT yet applied bootstrap awaiting user confirmation.
+     * The display fields derive from the exact payload that will be applied —
+     * what the user verifies is what gets written.
+     */
+    data class PendingBootstrap(val bootstrap: Bootstrap) {
+        val naclFingerprint: String? get() = bootstrap.naclPkHex?.fingerprint()
+        val b2:     String? get() = bootstrap.b2?.let { "${it.endpoint ?: "?"} / ${it.bucket ?: "?"}" }
+        val github: String? get() = bootstrap.github?.let { "${it.owner}/${it.repo}" }
+        val s3:     String? get() = bootstrap.s3?.endpoint
+        val http:   String? get() = bootstrap.http?.endpoint
+    }
+
+    /** Outcome of offering a NaCl backup key. Side effects done; messaging is the caller's. */
+    private sealed interface NaclKeyResult {
+        data object Accepted : NaclKeyResult
+        data object Unchanged : NaclKeyResult
+        data object Changed : NaclKeyResult
+        data class Refused(val reason: String) : NaclKeyResult
+    }
 
     private val _state = MutableStateFlow(buildState())
     val state: StateFlow<SettingsState> = _state
@@ -276,7 +288,11 @@ class SettingsViewModel @Inject constructor(
             require(type == "nacl_backup_pubkey") { "Expected nacl_backup_pubkey QR, got: $type" }
             val hex = obj["hex"]?.jsonPrimitive?.content ?: error("QR missing 'hex' field")
             require(hex.length == 64) { "Expected 32-byte hex key" }
-            viewModelScope.launch { handleNaclKey(hex) }
+            viewModelScope.launch {
+                val result = handleNaclKey(hex)
+                _state.value = buildState()
+                snackbar.send(result.message(hex))
+            }
         }.getOrElse { e ->
             _state.value = buildState()
             snackbar.send("NaCl QR not recognised: ${e.message}")
@@ -368,91 +384,69 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Parse + validate fully, then stage — do NOT apply. One scan could
+     * otherwise silently redirect all future backups to attacker storage,
+     * encrypted to an attacker key: handleNaclKey's bucket-empty check runs
+     * against the CURRENT bucket, which a malicious QR can't vouch for. The
+     * human verifying fingerprint + endpoints (confirmBootstrap) is the check.
+     * A malformed payload is rejected here, before the dialog.
+     */
     fun onBootstrapQrScanned(raw: String) {
-        runCatching {
-            val obj  = Json.parseToJsonElement(raw).jsonObject
-            val type = obj["type"]?.jsonPrimitive?.content
-            require(type == "companion_bootstrap_v1") { "Expected bootstrap QR, got: $type" }
-            // Stage only — do NOT apply. One scan could otherwise silently
-            // redirect all future backups to attacker storage, encrypted to an
-            // attacker key: handleNaclKey's bucket-empty safety check runs
-            // against the bucket the QR itself names, so it cannot protect
-            // against this. The human verifying fingerprint + endpoints is the
-            // actual check (see confirmBootstrap).
-            _state.update { it.copy(pendingBootstrap = PendingBootstrap(
-                raw             = raw,
-                naclFingerprint = obj["nacl_public_key_hex"]?.jsonPrimitive?.content?.fingerprint(),
-                b2     = obj["b2"]?.jsonObject?.let { b -> "${b["endpoint"]?.jsonPrimitive?.content ?: "?"} / ${b["bucket"]?.jsonPrimitive?.content ?: "?"}" },
-                github = obj["github"]?.jsonObject?.let { g -> "${g["owner"]?.jsonPrimitive?.content}/${g["repo"]?.jsonPrimitive?.content}" },
-                s3     = obj["s3"]?.jsonObject?.get("endpoint")?.jsonPrimitive?.content,
-                http   = obj["http"]?.jsonObject?.get("endpoint")?.jsonPrimitive?.content,
-            ))}
-        }.getOrElse { e ->
-            _state.value = buildState()
-            snackbar.send("Bootstrap QR not recognised: ${e.message}")
-        }
+        runCatching { parseBootstrap(raw) }
+            .onSuccess { b -> _state.update { it.copy(pendingBootstrap = PendingBootstrap(b)) } }
+            .onFailure { e ->
+                _state.value = buildState()
+                snackbar.send("Bootstrap QR not recognised: ${e.message}")
+            }
     }
 
     fun confirmBootstrap() {
         val pending = _state.value.pendingBootstrap ?: return
         _state.update { it.copy(pendingBootstrap = null) }
-        viewModelScope.launch { applyBootstrap(pending.raw) }
+        viewModelScope.launch { applyBootstrap(pending.bootstrap) }
     }
 
     fun dismissBootstrap() { _state.update { it.copy(pendingBootstrap = null) } }
 
-    private suspend fun applyBootstrap(raw: String) {
+    /**
+     * The key goes first and gates everything: a refused key change aborts
+     * the import before any destination is written. Previously the refusal
+     * was a snackbar-and-return, and the new B2/GitHub/S3/HTTP config was
+     * applied anyway — backups redirected to a new bucket under the OLD key.
+     */
+    private suspend fun applyBootstrap(b: Bootstrap) {
         runCatching {
-            val obj = Json.parseToJsonElement(raw).jsonObject
-
-            obj["nacl_public_key_hex"]?.jsonPrimitive?.content?.let { hex ->
-                require(hex.length == 64) { "Expected 32-byte hex key" }
-                handleNaclKey(hex)
+            b.naclPkHex?.let { hex ->
+                val result = handleNaclKey(hex)
+                if (result is NaclKeyResult.Refused) error("Key change refused - ${result.reason}")
             }
 
-            obj["b2"]?.jsonObject?.let { b2 ->
-                val keyId    = b2["key_id"]?.jsonPrimitive?.content         ?: error("Bootstrap missing b2.key_id")
-                val appKey   = b2["application_key"]?.jsonPrimitive?.content ?: error("Bootstrap missing b2.application_key")
-                val endpoint = b2["endpoint"]?.jsonPrimitive?.content
-                val bucket   = b2["bucket"]?.jsonPrimitive?.content
-                val region   = b2["region"]?.jsonPrimitive?.content
-                appPrefs.setB2Config(endpoint = endpoint, keyId = keyId, bucket = bucket, region = region)
-                creds.setB2AppKey(appKey)
+            b.b2?.let { b2 ->
+                appPrefs.setB2Config(endpoint = b2.endpoint, keyId = b2.keyId, bucket = b2.bucket, region = b2.region)
+                creds.setB2AppKey(b2.appKey)
             }
 
-            obj["github"]?.jsonObject?.let { gh ->
-                val token = gh["token"]?.jsonPrimitive?.content ?: error("Bootstrap missing github.token")
-                val owner = gh["owner"]?.jsonPrimitive?.content ?: error("Bootstrap missing github.owner")
-                val repo  = gh["repo"]?.jsonPrimitive?.content  ?: error("Bootstrap missing github.repo")
-                appPrefs.setGithubRepo(owner = owner, repo = repo)
-                creds.setGithubToken(token)
-                fetchCname(token, owner, repo)
+            b.github?.let { gh ->
+                appPrefs.setGithubRepo(owner = gh.owner, repo = gh.repo)
+                creds.setGithubToken(gh.token)
             }
 
-            obj["s3"]?.jsonObject?.let { s3 ->
-                val endpoint  = s3["endpoint"]?.jsonPrimitive?.content   ?: error("Bootstrap missing s3.endpoint")
-                val staticUrl = s3["static_url"]?.jsonPrimitive?.content ?: error("Bootstrap missing s3.static_url")
-                val bucket    = s3["bucket"]?.jsonPrimitive?.content      ?: error("Bootstrap missing s3.bucket")
-                val keyId     = s3["key_id"]?.jsonPrimitive?.content      ?: error("Bootstrap missing s3.key_id")
-                val secretKey = s3["secret_key"]?.jsonPrimitive?.content  ?: error("Bootstrap missing s3.secret_key")
-                val region    = s3["region"]?.jsonPrimitive?.content      ?: error("Bootstrap missing s3.region")
-                appPrefs.setS3Config(endpoint, staticUrl, bucket, keyId, region)
-                creds.setS3SecretKey(secretKey)
+            b.s3?.let { s3 ->
+                appPrefs.setS3Config(s3.endpoint, s3.staticUrl, s3.bucket, s3.keyId, s3.region)
+                creds.setS3SecretKey(s3.secretKey)
             }
 
-            obj["http"]?.jsonObject?.let { h ->
-                val endpoint  = h["endpoint"]?.jsonPrimitive?.content   ?: error("Bootstrap missing http.endpoint")
-                val staticUrl = h["static_url"]?.jsonPrimitive?.content ?: error("Bootstrap missing http.static_url")
-                val user      = h["user"]?.jsonPrimitive?.content       ?: error("Bootstrap missing http.user")
-                val password  = h["password"]?.jsonPrimitive?.content   ?: error("Bootstrap missing http.password")
-                appPrefs.setHttpMediaConfig(endpoint, staticUrl, user)
-                creds.setHttpMediaPassword(password)
+            b.http?.let { h ->
+                appPrefs.setHttpMediaConfig(h.endpoint, h.staticUrl, h.user)
+                creds.setHttpMediaPassword(h.password)
             }
 
             ensurePhoneKeypair()
         }.onSuccess {
             _state.value = buildState()
             snackbar.send("Bootstrap configuration imported")
+            b.github?.let { gh -> fetchCname(gh.token, gh.owner, gh.repo) }
         }.onFailure { e ->
             _state.value = buildState()
             snackbar.send("Bootstrap import failed: ${e.message}")
@@ -460,14 +454,16 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun onAnyQrScanned(raw: String): Boolean {
-        return runCatching {
-            val type = Json.parseToJsonElement(raw).jsonObject["type"]?.jsonPrimitive?.content
-            // Bootstrap-only: it now merely stages + asks for confirmation.
-            // Cross-type credential QRs (s3_media / http_media) must go through
-            // the specific scan the user chose — auto-applying them from any
-            // scan context was silent credential injection.
-            if (type == "companion_bootstrap_v1") { onBootstrapQrScanned(raw); true } else false
-        }.getOrDefault(false)
+        val type = runCatching {
+            Json.parseToJsonElement(raw).jsonObject["type"]?.jsonPrimitive?.content
+        }.getOrNull()
+        // Bootstrap-only: it merely stages + asks for confirmation. Cross-type
+        // credential QRs (s3_media / http_media) must go through the specific
+        // scan the user chose — auto-applying them from any scan context was
+        // silent credential injection.
+        if (type != BOOTSTRAP_TYPE) return false
+        onBootstrapQrScanned(raw)
+        return true
     }
 
     private suspend fun fetchCname(token: String, owner: String, repo: String) {
@@ -484,52 +480,56 @@ class SettingsViewModel @Inject constructor(
         } catch (_: Exception) { }
     }
 
-    private suspend fun handleNaclKey(hex: String) {
+    /**
+     * Accept, keep, or refuse a backup key. A CHANGE is only allowed when the
+     * current bucket holds no packs — otherwise existing backups would become
+     * undecryptable to the server side's key.
+     */
+    private suspend fun handleNaclKey(hex: String): NaclKeyResult {
         val stored = appPrefs.naclPkHex()
 
         if (stored == null) {
             appPrefs.setNaclPkHex(hex)
             ensurePhoneKeypair()
-            _state.value = buildState()
-            snackbar.send("New key accepted: ${hex.fingerprint()}")
-            return
+            return NaclKeyResult.Accepted
         }
 
         if (stored == hex) {
             ensurePhoneKeypair()
-            _state.value = buildState()
-            snackbar.send("Key unchanged: ${hex.fingerprint()}")
-            return
+            return NaclKeyResult.Unchanged
         }
 
         val b2Config = appPrefs.b2Config()
         val b2RwAppKey = creds.b2RwAppKey()
         if (b2Config == null || b2RwAppKey == null) {
-            _state.value = buildState()
-            snackbar.send("Key change refused - B2 not configured, cannot verify bucket is empty")
-            return
+            return NaclKeyResult.Refused("B2 not configured, cannot verify bucket is empty")
         }
 
-        try {
-            val b2       = s3Factory.create(b2Config.endpoint, b2Config.bucket, b2Config.keyId, b2RwAppKey, b2Config.region)
-            val prefix   = appPrefs.phonePkHex() ?: "packs"
-            val packs    = b2.listObjects(prefix = "$prefix/", maxKeys = 1)
+        return try {
+            val b2     = s3Factory.create(b2Config.endpoint, b2Config.bucket, b2Config.keyId, b2RwAppKey, b2Config.region)
+            val prefix = appPrefs.phonePkHex() ?: "packs"
+            val packs  = b2.listObjects(prefix = "$prefix/", maxKeys = 1)
 
             if (packs.isNotEmpty()) {
-                _state.value = buildState()
-                snackbar.send("Key change refused - bucket has packs. Run backup_reset.py first.")
-                return
+                NaclKeyResult.Refused("bucket has packs. Run backup_reset.py first.")
+            } else {
+                appPrefs.setNaclPkHex(hex)
+                db.resetBackupState()
+                ensurePhoneKeypair()
+                NaclKeyResult.Changed
             }
-
-            appPrefs.setNaclPkHex(hex)
-            db.resetBackupState()
-            ensurePhoneKeypair()
-            _state.value = buildState()
-            snackbar.send("Key changed: ${hex.fingerprint()} - backup state reset")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            _state.value = buildState()
-            snackbar.send("Key change refused - could not check bucket: ${e.message}")
+            NaclKeyResult.Refused("could not check bucket: ${e.message}")
         }
+    }
+
+    private fun NaclKeyResult.message(hex: String): String = when (this) {
+        NaclKeyResult.Accepted  -> "New key accepted: ${hex.fingerprint()}"
+        NaclKeyResult.Unchanged -> "Key unchanged: ${hex.fingerprint()}"
+        NaclKeyResult.Changed   -> "Key changed: ${hex.fingerprint()} - backup state reset"
+        is NaclKeyResult.Refused -> "Key change refused - $reason"
     }
 
     private suspend fun ensurePhoneKeypair() {

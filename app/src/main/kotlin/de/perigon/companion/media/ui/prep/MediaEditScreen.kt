@@ -105,6 +105,7 @@ import de.perigon.companion.media.domain.rotatedDimensions
 import de.perigon.companion.media.domain.toPixelCrop
 import de.perigon.companion.media.domain.toNormalized
 import de.perigon.companion.util.applyExifOrientation
+import de.perigon.companion.util.exifSwapsAxes
 import de.perigon.companion.util.media.VideoProbe
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -341,17 +342,14 @@ fun MediaEditScreen(
 
     fun confirm() {
         val crop = pixelCrop
-        val normCrop = if (crop != null && rawBitmap != null) {
-            // Dimensions only -- no need to allocate/rotate the actual bitmap a
-            // second time (ImageCropOverlay already did that once for preview).
-            // A coarse rotation is 0/90/180/270: 90/270 swap width and height,
-            // 0/180 don't -- pure arithmetic, not a pixel operation.
-            val raw = rawBitmap!!
-            val coarse = ((orientation.rotationDegrees % 360) + 360) % 360
-            val (unrotW, unrotH) = if (coarse == 90 || coarse == 270)
-                raw.height.toFloat() to raw.width.toFloat()
-            else
-                raw.width.toFloat() to raw.height.toFloat()
+        val raw = rawBitmap
+        val normCrop = if (crop != null && raw != null) {
+            // Normalize in the SAME space the overlay's pixel crop lives in:
+            // raw → EXIF → user coarse orientation (exactly what
+            // applyCoarseTransform builds for display). Dimensions only — no
+            // second bitmap allocation. Ignoring EXIF here normalized
+            // EXIF-rotated portrait photos against swapped axes.
+            val (unrotW, unrotH) = coarseDimensions(raw.width, raw.height, exifOrientation, orientation)
             val (rotW, rotH) = rotatedDimensions(unrotW, unrotH, fineRotation)
             crop.toNormalized(rotW, rotH)
         } else if (crop != null && probedVideoSize != IntSize.Zero) {
@@ -1104,4 +1102,24 @@ private fun applyCoarseTransform(raw: Bitmap, exifOrientation: Int, orientation:
         bmp = oriented
     }
     return bmp
+}
+
+/**
+ * Pure twin of [applyCoarseTransform]: the dimensions it would produce,
+ * without allocating a bitmap. EXIF and the user's coarse rotation can each
+ * swap the axes; two swaps cancel out.
+ */
+private fun coarseDimensions(
+    width: Int,
+    height: Int,
+    exifOrientation: Int,
+    orientation: OrientationTransform,
+): Pair<Float, Float> {
+    val normalizedUser = ((orientation.rotationDegrees % 360) + 360) % 360
+    val userSwaps = normalizedUser == 90 || normalizedUser == 270
+    return if (exifSwapsAxes(exifOrientation) xor userSwaps) {
+        height.toFloat() to width.toFloat()
+    } else {
+        width.toFloat() to height.toFloat()
+    }
 }

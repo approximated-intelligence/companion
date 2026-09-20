@@ -9,7 +9,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.*
 import de.perigon.companion.backup.data.BackupStateRepository
+import de.perigon.companion.backup.worker.BackupRequests
 import de.perigon.companion.backup.worker.BackupWorker
+import de.perigon.companion.backup.worker.enqueueBackup
 import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.di.ApplicationScope
 import de.perigon.companion.core.prefs.AppPrefs
@@ -233,38 +235,38 @@ class ConsolidateViewModel @Inject constructor(
     // ── Worker actions ──
 
     fun startConsolidate() {
+        enqueueConsolidate()
+    }
+
+    private fun enqueueConsolidate(): Operation =
         workManager.enqueueUniqueWork(
             ConsolidateWorker.WORK_NAME,
             ExistingWorkPolicy.KEEP,
             ConsolidateWorker.buildRequest(),
         )
-    }
 
     fun startBackup() {
-        val req = OneTimeWorkRequestBuilder<de.perigon.companion.backup.worker.BackupWorker>()
-            .addTag(BackupWorker.WORK_NAME)
-            .build()
-        workManager.enqueueUniqueWork(
-            BackupWorker.WORK_NAME,
-            ExistingWorkPolicy.KEEP,
-            req,
-        )
+        workManager.enqueueBackup(BackupRequests.manual())
     }
 
+    /**
+     * Consolidate, then back up once consolidation is finished.
+     *
+     * App scope, not viewModelScope: leaving the screen must not cancel the
+     * chained backup. The job captures only locals (no VM reference kept
+     * alive). Awaiting the enqueue Operation first is what makes the wait
+     * correct: before it lands, the unique-work flow can still emit a
+     * PREVIOUS finished consolidate run, which would fire the backup
+     * immediately — concurrently with the new consolidation.
+     */
     fun startConsolidateAndBackup() {
-        startConsolidate()
-        // App scope, not viewModelScope: leaving the screen must not cancel
-        // the chained backup enqueue. isNotEmpty guards the initial-emission
-        // race where all{} over an empty list would fire startBackup before
-        // the consolidate work is even registered.
+        val wm = workManager
+        val enqueued = enqueueConsolidate()
         appScope.launch {
-            workManager.getWorkInfosForUniqueWorkFlow(ConsolidateWorker.WORK_NAME)
-                .first { infos ->
-                    infos.isNotEmpty() && infos.all {
-                        it.state != WorkInfo.State.RUNNING && it.state != WorkInfo.State.ENQUEUED
-                    }
-                }
-            startBackup()
+            enqueued.await()
+            wm.getWorkInfosForUniqueWorkFlow(ConsolidateWorker.WORK_NAME)
+                .first { infos -> infos.isNotEmpty() && infos.all { it.state.isFinished } }
+            wm.enqueueBackup(BackupRequests.manual())
         }
     }
 

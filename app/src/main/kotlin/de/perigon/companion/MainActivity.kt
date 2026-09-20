@@ -9,35 +9,50 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.core.content.IntentCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.rememberNavController
 import de.perigon.companion.audio.service.AudioRecordingService
 import de.perigon.companion.core.prefs.AppPrefs
+import de.perigon.companion.core.ui.LaunchRequest
 import de.perigon.companion.core.ui.NavGraph
 import de.perigon.companion.core.ui.PermissionGate
 import de.perigon.companion.core.ui.Route
+import de.perigon.companion.core.ui.deliver
+import de.perigon.companion.core.ui.shareTargetFor
 import de.perigon.companion.core.ui.theme.CompanionTheme
 import de.perigon.companion.track.service.BackgroundService
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.channels.Channel
 
+/**
+ * launchMode="singleTask" (manifest): one app instance. Shares and
+ * notification taps while running arrive in [onNewIntent], not as a second
+ * MainActivity inside the sender's task.
+ */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
     @Inject lateinit var appPrefs: AppPrefs
 
     /**
-     * In-place navigation requests from [onNewIntent] (notification taps).
-     * Previously handled with recreate(), which rebuilt the whole activity —
-     * and destroyed every screen's UI state — just to switch route.
+     * Every external launch — cold (onCreate) or warm (onNewIntent), share or
+     * notification tap — goes through this one queue into the nav graph.
+     * A Channel, not a StateFlow: requests are events (two identical taps are
+     * two requests) and nothing may be conflated away. Buffered, so requests
+     * made while PermissionGate is still showing are delivered once the
+     * graph exists.
      */
-    private val navigateTo = MutableStateFlow<Any?>(null)
+    private val launchRequests = Channel<LaunchRequest>(Channel.UNLIMITED)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val parsed = parseIntent(intent)
+
+        // Only a genuinely new launch carries a request. On recreation
+        // (rotation, process restore) the same intent is handed back — it was
+        // already delivered, and the back stack already reflects it.
+        if (savedInstanceState == null) parseIntent(intent)?.let { launchRequests.trySend(it) }
+
         setContent {
             CompanionTheme {
                 PermissionGate {
@@ -45,17 +60,12 @@ class MainActivity : ComponentActivity() {
                     val backgroundGps by appPrefs.observeBackgroundGps()
                         .collectAsStateWithLifecycle(false)
 
-                    val pending by navigateTo.collectAsStateWithLifecycle()
-                    LaunchedEffect(pending) {
-                        val route = pending ?: return@LaunchedEffect
-                        navigateTo.value = null
-                        navController.navigate(route) { launchSingleTop = true }
+                    LaunchedEffect(navController) {
+                        for (request in launchRequests) navController.deliver(request)
                     }
 
                     NavGraph(
                         navController = navController,
-                        startRoute    = parsed.startRoute,
-                        incomingUris  = parsed.uris,
                         backgroundGps = backgroundGps,
                     )
                 }
@@ -65,23 +75,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        val target = intent.getStringExtra(BackgroundService.EXTRA_NAVIGATE_TO)
-            ?: intent.getStringExtra(EXTRA_NAVIGATE_TO)
-        if (target != null) {
-            setIntent(intent)
-            navigateTo.value = routeFor(target)
-        }
+        setIntent(intent)
+        parseIntent(intent)?.let { launchRequests.trySend(it) }
     }
 
     companion object {
+        // Same value as BackgroundService.EXTRA_NAVIGATE_TO; producers use either.
         const val EXTRA_NAVIGATE_TO = "navigate_to"
     }
 }
-
-data class ParsedIntent(
-    val startRoute: Any,
-    val uris: List<Uri>,
-)
 
 private fun routeFor(navigateTo: String): Any = when (navigateTo) {
     BackgroundService.NAV_RECORDING  -> Route.Recording
@@ -92,38 +94,24 @@ private fun routeFor(navigateTo: String): Any = when (navigateTo) {
     else                             -> Route.Consolidate
 }
 
-private fun parseIntent(intent: Intent): ParsedIntent {
-    val navigateTo = intent.getStringExtra(BackgroundService.EXTRA_NAVIGATE_TO)
-        ?: intent.getStringExtra(MainActivity.EXTRA_NAVIGATE_TO)
-    if (navigateTo != null) {
-        return ParsedIntent(routeFor(navigateTo), emptyList())
+/**
+ * Intent → request, or null for a plain launcher start. minSdk 34: the
+ * typed (String, Class) extra getters (API 33+) are always available.
+ */
+private fun parseIntent(intent: Intent): LaunchRequest? {
+    intent.getStringExtra(MainActivity.EXTRA_NAVIGATE_TO)?.let { target ->
+        return LaunchRequest.Navigate(routeFor(target))
     }
 
-    val action = intent.action
-    val mime   = intent.type ?: ""
-
-    return when (action) {
-        Intent.ACTION_SEND -> {
-            // IntentCompat: the (String, Class) overloads are API 33+, minSdk is 31.
-            val uri = IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
-            when {
-                mime.contains("gpx") || mime.contains("octet") ->
-                    ParsedIntent(Route.TrackRender, listOfNotNull(uri))
-                else ->
-                    ParsedIntent(Route.MediaPrep(), listOfNotNull(uri))
-            }
-        }
-        Intent.ACTION_SEND_MULTIPLE -> {
-            val uris = IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
-                ?: emptyList<Uri>()
-            val mime2 = intent.type ?: ""
-            if (mime2.contains("gpx") || mime2.contains("octet")) {
-                ParsedIntent(Route.TrackRender, uris)
-            } else {
-                ParsedIntent(Route.MediaPrep(), uris)
-            }
-        }
+    val uris: List<Uri> = when (intent.action) {
+        Intent.ACTION_SEND ->
+            listOfNotNull(intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java))
+        Intent.ACTION_SEND_MULTIPLE ->
+            intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
         // ACTION_VIEW branch removed with the companion://oauth deep link.
-        else -> ParsedIntent(Route.Consolidate, emptyList())
+        else -> return null
     }
+    if (uris.isEmpty()) return null
+
+    return LaunchRequest.Share(shareTargetFor(intent.type), uris)
 }

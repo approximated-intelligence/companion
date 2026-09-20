@@ -37,9 +37,13 @@
         android:enableOnBackInvokedCallback="true"
         android:dataExtractionRules="@xml/data_extraction_rules">
 
+        <!-- singleTask: one app instance. A share while the app is running is
+             delivered to onNewIntent (→ new post), instead of spawning a
+             second MainActivity inside the sharing app's task. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

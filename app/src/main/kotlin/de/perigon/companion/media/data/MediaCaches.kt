@@ -40,10 +40,10 @@ import javax.inject.Singleton
 // Resolution order:
 //   1. Local sourceUri readable      → local POST_MEDIA
 //   2. Local mediaStoreUri readable  → local POST_MEDIA
-//   3. S3 configured + slug known    → https://{s3StaticUrl}/static/{slug}/{hash}.{ext}
-//   4. HTTP configured + slug known  → https://{httpStaticUrl}/static/{slug}/{hash}.{ext}
-//   5. siteUrl + slug known          → https://{siteUrl}/static/{slug}/{hash}.{ext}
-//   6. Otherwise                     → GONE
+//   3. S3 configured + slug known    → https://{s3StaticUrl}/static/{slug}/{processedHash}.{ext}
+//   4. HTTP configured + slug known  → https://{httpStaticUrl}/static/{slug}/{processedHash}.{ext}
+//   5. siteUrl + slug known          → https://{siteUrl}/static/{slug}/{processedHash}.{ext}
+//   6. Otherwise (incl. never published, i.e. no processedHash) → GONE
 //
 // All IO (the readability checks) runs on Dispatchers.IO; composables call
 // get() which is non-blocking and returns cached state immediately.
@@ -53,12 +53,14 @@ private data class ResolutionKey(
     val id: Long,
     val sourceUri: String,
     val mediaStoreUri: String,
-    val contentHash: String,
+    // Publishing sets processedHash — part of the key so a publish
+    // invalidates a cached GONE/remote resolution.
+    val processedHash: String?,
     val slug: String,
 )
 
 private fun PostMediaEntity.key(slug: String?) =
-    ResolutionKey(id, sourceUri, mediaStoreUri, contentHash, slug ?: "")
+    ResolutionKey(id, sourceUri, mediaStoreUri, processedHash, slug ?: "")
 
 @Singleton
 class MediaResolutionCache @Inject constructor(
@@ -133,8 +135,11 @@ class MediaResolutionCache @Inject constructor(
         // No local file — construct a remote URL from the active media backend.
         if (slug.isNullOrBlank()) return ResolvedMedia(Uri.EMPTY, MediaSourceStatus.GONE)
 
+        // Server keys are the processed bytes' hash (the published identity).
+        // No processedHash = never published = no remote copy exists.
+        val hash = entity.processedHash ?: return ResolvedMedia(Uri.EMPTY, MediaSourceStatus.GONE)
         val ext = if (entity.mimeType.startsWith("video")) "mp4" else "jpg"
-        val path = "static/$slug/${entity.contentHash}.$ext"
+        val path = "static/$slug/$hash.$ext"
 
         val base = remoteBaseUrl() ?: return ResolvedMedia(Uri.EMPTY, MediaSourceStatus.GONE)
         val url = "${base.trimEnd('/')}/$path"

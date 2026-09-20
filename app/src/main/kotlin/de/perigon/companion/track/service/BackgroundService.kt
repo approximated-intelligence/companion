@@ -51,6 +51,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
@@ -88,12 +89,17 @@ class BackgroundService : Service() {
         private const val NOTIFICATION_ID      = 4001
         private const val STOP_REQUEST_CODE    = 9002
         private const val CONTENT_REQUEST_CODE = 9003
-        // Safety net only: normal teardown always calls releaseSessionWakeLock()
-        // (pause/stop/onDestroy). This bounds a HELD wakelock in case that path
-        // is ever missed (e.g. process death before onDestroy runs its course),
-        // so a stuck lock cannot silently drain the battery indefinitely. Not a
-        // real operational cap -- recording sessions legitimately run longer.
-        private const val SESSION_WAKELOCK_SAFETY_TIMEOUT_MS = 12 * 60 * 60 * 1000L
+
+        // Session wakelock is a renewed LEASE, not one long hold. While the
+        // session runs, a job on `scope` re-acquires every RENEW interval, so
+        // the lock never lapses mid-session (the previous single 12h timeout
+        // silently dropped it on long recordings — and blocked the per-fix
+        // lock, since sessionWakeLockHeld stayed true). If teardown is ever
+        // missed, the renew job dies with `scope` and the lock self-expires
+        // within one LEASE. The lock is non-reference-counted, so re-acquire
+        // extends rather than stacks.
+        private const val SESSION_WAKELOCK_LEASE_MS = 60 * 60 * 1000L
+        private const val SESSION_WAKELOCK_RENEW_MS = SESSION_WAKELOCK_LEASE_MS / 2
 
         private val _status = MutableStateFlow(RecordingStatus())
         val status: StateFlow<RecordingStatus> = _status.asStateFlow()
@@ -129,6 +135,7 @@ class BackgroundService : Service() {
     private var ephemerisWarmupActive  = false
     private var gnssCallbackRegistered = false
     private var sessionWakeLockHeld    = false
+    private var sessionWakeLockJob: Job? = null
     private var fixTimeoutJob: Job? = null
     private var fixState: FixState = FixState.Idle
     private var recordingStartElapsedNanos: Long = 0L
@@ -568,6 +575,9 @@ class BackgroundService : Service() {
         if (wakeLock == null) {
             wakeLock = getSystemService(PowerManager::class.java)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PerigonCompanion:TrackFix")
+                // Non-counted: session renewals and per-fix acquires extend one
+                // hold instead of stacking counts that each need a release.
+                .apply { setReferenceCounted(false) }
         }
         return wakeLock!!
     }
@@ -578,12 +588,20 @@ class BackgroundService : Service() {
 
     private fun acquireSessionWakeLock() {
         if (sessionWakeLockHeld) return
-        ensureWakeLock().acquire(SESSION_WAKELOCK_SAFETY_TIMEOUT_MS)
         sessionWakeLockHeld = true
+        val lock = ensureWakeLock()
+        sessionWakeLockJob = scope.launch {
+            while (isActive) {
+                lock.acquire(SESSION_WAKELOCK_LEASE_MS)
+                delay(SESSION_WAKELOCK_RENEW_MS)
+            }
+        }
     }
 
     private fun releaseSessionWakeLock() {
         if (!sessionWakeLockHeld) return
+        sessionWakeLockJob?.cancel()
+        sessionWakeLockJob = null
         wakeLock?.let { if (it.isHeld) it.release() }
         sessionWakeLockHeld = false
     }

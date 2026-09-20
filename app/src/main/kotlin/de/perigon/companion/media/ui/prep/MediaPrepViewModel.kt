@@ -2,9 +2,12 @@ package de.perigon.companion.media.ui.prep
 
 import android.net.Uri
 import androidx.compose.runtime.Immutable
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.navigation.toRoute
 import de.perigon.companion.core.prefs.AppPrefs
+import de.perigon.companion.core.ui.Route
 import de.perigon.companion.media.data.MediaResolutionCache
 import de.perigon.companion.media.data.TransformPreviewCache
 import de.perigon.companion.media.domain.ItemStatus
@@ -43,6 +46,7 @@ data class MediaPrepUiState(
 @OptIn(ExperimentalCoroutinesApi::class)
 @HiltViewModel
 class MediaPrepViewModel @Inject constructor(
+    savedStateHandle: SavedStateHandle,
     private val postRepository: PostRepository,
     private val mediaFileStore: PostMediaFileStore,
     private val previewCache: TransformPreviewCache,
@@ -50,7 +54,10 @@ class MediaPrepViewModel @Inject constructor(
     private val appPrefs: AppPrefs,
 ) : ViewModel() {
 
-    private val _postId = MutableStateFlow(0L)
+    // Identity comes from the route itself. Previously the screen pushed it in
+    // via init(postId) from a LaunchedEffect — any addItems() that ran before
+    // that effect saw 0 and created a stray new post.
+    private val _postId = MutableStateFlow(savedStateHandle.toRoute<Route.MediaPrep>().postId)
 
     private val _state = MutableStateFlow(MediaPrepUiState())
     val state: StateFlow<MediaPrepUiState> = _state.asStateFlow()
@@ -90,10 +97,6 @@ class MediaPrepViewModel @Inject constructor(
         }
     }
 
-    fun init(postId: Long) {
-        _postId.value = postId
-    }
-
     private suspend fun ensurePostId(): Long {
         val current = _postId.value
         if (current > 0L) return current
@@ -118,6 +121,12 @@ class MediaPrepViewModel @Inject constructor(
 
     // ---- Add media ----
 
+    /**
+     * consumedUris guards against in-flight double delivery (two calls racing
+     * before either insert lands); existingHashes guards against content that
+     * is already attached. Removal prunes consumedUris, so remove-then-re-pick
+     * works.
+     */
     fun addItems(uris: List<Uri>) {
         val currentConsumed = _state.value.consumedUris
         val newUris = uris.filter { it !in currentConsumed }
@@ -170,6 +179,11 @@ class MediaPrepViewModel @Inject constructor(
     // ---- Remove media ----
 
     fun removeItem(mediaId: Long) {
+        val sourceUri = _state.value.items.find { it.id == mediaId }?.entity?.sourceUri
+        if (!sourceUri.isNullOrBlank()) {
+            val uri = Uri.parse(sourceUri)
+            _state.update { it.copy(consumedUris = it.consumedUris - uri) }
+        }
         viewModelScope.launch {
             postRepository.removeMediaFromPost(mediaId)
         }

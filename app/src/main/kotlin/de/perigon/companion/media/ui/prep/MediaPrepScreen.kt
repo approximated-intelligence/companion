@@ -36,11 +36,16 @@ import de.perigon.companion.posts.ui.common.MediaSourceBadge
 import de.perigon.companion.core.ui.AppTopBar
 import sh.calvin.reorderable.*
 
+/**
+ * Incoming URIs (share intent, built-in picker, track render) are delivered by
+ * NavGraph straight into the ViewModel; the post id comes from the route via
+ * the ViewModel's SavedStateHandle. [onDone] leaves for the post editor —
+ * where to go is NavGraph's decision, not this screen's.
+ */
 @Composable
 fun MediaPrepScreen(
     navController: NavController,
-    postId:        Long = 0L,
-    incomingUris:  List<Uri> = emptyList(),
+    onDone:        (postId: Long) -> Unit,
     viewModel:     MediaPrepViewModel = hiltViewModel(),
 ) {
     val state         by viewModel.state.collectAsStateWithLifecycle()
@@ -50,12 +55,6 @@ fun MediaPrepScreen(
     var activeEditRequest by remember { mutableStateOf<EditRequest?>(null) }
 
     val useBuiltinPicker = viewModel.mediaPickerMode == AppPrefs.MEDIA_PICKER_BUILTIN
-
-    LaunchedEffect(postId) { viewModel.init(postId) }
-
-    LaunchedEffect(incomingUris) {
-        if (incomingUris.isNotEmpty()) viewModel.addItems(incomingUris)
-    }
 
     LaunchedEffect(Unit) {
         viewModel.snackbar.events.collect { snackbarHost.showSnackbar(it) }
@@ -147,11 +146,7 @@ fun MediaPrepScreen(
                 BottomAppBar {
                     Spacer(Modifier.weight(1f))
                     Button(
-                        onClick = {
-                            navController.navigate(Route.PostEdit(state.postId)) {
-                                popUpTo<Route.MediaPrep> { inclusive = true }
-                            }
-                        },
+                        onClick = { onDone(state.postId) },
                         modifier = Modifier.padding(end = 16.dp),
                     ) { Text("Done") }
                 }

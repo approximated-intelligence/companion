@@ -13,13 +13,14 @@ import de.perigon.companion.backup.data.BackupStateRepository
 import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.ui.SnackbarChannel
+import de.perigon.companion.backup.worker.BackupRequests
 import de.perigon.companion.backup.worker.BackupWorker
-import de.perigon.companion.backup.worker.BackupTriggerWorker
+import de.perigon.companion.backup.worker.enqueueBackup
+import de.perigon.companion.backup.worker.syncBackupSchedule
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
 @Immutable
@@ -185,14 +186,7 @@ class BackupViewModel @Inject constructor(
     }
 
     fun startBackup() {
-        val req = OneTimeWorkRequestBuilder<BackupWorker>()
-            .addTag(BackupWorker.WORK_NAME)
-            .build()
-        workManager.enqueueUniqueWork(
-            BackupWorker.WORK_NAME,
-            ExistingWorkPolicy.KEEP,
-            req,
-        )
+        workManager.enqueueBackup(BackupRequests.manual())
     }
 
     fun cancelBackup() {
@@ -205,10 +199,12 @@ class BackupViewModel @Inject constructor(
         viewModelScope.launch {
             schedulePrefs.setAutoEnabled(enabled)
             _state.update { it.copy(autoEnabled = enabled) }
-            if (enabled) applySchedule(schedulePrefs.intervalHours())
-            // Cancels the schedule only; a running manual backup (WORK_NAME)
-            // is untouched.
-            else workManager.cancelUniqueWork(BackupTriggerWorker.SCHEDULE_NAME)
+            // Touches the schedule only; a running backup (WORK_NAME) is untouched.
+            workManager.syncBackupSchedule(
+                enabled       = enabled,
+                intervalHours = schedulePrefs.intervalHours(),
+                policy        = ExistingPeriodicWorkPolicy.UPDATE,
+            )
         }
     }
 
@@ -217,7 +213,13 @@ class BackupViewModel @Inject constructor(
         viewModelScope.launch {
             schedulePrefs.setIntervalHours(hours)
             _state.update { it.copy(intervalHours = hours) }
-            if (schedulePrefs.autoEnabled()) applySchedule(hours)
+            if (schedulePrefs.autoEnabled()) {
+                workManager.syncBackupSchedule(
+                    enabled       = true,
+                    intervalHours = hours,
+                    policy        = ExistingPeriodicWorkPolicy.UPDATE,
+                )
+            }
         }
     }
 
@@ -249,22 +251,5 @@ class BackupViewModel @Inject constructor(
 
     fun toggleFolder(id: Long, enabled: Boolean) {
         viewModelScope.launch { stateRepo.setFolderEnabled(id, enabled) }
-    }
-
-    private fun applySchedule(hours: Int) {
-        // Periodic TRIGGER (not the backup itself) under SCHEDULE_NAME. WLAN
-        // gate lives here; the execution it enqueues is unconstrained.
-        val req = PeriodicWorkRequestBuilder<BackupTriggerWorker>(hours.toLong(), TimeUnit.HOURS)
-            .setConstraints(
-                Constraints.Builder()
-                    .setRequiredNetworkType(NetworkType.UNMETERED)
-                    .build()
-            )
-            .build()
-        workManager.enqueueUniquePeriodicWork(
-            BackupTriggerWorker.SCHEDULE_NAME,
-            ExistingPeriodicWorkPolicy.UPDATE,
-            req,
-        )
     }
 }

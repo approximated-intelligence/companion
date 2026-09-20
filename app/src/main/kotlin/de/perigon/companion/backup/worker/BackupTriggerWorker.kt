@@ -3,27 +3,25 @@ package de.perigon.companion.backup.worker
 import android.content.Context
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
-import androidx.work.ExistingWorkPolicy
-import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import androidx.work.await
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 
 /**
  * Periodic, WLAN-gated trigger for scheduled backups. Owns NO backup logic —
- * it funnels into the single on-demand execution slot [BackupWorker.WORK_NAME]
- * with KEEP. Consequences of the funnel:
- *  - a scheduled tick and a manual "Back up now" can never run at once (they
- *    share one unique name; WorkManager serialises it),
+ * it funnels into the single execution slot [BackupWorker.WORK_NAME] via
+ * [enqueueBackup]. Consequences of the funnel:
+ *  - a scheduled tick and a manual "Back up now" can never run at once,
  *  - cancelling a running backup (cancelUniqueWork(WORK_NAME)) never touches
  *    this schedule,
- *  - toggling auto-backup off (cancelUniqueWork(SCHEDULE_NAME)) never touches a
- *    running manual backup.
+ *  - toggling auto-backup off (cancelUniqueWork(SCHEDULE_NAME)) never touches
+ *    a running backup.
  *
- * The UNMETERED constraint lives on THIS periodic request (registered under
- * [SCHEDULE_NAME]); the execution it enqueues is intentionally unconstrained,
- * so a manual backup still runs off-WLAN.
+ * Both the trigger AND the run it enqueues ([BackupRequests.scheduled]) are
+ * UNMETERED — a scheduled backup never continues over mobile data. Manual
+ * runs ([BackupRequests.manual]) are unconstrained.
  */
 @HiltWorker
 class BackupTriggerWorker @AssistedInject constructor(
@@ -32,14 +30,9 @@ class BackupTriggerWorker @AssistedInject constructor(
 ) : CoroutineWorker(ctx, params) {
 
     override suspend fun doWork(): Result {
-        val req = OneTimeWorkRequestBuilder<BackupWorker>()
-            .addTag(BackupWorker.WORK_NAME)
-            .build()
-        WorkManager.getInstance(applicationContext).enqueueUniqueWork(
-            BackupWorker.WORK_NAME,
-            ExistingWorkPolicy.KEEP,
-            req,
-        )
+        WorkManager.getInstance(applicationContext)
+            .enqueueBackup(BackupRequests.scheduled())
+            .await()
         return Result.success()
     }
 
