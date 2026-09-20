@@ -14,8 +14,19 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 // one-line DROP COLUMN — no table rebuild.
 //
 // Convention: migrations are always single-line execSQL statements.
-val MIGRATION_18_1 = object : Migration(18, 1) {
+
+// Measured pixel size of the PROCESSED bytes, recorded alongside
+// processedHash at publish time. NOT NULL DEFAULT 0 rather than nullable:
+// 0 is already an impossible size for real media, so it carries "not
+// measured" without a nullable column — and nothing is published yet, so no
+// existing row loses information.
+//
+// Why store at all: a retried publish skips media already on the server, and
+// without these it would have to re-download the file just to put width and
+// height into the markdown.
+val MIGRATION_1_2 = object : Migration(1, 2) {
     override fun migrate(db: SupportSQLiteDatabase) {
-        db.execSQL("ALTER TABLE posts DROP COLUMN mediaMigrated")
+        db.execSQL("ALTER TABLE post_media ADD COLUMN processedWidth INTEGER NOT NULL DEFAULT 0")
+        db.execSQL("ALTER TABLE post_media ADD COLUMN processedHeight INTEGER NOT NULL DEFAULT 0")
     }
 }

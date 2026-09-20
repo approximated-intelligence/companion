@@ -105,7 +105,8 @@ class CurrentTrackStateConverter {
         SafeToDeleteView::class,
         TrackPointRow::class,
     ],
-    version = 1,
+    // 2: post_media gained processedWidth/processedHeight (MIGRATION_1_2).
+    version = 2,
     exportSchema = true,
 )
 @TypeConverters(

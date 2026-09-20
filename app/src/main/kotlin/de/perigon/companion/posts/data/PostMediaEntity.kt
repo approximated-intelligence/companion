@@ -36,6 +36,14 @@ data class PostMediaEntity(
     // until the next publish — deliberately, since the server genuinely still
     // holds the previous rendering.
     val processedHash: String? = null,
+    // Pixel size of those same processed bytes, MEASURED at publish (not
+    // predicted from the transform inputs — the encoder has the last word on
+    // codec alignment). 0 = not measured: either never published, or an
+    // unprobeable video. Stored so a RETRIED publish that skips an already
+    // uploaded file can still emit width/height hints in the markdown
+    // without re-downloading it.
+    val processedWidth: Int = 0,
+    val processedHeight: Int = 0,
     // Transform intent - persisted so nothing is lost on crash
     val cropLeft: Float = 0f,
     val cropTop: Float = 0f,
@@ -61,6 +69,10 @@ data class PostMediaEntity(
 
     val hasTransformIntent: Boolean
         get() = hasCrop || hasOrientation || hasFineRotation || hasTrim
+
+    /** Measured output size, or null when unknown (see [processedWidth]). */
+    val processedSize: Pair<Int, Int>?
+        get() = if (processedWidth > 0 && processedHeight > 0) processedWidth to processedHeight else null
 }
 
 @Dao

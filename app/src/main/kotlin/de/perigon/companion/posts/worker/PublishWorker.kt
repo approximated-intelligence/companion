@@ -37,6 +37,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import java.io.File
+import java.util.concurrent.TimeUnit
 
 private const val TAG = "PublishWorker"
 
@@ -85,7 +86,7 @@ class PublishWorker @AssistedInject constructor(
                     .build())
                 // Backoff for Result.retry(): a publish that hit a dead link
                 // waits and resumes rather than stranding the post.
-                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, java.util.concurrent.TimeUnit.SECONDS)
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
                 .build()
     }
 
@@ -176,8 +177,13 @@ class PublishWorker @AssistedInject constructor(
             // between finishing and never finishing on a slow link. Only a
             // PROVEN presence skips; an unreachable server throws instead of
             // reporting "absent" (see MediaBackend.objectExists).
+            //
+            // The dimensions come from the row — measured when these exact
+            // bytes were first produced — so a skip costs one HEAD and no
+            // download.
             val existingHash = media.processedHash
-            if (existingHash != null) {
+            val storedSize = media.processedSize
+            if (existingHash != null && storedSize != null) {
                 val key = "static/${post.slug}/$existingHash.$ext"
                 val present = try {
                     if (backendPair != null) backendPair.first.objectExists(key)
@@ -187,8 +193,10 @@ class PublishWorker @AssistedInject constructor(
                     false
                 }
                 if (present) {
-                    val (w, h) = storedDimensions(media)
-                    shipped += ShippedMedia("$existingHash.$ext", media.mimeType, w, h, blobSha = null)
+                    shipped += ShippedMedia(
+                        "$existingHash.$ext", media.mimeType,
+                        storedSize.first, storedSize.second, blobSha = null,
+                    )
                     Log.i(TAG, "skipping already-uploaded $key")
                     continue
                 }
@@ -212,23 +220,30 @@ class PublishWorker @AssistedInject constructor(
             }
             if (warning != null) mediaWarnings += warning
 
-            // Local placement under the processed hash; hash exists even if
-            // placement fails (compute from bytes directly).
-            val placement = persistToPostMedia(media, bytes)
-            val processedHash = placement?.processedHash ?: sha256Hex(bytes)
-            val previousHash = media.processedHash
-            postMediaDao.upsert(media.copy(
-                mediaStoreUri = placement?.uri ?: media.mediaStoreUri,
-                processedHash = processedHash,
-            ))
-
-            val filename = "$processedHash.$ext"
-
+            // Measure the ACTUAL output: the encoder, not the transform
+            // inputs, has the last word on the final pixel size.
             val (w, h) = if (media.mimeType.startsWith("video")) {
                 videoDimensions(bytes) ?: (null to null)
             } else {
                 imageDimensions(bytes) ?: (null to null)
             }
+
+            // Local placement under the processed hash; hash exists even if
+            // placement fails (compute from bytes directly).
+            val placement = persistToPostMedia(media, bytes)
+            val processedHash = placement?.processedHash ?: sha256Hex(bytes)
+            val previousHash = media.processedHash
+            // Hash and dimensions describe the same bytes — write them
+            // together, or a later skip would trust a size that belongs to a
+            // different rendering.
+            postMediaDao.upsert(media.copy(
+                mediaStoreUri = placement?.uri ?: media.mediaStoreUri,
+                processedHash = processedHash,
+                processedWidth = w ?: 0,
+                processedHeight = h ?: 0,
+            ))
+
+            val filename = "$processedHash.$ext"
 
             var blobSha: String? = null
             if (bytes.isNotEmpty()) {
@@ -418,12 +433,6 @@ class PublishWorker @AssistedInject constructor(
             )
         }
         return Result.retry()
-    }
-
-    private fun storedDimensions(media: PostMediaEntity): Pair<Int?, Int?> {
-        // Dimensions are only needed for the markdown's width/height hints;
-        // for already-uploaded media we do not re-download to measure.
-        return null to null
     }
 
     private data class ProcessedMediaResult(val bytes: ByteArray, val warning: String? = null)

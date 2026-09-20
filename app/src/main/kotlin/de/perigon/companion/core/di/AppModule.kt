@@ -6,7 +6,7 @@ import androidx.work.WorkManager
 import de.perigon.companion.audio.data.AudioConfigPrefs
 import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.db.AppDatabase
-import de.perigon.companion.core.db.MIGRATION_18_1
+import de.perigon.companion.core.db.MIGRATION_1_2
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.prefs.AppPrefsImpl
 import de.perigon.companion.core.prefs.CredentialStore
@@ -34,9 +34,10 @@ object AppModule {
     @Provides @Singleton
     fun provideDatabase(@ApplicationContext ctx: Context): AppDatabase =
         Room.databaseBuilder(ctx, AppDatabase::class.java, "companion.db")
-            // Schema collapsed to v1. Only the 18→1 downgrade is needed: every
-            // client shipped at 18, and fresh installs open at 1 directly.
-            .addMigrations(MIGRATION_18_1)
+            // 18→1: the baseline collapse (every client shipped at 18; fresh
+            // installs open at the v1 baseline directly and never run it).
+            // 1→2 onward: the normal forward chain.
+            .addMigrations(MIGRATION_1_2)
             .build()
 
     @Provides fun provideUserNotificationDao(db: AppDatabase): UserNotificationDao = db.userNotificationDao()
@@ -51,6 +52,11 @@ object AppModule {
      * backup worker for the full dataSync FGS budget. No request-level cap:
      * an 8 MB part upload on a slow uplink is legitimately minutes long, and
      * the socket timeout already catches true stalls.
+     *
+     * Retry is deliberately NOT installed here. Whether replaying a request
+     * is safe is a property of the OPERATION, not the transport: re-sending
+     * a PUT is harmless, re-sending CreateMultipartUpload orphans an upload
+     * id. Call sites opt in individually via util.network.retrying().
      */
     @Provides @Singleton
     fun provideHttpClient(): HttpClient = HttpClient(Android) {
