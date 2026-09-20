@@ -16,7 +16,6 @@ import de.perigon.companion.media.data.TransformQueue
 import de.perigon.companion.posts.data.PostDao
 import de.perigon.companion.posts.data.PostMediaDao
 import de.perigon.companion.posts.data.PostMediaEntity
-import de.perigon.companion.posts.data.PostRepository
 import de.perigon.companion.posts.data.toDomain
 import de.perigon.companion.util.network.BlobAddition
 import de.perigon.companion.util.network.GitHubClient
@@ -43,7 +42,6 @@ class PublishWorker @AssistedInject constructor(
     @Assisted params: WorkerParameters,
     private val postDao:          PostDao,
     private val postMediaDao:     PostMediaDao,
-    private val postRepository:   PostRepository,
     private val http:             HttpClient,
     private val appPrefs:         AppPrefs,
     private val credentialStore:  CredentialStore,
@@ -299,10 +297,6 @@ class PublishWorker @AssistedInject constructor(
         val finalState = if (allErrors.isNotEmpty()) PostPublishState.NEEDS_FIXING else PostPublishState.PUBLISHED
         postDao.updatePublishState(postId, finalState, System.currentTimeMillis())
 
-        if (finalState == PostPublishState.PUBLISHED) {
-            postRepository.unprotectAllMedia(postId)
-        }
-
         if (allErrors.isNotEmpty() || mediaWarnings.isNotEmpty()) {
             val summary = buildString {
                 if (mediaErrors.isNotEmpty()) {
@@ -346,6 +340,9 @@ class PublishWorker @AssistedInject constructor(
     private data class ProcessedMediaResult(val bytes: ByteArray, val warning: String? = null)
 
     private suspend fun processMediaWithIntent(media: PostMediaEntity): ProcessedMediaResult? {
+        // Reuse the processed copy when nothing changed. isPostMediaUri is an
+        // exact PostMedia-folder check, so an original in PostMedia/Originals
+        // can never be mistaken for already-processed output.
         if (media.mediaStoreUri.isNotBlank() && mediaStore.isPostMediaUri(media.mediaStoreUri)) {
             val existingBytes = tryReadUri(media.mediaStoreUri)
             if (existingBytes != null) {
@@ -415,10 +412,25 @@ class PublishWorker @AssistedInject constructor(
         }
     }
 
+    /**
+     * Where to transform from, best first: the row's original (normally our
+     * copy in PostMedia/Originals), our copy located by content hash (row URI
+     * stale, e.g. legacy row not yet adopted), the processed copy (lossy
+     * re-encode, last resort), legacy hash-named files.
+     */
     private fun resolveSourceUri(media: PostMediaEntity): String? {
-        if (media.sourceUri.isNotBlank()     && tryReadUri(media.sourceUri)     != null) return media.sourceUri
-        if (media.mediaStoreUri.isNotBlank() && tryReadUri(media.mediaStoreUri) != null) return media.mediaStoreUri
+        if (media.sourceUri.isNotBlank() && isReadable(media.sourceUri)) return media.sourceUri
+        mediaStore.findOriginal(media.contentHash)?.let { return it.toString() }
+        if (media.mediaStoreUri.isNotBlank() && isReadable(media.mediaStoreUri)) return media.mediaStoreUri
         return mediaStore.resolveUri(media.contentHash, media.mimeType)?.toString()
+    }
+
+    /** Open-and-close probe — never reads a (possibly multi-GB) video into memory. */
+    private fun isReadable(uriStr: String): Boolean = try {
+        mediaStore.openInputStream(uriStr)?.use { true } ?: false
+    } catch (e: Exception) {
+        android.util.Log.w("PublishWorker", "not readable: $uriStr", e)
+        false
     }
 
     private fun tryReadUri(uriStr: String): ByteArray? = try {

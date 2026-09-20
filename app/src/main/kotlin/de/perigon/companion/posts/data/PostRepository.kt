@@ -1,39 +1,40 @@
 package de.perigon.companion.posts.data
 
-import android.content.Context
 import android.net.Uri
-import android.provider.MediaStore
 import androidx.room.withTransaction
 import androidx.work.ExistingWorkPolicy
 import androidx.work.WorkManager
 import de.perigon.companion.core.db.AppDatabase
-import de.perigon.companion.media.data.ConsolidateRepository
 import de.perigon.companion.media.domain.TransformIntent
-import de.perigon.companion.posts.domain.Post
 import de.perigon.companion.posts.domain.PostPublishState
 import de.perigon.companion.posts.worker.PublishWorker
 import de.perigon.companion.posts.worker.UnpublishWorker
-import de.perigon.companion.util.FileHasher
+import kotlinx.coroutines.CancellationException
 import javax.inject.Inject
 import javax.inject.Singleton
-import de.perigon.companion.posts.domain.computeSlug
-import dagger.hilt.android.qualifiers.ApplicationContext
 
 sealed class PublishResult {
     object Queued : PublishResult()
     object NeedsDcimPermission : PublishResult()
 }
 
+/**
+ * Posts and their media rows, plus the lifecycle of imported originals
+ * (PostMedia/Originals): created by MediaPrep at add time, released here when
+ * the last row referencing them goes away.
+ *
+ * The former consolidate auto-protection (protect the camera file behind
+ * sourceUri while a post needed it) is gone: posts now own a copy of every
+ * original, so the camera file is genuinely safe to delete once consolidated
+ * and backed up. Manual protection in Consolidate is unaffected.
+ */
 @Singleton
 class PostRepository @Inject constructor(
-    @param:ApplicationContext private val ctx: Context,
     private val db: AppDatabase,
     private val postDao: PostDao,
     private val postMediaDao: PostMediaDao,
-    private val consolidateRepo: ConsolidateRepository,
     private val mediaFileStore: PostMediaFileStore,
     private val workManager: WorkManager,
-    private val hasher: FileHasher,
 ) {
     suspend fun getById(id: Long): PostEntity? = postDao.getById(id)
 
@@ -102,14 +103,13 @@ class PostRepository @Inject constructor(
     suspend fun addMediaToPost(postId: Long, media: PostMediaEntity): PostMediaEntity {
         val withPost = media.copy(id = 0, postId = postId)
         val newId = postMediaDao.upsert(withPost)
-        protectSourceIfNeeded(withPost)
         return withPost.copy(id = newId)
     }
 
     suspend fun removeMediaFromPost(mediaId: Long) {
-        val media = postMediaDao.getById(mediaId)
+        val media = postMediaDao.getById(mediaId) ?: return
         postMediaDao.delete(mediaId)
-        if (media != null) unprotectSourceIfNeeded(media)
+        releaseOriginals(listOf(media))
     }
 
     /**
@@ -147,7 +147,7 @@ class PostRepository @Inject constructor(
             postMediaDao.deleteForPost(postId)
             postDao.delete(postId)
         }
-        for (m in media) unprotectSourceIfNeeded(m)
+        releaseOriginals(media)
     }
 
     suspend fun deletePostAndUnpublish(post: PostEntity) {
@@ -168,7 +168,8 @@ class PostRepository @Inject constructor(
         }
     }
 
-    suspend fun deleteMedia(mediaId: Long) = postMediaDao.delete(mediaId)
+    /** Same as [removeMediaFromPost] — every removal path releases originals. */
+    suspend fun deleteMedia(mediaId: Long) = removeMediaFromPost(mediaId)
 
     suspend fun updatePublishState(postId: Long, state: PostPublishState, at: Long = System.currentTimeMillis()) =
         postDao.updatePublishState(postId, state, at)
@@ -211,63 +212,49 @@ class PostRepository @Inject constructor(
         )
     }
 
-    // ── Source protection for consolidation ──
+    // ── Originals lifecycle ──
 
-    suspend fun unprotectAllMedia(postId: Long) {
-        val media = postMediaDao.getForPost(postId)
-        for (m in media) unprotectSourceIfNeeded(m)
-    }
-
-    private suspend fun protectSourceIfNeeded(media: PostMediaEntity) {
-        val cf = resolveConsolidateFile(media.sourceUri) ?: return
-        consolidateRepo.protect(cf.id)
-    }
-
-    private suspend fun unprotectSourceIfNeeded(media: PostMediaEntity) {
-        val cf = resolveConsolidateFile(media.sourceUri) ?: return
-        consolidateRepo.unprotect(cf.id)
+    /**
+     * Delete imported originals that no row references any more. Content-
+     * addressed: one file can back media in several posts, so the check runs
+     * by hash AFTER the rows are gone. deleteOriginalIfOwned refuses anything
+     * outside PostMedia/Originals, so legacy rows still pointing at gallery
+     * files can never cause a gallery deletion.
+     */
+    private suspend fun releaseOriginals(removed: List<PostMediaEntity>) {
+        for (media in removed.distinctBy { it.sourceUri }) {
+            if (postMediaDao.countByContentHash(media.contentHash) > 0) continue
+            mediaFileStore.deleteOriginalIfOwned(media.sourceUri)
+        }
     }
 
     /**
-     * Resolve a MediaStore source URI to its ConsolidateFileEntity, if any.
-     *
-     * The consolidate identity is (path, sha256). MediaStore gives us path,
-     * mtime and size — we use those to hit the shared FileHasher cache (or
-     * hash on miss) and then look up by (path, sha256).
+     * Idempotent, run at app start: rows added before originals were imported
+     * still point at gallery/shared URIs. Copy those originals in while they
+     * are still readable and repoint the row. Owned rows are skipped without
+     * IO; unreadable sources are retried next start; a source whose bytes no
+     * longer match contentHash is not the media that was added — its copy is
+     * discarded (unless other rows use it) and the row left untouched.
      */
-    private suspend fun resolveConsolidateFile(sourceUri: String) =
-        run {
-            if (sourceUri.isBlank()) return@run null
-            val uri = Uri.parse(sourceUri)
-            if (uri.scheme != "content") return@run null
-            val meta = queryMeta(uri) ?: return@run null
-            val sha = hasher.hashOrCached(meta.path, meta.mtime, meta.size) {
-                ctx.contentResolver.openInputStream(uri)
-                    ?: error("openInputStream returned null")
-            } ?: return@run null
-            consolidateRepo.findByPathSha256(meta.path, sha)
-        }
+    suspend fun adoptLegacyOriginals() {
+        for (media in postMediaDao.getAll()) {
+            if (media.sourceUri.isBlank() || mediaFileStore.isOriginalUri(media.sourceUri)) continue
 
-    private data class ConsolidateMeta(val path: String, val mtime: Long, val size: Long)
-
-    private fun queryMeta(uri: Uri): ConsolidateMeta? {
-        val projection = arrayOf(
-            MediaStore.Files.FileColumns.RELATIVE_PATH,
-            MediaStore.Files.FileColumns.DISPLAY_NAME,
-            MediaStore.Files.FileColumns.DATE_MODIFIED,
-            MediaStore.Files.FileColumns.SIZE,
-        )
-        return try {
-            ctx.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
-                if (!cursor.moveToFirst()) return null
-                val relPath = cursor.getString(0) ?: return null
-                val name = cursor.getString(1) ?: return null
-                val mtime = cursor.getLong(2) * 1000L
-                val size = cursor.getLong(3)
-                ConsolidateMeta(path = relPath + name, mtime = mtime, size = size)
+            val imported = try {
+                mediaFileStore.importOriginal(Uri.parse(media.sourceUri))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                continue
             }
-        } catch (_: Exception) {
-            null
+
+            if (imported.contentHash != media.contentHash) {
+                if (postMediaDao.countByContentHash(imported.contentHash) == 0) {
+                    mediaFileStore.deleteOriginalIfOwned(imported.uri)
+                }
+                continue
+            }
+            postMediaDao.updateSourceUri(media.id, imported.uri)
         }
     }
 }

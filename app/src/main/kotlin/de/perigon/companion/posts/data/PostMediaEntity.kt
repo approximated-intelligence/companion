@@ -16,10 +16,18 @@ import kotlinx.coroutines.flow.Flow
 data class PostMediaEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val postId: Long,
+    // sha256 of the ORIGINAL bytes. Also the name of our copy of the
+    // original: PostMedia/Originals/<contentHash>.<realExt>.
     val contentHash: String,
+    // OUTPUT type (image/jpeg or video/mp4) — what publishing produces. The
+    // original's real type lives in its file extension.
     val mimeType: String = "image/jpeg",
     val position: Int = 0,
+    // The PROCESSED copy in PostMedia; empty until the first publish.
     val mediaStoreUri: String = "",
+    // Our imported original in PostMedia/Originals. Rows created before
+    // import existed may still point at gallery URIs until adopted
+    // (PostRepository.adoptLegacyOriginals).
     val sourceUri: String = "",
     val addedAt: Long,
     // sha256 of the PROCESSED bytes as uploaded/served. This is the media's
@@ -66,6 +74,13 @@ interface PostMediaDao {
     @Query("SELECT * FROM post_media WHERE id = :id")
     suspend fun getById(id: Long): PostMediaEntity?
 
+    @Query("SELECT * FROM post_media")
+    suspend fun getAll(): List<PostMediaEntity>
+
+    /** How many rows (any post) still reference this original. */
+    @Query("SELECT COUNT(*) FROM post_media WHERE contentHash = :contentHash")
+    suspend fun countByContentHash(contentHash: String): Int
+
     /**
      * Reactive query returning one lead media entity per post — the pinned one
      * if set, otherwise the lowest-position media. Replaces the old N+1 pattern
@@ -95,6 +110,9 @@ interface PostMediaDao {
 
     @Query("UPDATE post_media SET position = :position WHERE id = :id")
     suspend fun updatePosition(id: Long, position: Int)
+
+    @Query("UPDATE post_media SET sourceUri = :sourceUri WHERE id = :id")
+    suspend fun updateSourceUri(id: Long, sourceUri: String)
 
     @Query("""
         UPDATE post_media SET
