@@ -73,7 +73,7 @@ class TrackRenderViewModel @Inject constructor(
 
     val recordedTracks: StateFlow<List<TrackSummary>> =
         trackRepository.observeSummaries()
-            .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     // --- tile source state ---
 
@@ -95,12 +95,13 @@ class TrackRenderViewModel @Inject constructor(
         viewModelScope.launch {
             context.contentResolver.takePersistableUriPermission(
                 uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            withContext(Dispatchers.IO) {
+            val copied = withContext(Dispatchers.IO) {
                 val cacheFile = SqliteTileSource.cacheFile(context.cacheDir)
-                context.contentResolver.openInputStream(uri)!!.use { input ->
-                    cacheFile.outputStream().use { output -> input.copyTo(output) }
-                }
+                val input = context.contentResolver.openInputStream(uri) ?: return@withContext false
+                input.use { cacheFile.outputStream().use { out -> it.copyTo(out) } }
+                true
             }
+            if (!copied) { snackbar.send("Cannot read tile file"); return@launch }
             appPrefs.setTileSource(uri.toString(), displayName)
             _tileState.value = buildTileState()
             snackbar.send("Tile source set: $displayName")

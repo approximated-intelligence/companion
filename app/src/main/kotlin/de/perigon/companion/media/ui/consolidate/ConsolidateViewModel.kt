@@ -11,6 +11,7 @@ import androidx.work.*
 import de.perigon.companion.backup.data.BackupStateRepository
 import de.perigon.companion.backup.worker.BackupWorker
 import de.perigon.companion.core.data.UserNotificationDao
+import de.perigon.companion.core.di.ApplicationScope
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.ui.SnackbarChannel
 import de.perigon.companion.media.data.ConsolidateFileEntity
@@ -24,6 +25,7 @@ import de.perigon.companion.util.saf.collectFileNames
 import de.perigon.companion.util.saf.listSubfolder
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
@@ -103,6 +105,7 @@ class ConsolidateViewModel @Inject constructor(
     private val notificationDao: UserNotificationDao,
     private val appPrefs: AppPrefs,
     private val hasher: FileHasher,
+    @ApplicationScope private val appScope: CoroutineScope,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ConsolidateUiState(dcimUri = appPrefs.dcimTreeUri()))
@@ -250,10 +253,16 @@ class ConsolidateViewModel @Inject constructor(
 
     fun startConsolidateAndBackup() {
         startConsolidate()
-        viewModelScope.launch {
+        // App scope, not viewModelScope: leaving the screen must not cancel
+        // the chained backup enqueue. isNotEmpty guards the initial-emission
+        // race where all{} over an empty list would fire startBackup before
+        // the consolidate work is even registered.
+        appScope.launch {
             workManager.getWorkInfosForUniqueWorkFlow(ConsolidateWorker.WORK_NAME)
                 .first { infos ->
-                    infos.all { it.state != WorkInfo.State.RUNNING && it.state != WorkInfo.State.ENQUEUED }
+                    infos.isNotEmpty() && infos.all {
+                        it.state != WorkInfo.State.RUNNING && it.state != WorkInfo.State.ENQUEUED
+                    }
                 }
             startBackup()
         }

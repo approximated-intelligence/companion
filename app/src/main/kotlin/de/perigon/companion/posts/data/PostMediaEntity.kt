@@ -24,9 +24,9 @@ data class PostMediaEntity(
     val addedAt: Long,
     // sha256 of the PROCESSED bytes as uploaded/served. This is the media's
     // published identity: server key and local PostMedia filename are both
-    // "<processedHash>.<ext>". Set at publish (or by the media migration);
-    // stale after an intent edit until the next publish — deliberately, since
-    // the server genuinely still holds the previous rendering.
+    // "<processedHash>.<ext>". Set at publish; stale after an intent edit
+    // until the next publish — deliberately, since the server genuinely still
+    // holds the previous rendering.
     val processedHash: String? = null,
     // Transform intent - persisted so nothing is lost on crash
     val cropLeft: Float = 0f,
@@ -86,9 +86,6 @@ interface PostMediaDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(media: List<PostMediaEntity>)
-
-    @Query("UPDATE post_media SET processedHash = :processedHash WHERE id = :id")
-    suspend fun updateProcessedHash(id: Long, processedHash: String?)
 
     @Query("DELETE FROM post_media WHERE id = :id")
     suspend fun delete(id: Long)

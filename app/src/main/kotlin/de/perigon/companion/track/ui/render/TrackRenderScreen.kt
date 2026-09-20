@@ -201,7 +201,9 @@ private fun RecordedTrackPickerDialog(
     onDismiss: () -> Unit,
 ) {
     val tracks by viewModel.recordedTracks.collectAsStateWithLifecycle()
-    var selected by remember { mutableStateOf(linkedSetOf<Long>()) }
+    // Read-only Set + reassignment: writes to a MutableState<mutable collection>
+    // don't recompose (and lint flags it). `+`/`-` return fresh sets.
+    var selected by remember { mutableStateOf<Set<Long>>(emptySet()) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -217,7 +219,7 @@ private fun RecordedTrackPickerDialog(
                     items(tracks, key = { it.id }) { track ->
                         Surface(
                             modifier = Modifier.fillMaxWidth().clickable {
-                                selected = LinkedHashSet(if (track.id in selected) selected - track.id else selected + track.id)
+                                selected = if (track.id in selected) selected - track.id else selected + track.id
                             },
                             color = if (track.id in selected) MaterialTheme.colorScheme.secondaryContainer
                                     else MaterialTheme.colorScheme.surfaceVariant,
@@ -231,7 +233,7 @@ private fun RecordedTrackPickerDialog(
                                 Checkbox(
                                     checked         = track.id in selected,
                                     onCheckedChange = {
-                                        selected = LinkedHashSet(if (it) selected + track.id else selected - track.id)
+                                        selected = if (it) selected + track.id else selected - track.id
                                     },
                                 )
                                 Column(Modifier.weight(1f)) {

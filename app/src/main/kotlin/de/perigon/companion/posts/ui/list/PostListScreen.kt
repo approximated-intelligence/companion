@@ -51,8 +51,6 @@ fun PostListScreen(
     val leadMediaStatus  by vm.leadMediaStatus.collectAsStateWithLifecycle()
     val editPreviews     by vm.editPreviews.collectAsStateWithLifecycle()
     val verifying        by vm.verifying.collectAsStateWithLifecycle()
-    val unmigratedCount  by vm.unmigratedCount.collectAsStateWithLifecycle()
-    val migrationRunning by vm.migrationRunning.collectAsStateWithLifecycle()
     val context          = LocalContext.current
     val snackbarHost     = remember { SnackbarHostState() }
 
@@ -121,17 +119,6 @@ fun PostListScreen(
                 modifier       = Modifier.padding(padding),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
             ) {
-                // TODO(media-migration): remove banner after all repos are migrated.
-                if (unmigratedCount > 0) {
-                    item(key = "media-migration-banner") {
-                        MediaMigrationBanner(
-                            count     = unmigratedCount,
-                            running   = migrationRunning,
-                            onMigrate = { vm.migrateLegacyMedia() },
-                        )
-                        HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                    }
-                }
                 items(posts, key = { it.id }) { post ->
                     val lead = leadMedia[post.id]
                     val status = leadMediaStatus[post.id] ?: MediaSourceStatus.GONE
@@ -153,51 +140,6 @@ fun PostListScreen(
                 }
             }
         }
-    }
-}
-
-// TODO(media-migration): remove after all repos are migrated.
-@Composable
-private fun MediaMigrationBanner(
-    count:     Int,
-    running:   Boolean,
-    onMigrate: () -> Unit,
-) {
-    var confirm by remember { mutableStateOf(false) }
-
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-        ),
-    ) {
-        Row(
-            Modifier.fillMaxWidth().padding(12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment     = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text("Media name migration", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    "$count published post(s) use legacy media names",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            if (running) {
-                CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-            } else {
-                FilledTonalButton(onClick = { confirm = true }) { Text("Migrate") }
-            }
-        }
-    }
-
-    if (confirm) {
-        AlertDialog(
-            onDismissRequest = { confirm = false },
-            title = { Text("Migrate media names?") },
-            text  = { Text("Published media of $count post(s) will be re-uploaded under content-derived names and the markdown updated. No media is re-processed; the published bytes are reused as-is.") },
-            confirmButton = { TextButton(onClick = { onMigrate(); confirm = false }) { Text("Migrate") } },
-            dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } },
-        )
     }
 }
 

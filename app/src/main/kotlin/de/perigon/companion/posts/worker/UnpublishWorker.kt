@@ -120,9 +120,9 @@ class UnpublishWorker @AssistedInject constructor(
 
     /**
      * Media on an external backend (S3/HTTP) is untouched by the GitHub
-     * commit — delete best-effort under both naming schemes. Failures and
-     * unsupported backends never fail the unpublish; undeleted keys are
-     * surfaced for manual cleanup.
+     * commit — delete best-effort by processedHash. Failures and unsupported
+     * backends never fail the unpublish; undeleted keys are surfaced for
+     * manual cleanup.
      */
     private suspend fun cleanupExternalMedia(postId: Long, slug: String) {
         val backend = mediaBackend() ?: return
@@ -132,8 +132,6 @@ class UnpublishWorker @AssistedInject constructor(
                 val ext = if (media.mimeType.startsWith("video")) "mp4" else "jpg"
                 listOfNotNull(
                     media.processedHash?.let { "static/$slug/$it.$ext" },
-                    // TODO(media-migration): remove after all repos are migrated.
-                    "static/$slug/${media.contentHash}.$ext",
                 )
             }.distinct()
         } else emptyList()

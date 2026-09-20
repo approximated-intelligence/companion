@@ -1,5 +1,6 @@
 package de.perigon.companion.posts.site.ui.editor
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -48,6 +49,14 @@ fun AssetEditScreen(
         vm.snackbar.events.collect { snackbarHost.showSnackbar(it) }
     }
 
+    val saveAndBack = {
+        if (state.isDirty) vm.save()
+        navController.popBackStack()
+    }
+    // Gesture/system back previously popped the destination directly, skipping
+    // the top-bar's save-on-back and silently discarding unsaved edits.
+    BackHandler(enabled = state.isDirty) { saveAndBack() }
+
     Scaffold(
         topBar = {
             AssetEditTopBar(
@@ -55,7 +64,7 @@ fun AssetEditScreen(
                 isDirty        = state.isDirty,
                 wrapLines      = state.wrapLines,
                 isSearchOpen   = state.isSearchOpen,
-                onBack         = { if (state.isDirty) vm.save(); navController.popBackStack() },
+                onBack         = { saveAndBack() },
                 onSave         = vm::save,
                 onToggleWrap   = vm::toggleWrapLines,
                 onToggleSearch = vm::toggleSearch,

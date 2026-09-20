@@ -425,7 +425,15 @@ class PostViewModel @Inject constructor(
 
     fun publish(onComplete: (() -> Unit)? = null) {
         viewModelScope.launch {
-            saveDraft()
+            // Was: saveDraft() (fire-and-forget launch) then read _state.id —
+            // a brand-new post's id was still 0L, so publish silently no-oped.
+            // Persist inline and await it before reading the id.
+            try {
+                persistDraft()
+            } catch (e: Exception) {
+                snackbar.send("Save failed: ${e.message}")
+                return@launch
+            }
             val id = _state.value.id
             if (id == 0L) return@launch
             when (postRepository.publish(id)) {

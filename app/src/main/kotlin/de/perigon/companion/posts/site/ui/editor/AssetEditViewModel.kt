@@ -3,12 +3,14 @@ package de.perigon.companion.posts.site.ui.editor
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import de.perigon.companion.core.di.ApplicationScope
 import de.perigon.companion.posts.site.data.AssetDao
 import de.perigon.companion.posts.site.data.AssetEntity
 import de.perigon.companion.posts.site.data.AssetSyncState
 import de.perigon.companion.core.ui.SnackbarChannel
 import de.perigon.companion.util.gitBlobSha1
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -30,6 +32,7 @@ data class AssetEditUiState(
 @HiltViewModel
 class AssetEditViewModel @Inject constructor(
     private val assetDao: AssetDao,
+    @ApplicationScope private val appScope: CoroutineScope,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AssetEditUiState())
@@ -121,7 +124,9 @@ class AssetEditViewModel @Inject constructor(
     fun save() {
         val asset   = _state.value.asset ?: return
         val content = _state.value.editContent
-        viewModelScope.launch {
+        // App scope, not viewModelScope: save-on-back pops the destination,
+        // which clears this VM and would cancel the Room write mid-flight.
+        appScope.launch {
             val hash     = gitBlobSha1(content)
             val newState = when (asset.syncState) {
                 AssetSyncState.IN_SYNC, AssetSyncState.SERVER_AHEAD ->

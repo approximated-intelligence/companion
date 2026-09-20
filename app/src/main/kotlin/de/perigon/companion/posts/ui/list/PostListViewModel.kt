@@ -6,9 +6,6 @@ import android.content.Intent
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.work.ExistingWorkPolicy
-import androidx.work.WorkInfo
-import androidx.work.WorkManager
 import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.prefs.CredentialStore
@@ -24,7 +21,6 @@ import de.perigon.companion.posts.data.PostRepository
 import de.perigon.companion.posts.data.PublishResult
 import de.perigon.companion.posts.domain.PostPublishState
 import de.perigon.companion.posts.domain.PostShareIntentBuilder
-import de.perigon.companion.posts.worker.MediaMigrationWorker
 import de.perigon.companion.util.network.GitHubClient
 import de.perigon.companion.core.ui.SnackbarChannel
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -41,7 +37,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -60,7 +55,6 @@ class PostListViewModel @Inject constructor(
     private val resolutionCache: MediaResolutionCache,
     private val previewCache: TransformPreviewCache,
     private val notificationDao: UserNotificationDao,
-    private val workManager: WorkManager,
 ) : ViewModel() {
 
     val posts: StateFlow<List<PostEntity>> =
@@ -97,18 +91,6 @@ class PostListViewModel @Inject constructor(
     val needsPermission: SharedFlow<Long> = _needsPermission.asSharedFlow()
 
     val notifications: UserNotificationDao get() = notificationDao
-
-    // TODO(media-migration): remove after all repos are migrated.
-    val unmigratedCount: StateFlow<Int> =
-        posts.map { list ->
-            list.count { it.publishState == PostPublishState.PUBLISHED && !it.mediaMigrated }
-        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
-
-    // TODO(media-migration): remove after all repos are migrated.
-    val migrationRunning: StateFlow<Boolean> =
-        workManager.getWorkInfosForUniqueWorkFlow(MediaMigrationWorker.WORK_NAME)
-            .map { infos -> infos.any { it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED } }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     init {
         // Prime caches when lead media set changes.
@@ -153,21 +135,12 @@ class PostListViewModel @Inject constructor(
         viewModelScope.launch { postRepository.deletePostAndUnpublish(post) }
     }
 
-    // TODO(media-migration): remove after all repos are migrated.
-    fun migrateLegacyMedia() {
-        workManager.enqueueUniqueWork(
-            MediaMigrationWorker.WORK_NAME,
-            ExistingWorkPolicy.KEEP,
-            MediaMigrationWorker.buildRequest(),
-        )
-    }
-
     /**
      * Verify against what readers actually see: the post is markdown at its
      * recorded (or derived) GitHub path; a media file EXISTS when it is
      * fetchable at any URL the published markdown could reference —
      * recorded/current static base or GitHub — regardless of upload
-     * mechanism. Names probed: processedHash, then legacy contentHash.
+     * mechanism. Names probed: processedHash.
      */
     fun verifyPost(post: PostEntity) {
         val github = githubClient() ?: run {
@@ -189,11 +162,7 @@ class PostListViewModel @Inject constructor(
                 val mediaList = postRepository.getMediaForPost(post.id)
                 val missingMedia = mediaList.count { media ->
                     val ext = if (media.mimeType.startsWith("video")) "mp4" else "jpg"
-                    val names = listOfNotNull(
-                        media.processedHash,
-                        // TODO(media-migration): remove fallback after all repos are migrated.
-                        media.contentHash,
-                    ).map { "$it.$ext" }
+                    val names = listOfNotNull(media.processedHash).map { "$it.$ext" }
                     val present = names.any { name ->
                         bases.any { base -> headOk("$base/static/${post.slug}/$name") } ||
                             runCatching { github.getFileSha("static/${post.slug}/$name") != null }.getOrDefault(false)

@@ -381,8 +381,14 @@ private fun MediaCarousel(
         localItems.apply { add(to.index, removeAt(from.index)) }
     }
 
+    // Commit only after a real drag. Keying on isAnyItemDragging alone fired
+    // at initial composition (false), calling onCommitOrder → bumpGeneration()
+    // → every merely-opened post was marked dirty and autosaved.
+    var everDragged by remember { mutableStateOf(false) }
     LaunchedEffect(reorderableLazyState.isAnyItemDragging) {
-        if (!reorderableLazyState.isAnyItemDragging) {
+        if (reorderableLazyState.isAnyItemDragging) {
+            everDragged = true
+        } else if (everDragged) {
             onCommitOrder(localItems.map { it.contentHash })
         }
     }

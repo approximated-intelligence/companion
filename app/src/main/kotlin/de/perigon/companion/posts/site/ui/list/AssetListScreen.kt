@@ -18,6 +18,7 @@ import androidx.navigation.NavController
 import de.perigon.companion.posts.site.data.AssetEntity
 import de.perigon.companion.posts.site.data.AssetSyncState
 import de.perigon.companion.core.ui.AppTopBar
+import de.perigon.companion.core.ui.NotificationObserver
 import de.perigon.companion.core.ui.Route
 
 @Composable
@@ -30,6 +31,13 @@ fun AssetListScreen(
 
     LaunchedEffect(Unit) {
         vm.snackbar.events.collect { snackbarHost.showSnackbar(it) }
+    }
+
+    // GitHub push/delete run as workers; their failures land in the
+    // notification ledger. Without this the very screen that triggers them
+    // showed nothing on failure.
+    LaunchedEffect(Unit) {
+        NotificationObserver.observe(this, vm.notifications, snackbarHost)
     }
 
     Scaffold(

@@ -74,6 +74,19 @@ class RecordingViewModel @Inject constructor(
 
     val snackbar = SnackbarChannel()
 
+    /**
+     * Transient UI state (prompts + selection) as its own flow + combine
+     * source. Previously the combine spliced these back in from _state.value,
+     * racing every mutator (a toggle/prompt set landing between combine's read
+     * and its write was lost).
+     */
+    private data class LocalUi(
+        val showStartNowPrompt: Boolean = false,
+        val showStopPrompt:     Boolean = false,
+        val selectedTrackIds:   Set<Long> = emptySet(),
+    )
+    private val localUi = MutableStateFlow(LocalUi())
+
     init {
         viewModelScope.launch {
             combine(
@@ -81,7 +94,8 @@ class RecordingViewModel @Inject constructor(
                 configPrefs.observe(),
                 trackRepository.observeSummaries(),
                 trackRepository.observeCurrentTrack(),
-            ) { status, config, tracks, currentTrack ->
+                localUi,
+            ) { status, config, tracks, currentTrack, local ->
                 RecordingUiState(
                     isRecording          = status.isRecording,
                     isPaused             = !status.isRecording && currentTrack?.state == CurrentTrackState.PAUSED,
@@ -95,9 +109,10 @@ class RecordingViewModel @Inject constructor(
                     todayDate            = LocalDate.now().toString(),
                     gpxExportFolderUri   = appPrefs.gpxExportFolderUri(),
                     gpxExportFolderLabel = appPrefs.gpxExportFolderLabel(),
-                    showStartNowPrompt   = _state.value.showStartNowPrompt,
-                    showStopPrompt       = _state.value.showStopPrompt,
-                    selectedTrackIds     = _state.value.selectedTrackIds,
+                    showStartNowPrompt   = local.showStartNowPrompt,
+                    showStopPrompt       = local.showStopPrompt,
+                    // Prune ids of deleted tracks.
+                    selectedTrackIds     = local.selectedTrackIds.intersect(tracks.map { it.id }.toSet()),
                 )
             }.collect { _state.value = it }
         }
@@ -139,7 +154,7 @@ class RecordingViewModel @Inject constructor(
 
     fun requestStop() {
         if (_state.value.config.autoScheduleEnabled) {
-            _state.update { it.copy(showStopPrompt = true) }
+            localUi.update { it.copy(showStopPrompt = true) }
         } else {
             doStop()
         }
@@ -152,7 +167,7 @@ class RecordingViewModel @Inject constructor(
     }
 
     fun confirmStop(choice: StopPromptChoice) {
-        _state.update { it.copy(showStopPrompt = false) }
+        localUi.update { it.copy(showStopPrompt = false) }
         when (choice) {
             StopPromptChoice.STOP_FOR_TODAY   -> doStop()
             StopPromptChoice.STOP_AND_DISABLE -> viewModelScope.launch {
@@ -165,7 +180,7 @@ class RecordingViewModel @Inject constructor(
     }
 
     fun confirmStartNow(start: Boolean) {
-        _state.update { it.copy(showStartNowPrompt = false) }
+        localUi.update { it.copy(showStartNowPrompt = false) }
         if (start) startRecording()
     }
 
@@ -200,7 +215,7 @@ class RecordingViewModel @Inject constructor(
                 val config = configPrefs.get()
                 val scheduler = AutoScheduler(ctx, config, appPrefs.isBackgroundGpsEnabled())
                 if (scheduler.isInActiveWindow() && !_state.value.isRecording) {
-                    _state.update { it.copy(showStartNowPrompt = true) }
+                    localUi.update { it.copy(showStartNowPrompt = true) }
                 }
             }
         }
@@ -227,14 +242,14 @@ class RecordingViewModel @Inject constructor(
     // ---- Selection ----
 
     fun toggleSelection(trackId: Long) {
-        _state.update { s ->
+        localUi.update { s ->
             val cur = s.selectedTrackIds
             s.copy(selectedTrackIds = if (trackId in cur) cur - trackId else cur + trackId)
         }
     }
 
-    fun selectAll()       { _state.update { s -> s.copy(selectedTrackIds = s.recentTracks.map { it.id }.toSet()) } }
-    fun clearSelection()  { _state.update { it.copy(selectedTrackIds = emptySet()) } }
+    fun selectAll()       { localUi.update { s -> s.copy(selectedTrackIds = _state.value.recentTracks.map { it.id }.toSet()) } }
+    fun clearSelection()  { localUi.update { it.copy(selectedTrackIds = emptySet()) } }
     fun toggleSelectAll() {
         val allIds = _state.value.recentTracks.map { it.id }.toSet()
         if (_state.value.selectedTrackIds == allIds) clearSelection() else selectAll()
@@ -270,7 +285,7 @@ class RecordingViewModel @Inject constructor(
             }
             if (hasActive) doStop()
             for (id in trackIds) trackRepository.deleteTrack(id)
-            _state.update { it.copy(selectedTrackIds = emptySet()) }
+            localUi.update { it.copy(selectedTrackIds = emptySet()) }
             snackbar.send("${trackIds.size} track(s) deleted")
         }
     }
@@ -302,7 +317,7 @@ class RecordingViewModel @Inject constructor(
         val trackIds = _state.value.selectedTrackIds
         if (trackIds.isEmpty()) return
         enqueueExport(trackIds, folderUri)
-        _state.update { it.copy(selectedTrackIds = emptySet()) }
+        localUi.update { it.copy(selectedTrackIds = emptySet()) }
     }
 
     fun exportSelectedOrSnack() {

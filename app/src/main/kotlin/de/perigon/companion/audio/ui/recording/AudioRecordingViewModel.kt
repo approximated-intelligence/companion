@@ -54,13 +54,22 @@ class AudioRecordingViewModel @Inject constructor(
 
     val snackbar = SnackbarChannel()
 
+    // Selection as its own flow + combine source. Previously the combine
+    // snapshot-copied _state.value.selectedIds while toggleSelection ran
+    // update{} on the same StateFlow — two writers, so a toggle landing
+    // between combine's read and its assignment was lost.
+    private val selectedIds = MutableStateFlow<Set<Long>>(emptySet())
+
     init {
         viewModelScope.launch {
             combine(
                 AudioRecordingService.status,
                 configPrefs.observe(),
                 repository.observeAll(),
-            ) { status, config, recordings ->
+                configPrefs.observeFolder(),
+                selectedIds,
+            ) { status, config, recordings, folder, selected ->
+                val (fUri, fLabel) = folder
                 AudioRecordingUiState(
                     isRecording        = status.isRecording,
                     isPaused           = status.isPaused,
@@ -69,9 +78,10 @@ class AudioRecordingViewModel @Inject constructor(
                     currentRecordingId = status.currentRecordingId,
                     config             = config,
                     recordings         = recordings,
-                    selectedIds        = _state.value.selectedIds,
-                    folderUri          = configPrefs.folderUri(),
-                    folderLabel        = configPrefs.folderLabel(),
+                    // Prune ids of deleted recordings as a bonus.
+                    selectedIds        = selected.intersect(recordings.map { it.id }.toSet()),
+                    folderUri          = fUri,
+                    folderLabel        = fLabel,
                 )
             }.collect { _state.value = it }
         }
@@ -151,33 +161,26 @@ class AudioRecordingViewModel @Inject constructor(
                 uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
             )
             configPrefs.setFolder(uri.toString(), displayName)
-            _state.update { it.copy(folderUri = uri.toString(), folderLabel = displayName) }
+            // Folder flows into UiState via configPrefs.observeFolder().
         }
     }
 
     fun clearFolder() {
         viewModelScope.launch {
             configPrefs.clearFolder()
-            _state.update { it.copy(folderUri = null, folderLabel = null) }
         }
     }
 
     // ---- Selection ----
 
-    fun toggleSelection(id: Long) {
-        _state.update { s ->
-            val cur = s.selectedIds
-            s.copy(selectedIds = if (id in cur) cur - id else cur + id)
-        }
-    }
+    fun toggleSelection(id: Long) =
+        selectedIds.update { cur -> if (id in cur) cur - id else cur + id }
 
-    fun clearSelection() { _state.update { it.copy(selectedIds = emptySet()) } }
+    fun clearSelection() { selectedIds.value = emptySet() }
 
     fun toggleSelectAll() {
         val all = _state.value.recordings.map { it.id }.toSet()
-        _state.update { s ->
-            s.copy(selectedIds = if (s.selectedIds == all) emptySet() else all)
-        }
+        selectedIds.update { cur -> if (cur == all) emptySet() else all }
     }
 
     // ---- Actions ----
@@ -205,7 +208,7 @@ class AudioRecordingViewModel @Inject constructor(
                 try { ctx.contentResolver.delete(Uri.parse(rec.uri), null, null) } catch (_: Exception) {}
                 repository.delete(id)
             }
-            _state.update { it.copy(selectedIds = emptySet()) }
+            selectedIds.value = emptySet()
             snackbar.send("${ids.size} recording(s) deleted")
         }
     }

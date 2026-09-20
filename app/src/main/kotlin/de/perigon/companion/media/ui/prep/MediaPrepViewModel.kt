@@ -5,6 +5,7 @@ import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import de.perigon.companion.core.prefs.AppPrefs
+import de.perigon.companion.media.data.MediaResolutionCache
 import de.perigon.companion.media.data.TransformPreviewCache
 import de.perigon.companion.media.domain.ItemStatus
 import de.perigon.companion.media.domain.MediaPrepItem
@@ -45,6 +46,7 @@ class MediaPrepViewModel @Inject constructor(
     private val postRepository: PostRepository,
     private val mediaFileStore: PostMediaFileStore,
     private val previewCache: TransformPreviewCache,
+    private val resolutionCache: MediaResolutionCache,
     private val appPrefs: AppPrefs,
 ) : ViewModel() {
 
@@ -58,6 +60,10 @@ class MediaPrepViewModel @Inject constructor(
     val mediaPickerMode: String get() = appPrefs.mediaPickerMode()
 
     val editPreviews: StateFlow<Map<Long, android.graphics.Bitmap>> = previewCache.previews
+
+    /** Non-blocking, cache-backed display resolution — thumbnails no longer do
+     *  file I/O per cell in composition. */
+    val resolvedMedia: StateFlow<Map<Long, ResolvedMedia>> = resolutionCache.resolved
 
     private val _editRequests = MutableSharedFlow<EditRequest>(extraBufferCapacity = 1)
     val editRequests: SharedFlow<EditRequest> = _editRequests.asSharedFlow()
@@ -75,6 +81,8 @@ class MediaPrepViewModel @Inject constructor(
                         MediaPrepItem(entity = entity, type = type, status = ItemStatus.EXISTING)
                     }
                     _state.update { it.copy(items = items, postId = id) }
+                    // Warms resolvedMedia off the main thread.
+                    resolutionCache.prime(mediaList, emptyMap())
                     for (item in items) {
                         if (item.hasEdits) previewCache.get(item.entity)
                     }
@@ -183,15 +191,18 @@ class MediaPrepViewModel @Inject constructor(
     // ---- Edit: resolve URI and handle fallback ----
 
     fun requestEdit(media: PostMediaEntity) {
-        val request = resolveEditUri(media)
-        if (request == null) {
-            snackbar.send("Media unavailable — both source and transformed files are missing")
-            return
-        }
-        if (request.isFallback) {
-            _state.update { it.copy(pendingFallbackEdit = request) }
-        } else {
-            _editRequests.tryEmit(request)
+        // resolveEditUri probes streams (openInputStream) — off the main thread.
+        viewModelScope.launch {
+            val request = withContext(Dispatchers.IO) { resolveEditUri(media) }
+            if (request == null) {
+                snackbar.send("Media unavailable — both source and transformed files are missing")
+                return@launch
+            }
+            if (request.isFallback) {
+                _state.update { it.copy(pendingFallbackEdit = request) }
+            } else {
+                _editRequests.tryEmit(request)
+            }
         }
     }
 
@@ -232,7 +243,4 @@ class MediaPrepViewModel @Inject constructor(
             previewCache.refresh(entity)
         }
     }
-
-    fun resolveDisplayMedia(entity: PostMediaEntity): ResolvedMedia =
-        mediaFileStore.resolveDisplayMedia(entity)
 }

@@ -202,14 +202,9 @@ class PublishWorker @AssistedInject constructor(
                 if (backendPair != null) {
                     try {
                         backendPair.first.putObject(key, bytes, contentType)
-                        // Content changed → previous rendering is stale; the
-                        // legacy contentHash-named key likewise.
+                        // Content changed → the previous rendering is stale.
                         if (previousHash != null && previousHash != processedHash) {
                             runCatching { backendPair.first.deleteMedia("static/${post.slug}/$previousHash.$ext") }
-                        }
-                        // TODO(media-migration): remove after all repos are migrated.
-                        if (previousHash == null) {
-                            runCatching { backendPair.first.deleteMedia("static/${post.slug}/${media.contentHash}.$ext") }
                         }
                     } catch (e: CancellationException) {
                         throw e
@@ -296,8 +291,6 @@ class PublishWorker @AssistedInject constructor(
 
         // The live markdown is now at postPath, media named by processedHash.
         postDao.updatePublishedInfo(postId, postPath, mediaBaseUrl)
-        // TODO(media-migration): remove after all repos are migrated.
-        postDao.setMediaMigrated(postId, true)
 
         // ---- Done ----
         emitProgress(stage = STAGE_DONE, progress = 100)

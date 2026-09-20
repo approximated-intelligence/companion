@@ -7,6 +7,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
@@ -220,60 +221,57 @@ private fun GridContent(
     state: ConsolidateUiState,
     vm: ConsolidateViewModel,
 ) {
-    LazyColumn(
+    // Single LazyVerticalGrid as the root — the previous LazyVerticalGrid
+    // nested in a LazyColumn behind heightIn(max = 10000.dp) forced every cell
+    // to compose at once. Cards/headers are full-span items.
+    val fullSpan: androidx.compose.foundation.lazy.grid.LazyGridItemSpanScope.() -> GridItemSpan =
+        { GridItemSpan(maxLineSpan) }
+
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(3),
         modifier = Modifier
             .padding(padding)
             .padding(horizontal = 16.dp)
-            .fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .fillMaxSize(),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
         contentPadding = PaddingValues(vertical = 16.dp),
     ) {
-        item { ConsolidateProgressCard(state) }
+        item(span = fullSpan) { ConsolidateProgressCard(state) }
 
         if (state.backupRunning || state.backupPackState != BackupWorker.STATE_DONE) {
-            item { BackupProgressCard(state) }
+            item(span = fullSpan) { BackupProgressCard(state) }
         }
 
         if (state.backupHasError) {
-            item { BackupErrorCard(state) }
+            item(span = fullSpan) { BackupErrorCard(state) }
         }
 
-        item { StatusCard(state) }
-        item { ActionButtons(state, vm) }
+        item(span = fullSpan) { StatusCard(state) }
+        item(span = fullSpan) { ActionButtons(state, vm) }
 
         if (state.sortedSafeToDelete.isNotEmpty()) {
-            item { HorizontalDivider() }
-            item { FileListHeader(state, vm) }
+            item(span = fullSpan) { HorizontalDivider() }
+            item(span = fullSpan) { FileListHeader(state, vm) }
 
-            item {
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(3),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 10000.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    items(state.sortedSafeToDelete, key = { it.id }) { file ->
-                        SafeToDeleteGridCell(
-                            file = file,
-                            isProtected = file.isProtected,
-                            isSelected = file.id in state.selectedIds,
-                            selectionMode = state.selectionMode,
-                            onLongPress = { if (!file.isProtected) vm.enterSelectionMode(file.id) },
-                            onTap = {
-                                if (state.selectionMode && !file.isProtected) vm.toggleSelected(file.id)
-                                else vm.showPreview(file.uri)
-                            },
-                            onProtect = { vm.protect(file.id) },
-                            onUnprotect = { vm.requestUnprotect(file.id) },
-                        )
-                    }
-                }
+            items(state.sortedSafeToDelete, key = { it.id }) { file ->
+                SafeToDeleteGridCell(
+                    file = file,
+                    isProtected = file.isProtected,
+                    isSelected = file.id in state.selectedIds,
+                    selectionMode = state.selectionMode,
+                    onLongPress = { if (!file.isProtected) vm.enterSelectionMode(file.id) },
+                    onTap = {
+                        if (state.selectionMode && !file.isProtected) vm.toggleSelected(file.id)
+                        else vm.showPreview(file.uri)
+                    },
+                    onProtect = { vm.protect(file.id) },
+                    onUnprotect = { vm.requestUnprotect(file.id) },
+                )
             }
         }
 
-        item { BackfillButton(state, vm) }
+        item(span = fullSpan) { BackfillButton(state, vm) }
     }
 }
 
@@ -334,7 +332,9 @@ private fun BackupProgressCard(state: ConsolidateUiState) {
 private fun BackupErrorCard(state: ConsolidateUiState) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(state.backupErrorType, color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.titleSmall)
+            // Human label, not the raw ERR_ constant the sibling Backup screen
+            // already translates.
+            Text(backupErrorLabel(state.backupErrorType), color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.titleSmall)
             if (state.backupErrorDetail.isNotEmpty()) { Text(state.backupErrorDetail, color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis) }
         }
     }
@@ -460,6 +460,13 @@ private fun backupStateLabel(state: String) = when (state) {
     BackupWorker.STATE_CONFIRMING -> "Confirming…"
     BackupWorker.STATE_DONE -> "Backup complete"
     else -> state
+}
+
+private fun backupErrorLabel(type: String) = when (type) {
+    BackupWorker.ERR_MISSING_CREDENTIALS -> "Missing credentials"
+    BackupWorker.ERR_B2_ERROR            -> "Backup storage error"
+    BackupWorker.ERR_INCONSISTENT        -> "Inconsistent backup state"
+    else                                 -> "Backup failed"
 }
 
 private fun formatSize(bytes: Long): String = when {

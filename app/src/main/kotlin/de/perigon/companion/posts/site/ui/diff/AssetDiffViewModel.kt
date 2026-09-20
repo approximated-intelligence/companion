@@ -13,11 +13,13 @@ import de.perigon.companion.util.network.GitHubClient
 import de.perigon.companion.core.ui.SnackbarChannel
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.ktor.client.HttpClient
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 sealed class DiffSegment {
@@ -86,7 +88,9 @@ class AssetDiffViewModel @Inject constructor(
                 val oldLines = (serverContent ?: "").lines()
                 val newLines = asset.content.lines()
 
-                val diffLines = computeDiff(oldLines, newLines)
+                // Myers diff + per-line word diff is CPU-bound and O(n·m) — a
+                // large asset froze the UI thread. Compute off-main.
+                val diffLines = withContext(Dispatchers.Default) { computeDiff(oldLines, newLines) }
 
                 _state.update { it.copy(isLoading = false, lines = diffLines) }
             } catch (e: Exception) {

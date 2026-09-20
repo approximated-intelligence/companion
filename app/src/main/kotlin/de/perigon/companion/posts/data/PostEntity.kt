@@ -30,10 +30,6 @@ data class PostEntity(
     // Media base URL the published markdown references, recorded at publish
     // time. Verify probes THIS base, not the current config.
     val publishedMediaBase: String? = null,
-    // TODO(media-migration): remove column after all repos are migrated.
-    // True once this post's media lives under processedHash names on the
-    // server. Set by MediaMigrationWorker and by every normal publish.
-    val mediaMigrated: Boolean = false,
 )
 
 @Dao
@@ -46,10 +42,6 @@ interface PostDao {
 
     @Query("SELECT * FROM posts WHERE publishState = 'QUEUED'")
     suspend fun getQueued(): List<PostEntity>
-
-    // TODO(media-migration): remove after all repos are migrated.
-    @Query("SELECT * FROM posts WHERE publishState = 'PUBLISHED' AND mediaMigrated = 0 ORDER BY localDate ASC")
-    suspend fun getUnmigratedPublished(): List<PostEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(post: PostEntity): Long
@@ -86,10 +78,6 @@ interface PostDao {
 
     @Query("UPDATE posts SET publishedPath = :publishedPath, publishedMediaBase = :publishedMediaBase WHERE id = :id")
     suspend fun updatePublishedInfo(id: Long, publishedPath: String?, publishedMediaBase: String?)
-
-    // TODO(media-migration): remove after all repos are migrated.
-    @Query("UPDATE posts SET mediaMigrated = :migrated WHERE id = :id")
-    suspend fun setMediaMigrated(id: Long, migrated: Boolean)
 
     @Query("UPDATE posts SET pinnedMediaId = :mediaId, updatedAt = :at WHERE id = :id")
     suspend fun updatePinnedMedia(id: Long, mediaId: Long?, at: Long = System.currentTimeMillis())

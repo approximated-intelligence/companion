@@ -31,6 +31,7 @@ import de.perigon.companion.media.domain.MediaPrepItem
 import de.perigon.companion.media.domain.MediaType
 import de.perigon.companion.media.domain.toTransformIntent
 import de.perigon.companion.posts.data.MediaSourceStatus
+import de.perigon.companion.posts.data.ResolvedMedia
 import de.perigon.companion.posts.ui.common.MediaSourceBadge
 import de.perigon.companion.core.ui.AppTopBar
 import sh.calvin.reorderable.*
@@ -42,8 +43,9 @@ fun MediaPrepScreen(
     incomingUris:  List<Uri> = emptyList(),
     viewModel:     MediaPrepViewModel = hiltViewModel(),
 ) {
-    val state        by viewModel.state.collectAsStateWithLifecycle()
-    val editPreviews by viewModel.editPreviews.collectAsStateWithLifecycle()
+    val state         by viewModel.state.collectAsStateWithLifecycle()
+    val editPreviews  by viewModel.editPreviews.collectAsStateWithLifecycle()
+    val resolvedMedia by viewModel.resolvedMedia.collectAsStateWithLifecycle()
     val snackbarHost = remember { SnackbarHostState() }
     var activeEditRequest by remember { mutableStateOf<EditRequest?>(null) }
 
@@ -116,8 +118,14 @@ fun MediaPrepScreen(
         localItems.apply { add(to.index, removeAt(from.index)) }
     }
 
+    // Commit order only after a real drag. Keying the effect on
+    // isAnyItemDragging alone fired at initial composition (false) and wrote
+    // the DB on every screen open.
+    var everDragged by remember { mutableStateOf(false) }
     LaunchedEffect(reorderableState.isAnyItemDragging) {
-        if (!reorderableState.isAnyItemDragging && localItems.isNotEmpty()) {
+        if (reorderableState.isAnyItemDragging) {
+            everDragged = true
+        } else if (everDragged && localItems.isNotEmpty()) {
             viewModel.commitOrder(localItems.map { it.id })
         }
     }
@@ -176,7 +184,8 @@ fun MediaPrepScreen(
                         ReorderableItem(reorderableState, key = item.id) { isDragging ->
                             val elevation by androidx.compose.animation.core.animateDpAsState(
                                 if (isDragging) 8.dp else 0.dp, label = "elevation")
-                            val resolved = viewModel.resolveDisplayMedia(item.entity)
+                            val resolved = resolvedMedia[item.entity.id]
+                                ?: ResolvedMedia(Uri.EMPTY, MediaSourceStatus.GONE)
                             Surface(shadowElevation = elevation) {
                                 MediaCell(
                                     item = item,

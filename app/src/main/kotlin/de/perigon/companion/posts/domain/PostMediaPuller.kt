@@ -8,10 +8,11 @@ import de.perigon.companion.util.network.GitHubClient
  * Composes [GitHubClient.getFileBinary] with [PostMediaFileStore] write
  * operations. Pure orchestration — no state, no Android context.
  *
- * Server files are named by [processedHash] when available; the
- * [contentHash] location covers repos not yet renamed by the media
- * migration. The local copy is written under whichever hash the file was
- * found by, keeping local and server names mirrored.
+ * Server files are named by [processedHash] — the media's published identity.
+ * The local copy is written under the same hash, keeping local and server
+ * names mirrored. A media with no [processedHash] was never uploaded, so
+ * there is nothing to pull. [contentHash] is retained for call-site
+ * compatibility.
  *
  * Returns the new local URI string, or null on failure.
  */
@@ -23,15 +24,8 @@ suspend fun pullPostMediaFromGitHub(
     mediaFileStore: PostMediaFileStore,
     processedHash: String? = null,
 ): String? {
-    val ext = if (mimeType.startsWith("video")) "mp4" else "jpg"
-
-    processedHash?.let { hash ->
-        github.getFileBinary("static/$slug/$hash.$ext")?.let { bytes ->
-            return mediaFileStore.writeFromBytes(hash, ext, bytes)
-        }
-    }
-
-    // TODO(media-migration): remove fallback after all repos are migrated.
-    val bytes = github.getFileBinary("static/$slug/$contentHash.$ext") ?: return null
-    return mediaFileStore.writeFromBytes(contentHash, ext, bytes)
+    val ext  = if (mimeType.startsWith("video")) "mp4" else "jpg"
+    val hash = processedHash ?: return null
+    val bytes = github.getFileBinary("static/$slug/$hash.$ext") ?: return null
+    return mediaFileStore.writeFromBytes(hash, ext, bytes)
 }
