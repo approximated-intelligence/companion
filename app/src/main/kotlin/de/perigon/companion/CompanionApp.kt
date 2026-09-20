@@ -10,11 +10,13 @@ import de.perigon.companion.backup.worker.syncBackupSchedule
 import de.perigon.companion.core.di.ApplicationScope
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.ui.NotificationChannels
+import de.perigon.companion.posts.data.PostRepository
 import de.perigon.companion.track.data.TrackConfigPrefs
 import de.perigon.companion.track.service.AutoScheduler
 import de.perigon.companion.track.service.BackgroundService
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.io.File
 import javax.inject.Inject
@@ -26,6 +28,7 @@ class CompanionApp : Application(), Configuration.Provider {
     @Inject lateinit var schedulePrefs: BackupSchedulePrefs
     @Inject lateinit var trackConfigPrefs: TrackConfigPrefs
     @Inject lateinit var appPrefs: AppPrefs
+    @Inject lateinit var postRepository: PostRepository
 
     // One application scope. Previously a second private
     // CoroutineScope(SupervisorJob() + Dispatchers.IO) shadowed the DI one.
@@ -42,6 +45,7 @@ class CompanionApp : Application(), Configuration.Provider {
         applyBackupSchedule()
         resumeBackground()
         migrateBackgroundPrefs()
+        adoptLegacyOriginals()
     }
 
     private fun applyBackupSchedule() {
@@ -59,6 +63,15 @@ class CompanionApp : Application(), Configuration.Provider {
             intervalHours = schedulePrefs.intervalHours(),
             policy        = ExistingPeriodicWorkPolicy.KEEP,
         )
+    }
+
+    /**
+     * Copy originals of media added before import existed into
+     * PostMedia/Originals, while their gallery/share sources are still
+     * readable. Idempotent and cheap once done (owned rows skip without IO).
+     */
+    private fun adoptLegacyOriginals() {
+        appScope.launch(Dispatchers.IO) { postRepository.adoptLegacyOriginals() }
     }
 
     /**
