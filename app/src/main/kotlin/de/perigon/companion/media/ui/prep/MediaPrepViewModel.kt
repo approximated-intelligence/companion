@@ -21,6 +21,7 @@ import de.perigon.companion.posts.data.PostRepository
 import de.perigon.companion.posts.domain.PostPublishState
 import de.perigon.companion.core.ui.SnackbarChannel
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
@@ -39,7 +40,9 @@ data class EditRequest(
 data class MediaPrepUiState(
     val items: List<MediaPrepItem> = emptyList(),
     val postId: Long = 0L,
-    val consumedUris: Set<Uri> = emptySet(),
+    // URIs currently being imported. Guards concurrent double delivery only;
+    // real dedup is by content hash against the post's rows.
+    val inFlightUris: Set<Uri> = emptySet(),
     val pendingFallbackEdit: EditRequest? = null,
 )
 
@@ -122,56 +125,58 @@ class MediaPrepViewModel @Inject constructor(
     // ---- Add media ----
 
     /**
-     * consumedUris guards against in-flight double delivery (two calls racing
-     * before either insert lands); existingHashes guards against content that
-     * is already attached. Removal prunes consumedUris, so remove-then-re-pick
-     * works.
+     * Every source is COPIED into PostMedia/Originals before it is attached;
+     * the row only ever references our copy. Gallery files get deleted,
+     * Consolidate removes camera originals, share grants lapse, frame grabs
+     * and track renders live in an evictable cache — none of that can break
+     * a post any more. A failed copy means the item is not attached.
      */
     fun addItems(uris: List<Uri>) {
-        val currentConsumed = _state.value.consumedUris
-        val newUris = uris.filter { it !in currentConsumed }
+        val newUris = uris.filter { it !in _state.value.inFlightUris }.distinct()
         if (newUris.isEmpty()) return
 
-        _state.update { it.copy(consumedUris = it.consumedUris + newUris) }
+        _state.update { it.copy(inFlightUris = it.inFlightUris + newUris) }
 
         viewModelScope.launch {
-            val resolvedPostId = ensurePostId()
+            try {
+                val resolvedPostId = ensurePostId()
 
-            val existingMedia = postRepository.getMediaForPost(resolvedPostId)
-            val existingHashes = existingMedia.map { it.contentHash }.toSet()
-            val startPosition = if (existingMedia.isNotEmpty()) existingMedia.maxOf { it.position } + 1 else 0
+                val existingMedia = postRepository.getMediaForPost(resolvedPostId)
+                val attachedHashes = existingMedia.map { it.contentHash }.toMutableSet()
+                val startPosition = if (existingMedia.isNotEmpty()) existingMedia.maxOf { it.position } + 1 else 0
+                var hasLead = existingMedia.isNotEmpty()
 
-            for ((offset, uri) in newUris.withIndex()) {
-                try {
-                    mediaFileStore.tryPersistReadPermission(uri)
+                for ((offset, uri) in newUris.withIndex()) {
+                    try {
+                        val original = mediaFileStore.importOriginal(uri)
+                        // Already in this post (or earlier in this batch).
+                        if (!attachedHashes.add(original.contentHash)) continue
 
-                    val mimeType = mediaFileStore.queryMimeType(uri) ?: "image/jpeg"
-                    val isVideo = mimeType.startsWith("video")
+                        val isVideo = original.mimeType.startsWith("video")
+                        val entity = PostMediaEntity(
+                            postId = resolvedPostId,
+                            contentHash = original.contentHash,
+                            mimeType = if (isVideo) "video/mp4" else "image/jpeg",
+                            position = startPosition + offset,
+                            mediaStoreUri = "",       // processed copy, set at publish
+                            sourceUri = original.uri, // our copy in PostMedia/Originals
+                            addedAt = System.currentTimeMillis(),
+                        )
 
-                    val contentHash = withContext(Dispatchers.IO) {
-                        mediaFileStore.computeContentHash(uri)
+                        val persisted = postRepository.addMediaToPost(resolvedPostId, entity)
+
+                        if (!hasLead) {
+                            postRepository.updatePinnedMedia(resolvedPostId, persisted.id)
+                            hasLead = true
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        snackbar.send("Failed to add media: ${e.message}")
                     }
-                    if (contentHash.isEmpty()) continue
-                    if (contentHash in existingHashes) continue
-
-                    val entity = PostMediaEntity(
-                        postId = resolvedPostId,
-                        contentHash = contentHash,
-                        mimeType = if (isVideo) "video/mp4" else "image/jpeg",
-                        position = startPosition + offset,
-                        mediaStoreUri = uri.toString(),
-                        sourceUri = uri.toString(),
-                        addedAt = System.currentTimeMillis(),
-                    )
-
-                    val persisted = postRepository.addMediaToPost(resolvedPostId, entity)
-
-                    if (existingMedia.isEmpty() && offset == 0) {
-                        postRepository.updatePinnedMedia(resolvedPostId, persisted.id)
-                    }
-                } catch (e: Exception) {
-                    snackbar.send("Failed to add media: ${e.message}")
                 }
+            } finally {
+                _state.update { it.copy(inFlightUris = it.inFlightUris - newUris.toSet()) }
             }
         }
     }
@@ -179,11 +184,6 @@ class MediaPrepViewModel @Inject constructor(
     // ---- Remove media ----
 
     fun removeItem(mediaId: Long) {
-        val sourceUri = _state.value.items.find { it.id == mediaId }?.entity?.sourceUri
-        if (!sourceUri.isNullOrBlank()) {
-            val uri = Uri.parse(sourceUri)
-            _state.update { it.copy(consumedUris = it.consumedUris - uri) }
-        }
         viewModelScope.launch {
             postRepository.removeMediaFromPost(mediaId)
         }
