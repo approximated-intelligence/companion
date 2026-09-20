@@ -1,7 +1,6 @@
 package de.perigon.companion.core.ui
 
 import android.content.Context
-import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
 import android.accessibilityservice.AccessibilityServiceInfo
 import androidx.compose.foundation.layout.Arrangement
@@ -54,28 +53,25 @@ fun rememberScreenSecurityThreat(): State<ScreenSecurityThreat> {
 
 data class ScreenSecurityThreat(
     val hasScreenReaders: Boolean = false,
-    val hasOverlayApps: Boolean = false,
 ) {
-    val isBlocked: Boolean get() = hasScreenReaders || hasOverlayApps
+    val isBlocked: Boolean get() = hasScreenReaders
 
-    val reason: String get() = buildString {
-        if (hasScreenReaders) append("A screen-reading accessibility service is active.")
-        if (hasScreenReaders && hasOverlayApps) append("\n\n")
-        if (hasOverlayApps) append("An app with screen overlay permission is active.")
-    }
+    val reason: String get() =
+        if (hasScreenReaders) "A screen-reading accessibility service is active." else ""
 
-    val remediation: String get() = buildString {
-        if (hasScreenReaders) append("Disable accessibility services in Android Settings → Accessibility.")
-        if (hasScreenReaders && hasOverlayApps) append("\n\n")
-        if (hasOverlayApps) append("Revoke overlay permissions in Android Settings → Apps → Special access → Display over other apps.")
-    }
+    val remediation: String get() =
+        if (hasScreenReaders) "Disable accessibility services in Android Settings → Accessibility." else ""
 }
 
+// The installed-package "overlay app" sweep was removed: on API 30+ it needs
+// QUERY_ALL_PACKAGES / a <queries> manifest block to see anything, so it was
+// effectively blind; it ran full package-manager IPC + createPackageContext per
+// package IN COMPOSITION on the main thread; and its OEM-prefix allowlist was
+// trivially name-spoofable. The screen-reader check below is sound and cheap,
+// and pairs with FLAG_SECURE (SecureWindow) which is the real screen-capture
+// defense.
 private fun checkThreats(context: Context): ScreenSecurityThreat =
-    ScreenSecurityThreat(
-        hasScreenReaders = checkScreenReaders(context),
-        hasOverlayApps = checkOverlayApps(context),
-    )
+    ScreenSecurityThreat(hasScreenReaders = checkScreenReaders(context))
 
 private fun checkScreenReaders(context: Context): Boolean {
     val am = context.getSystemService(AccessibilityManager::class.java) ?: return false
@@ -100,40 +96,6 @@ private fun checkScreenReaders(context: Context): Boolean {
         hasScreenReadFeedback || canRetrieveWindows
     }
 }
-
-private fun checkOverlayApps(context: Context): Boolean {
-    val pm = context.packageManager
-    val ownPackage = context.packageName
-
-    val installedPackages = pm.getInstalledPackages(0)
-
-    return installedPackages.any { pkgInfo ->
-        val pkg = pkgInfo.packageName
-
-        if (pkg == ownPackage) return@any false
-        if (isSystemPackage(pkg)) return@any false
-
-        try {
-            Settings.canDrawOverlays(context.createPackageContext(pkg, 0))
-        } catch (_: Exception) {
-            false
-        }
-    }
-}
-
-private fun isSystemPackage(pkg: String): Boolean =
-    pkg.startsWith("com.android.") ||
-    pkg.startsWith("com.google.android.") ||
-    pkg == "android" ||
-    pkg.startsWith("com.samsung.") ||
-    pkg.startsWith("com.sec.") ||
-    pkg.startsWith("com.oneplus.") ||
-    pkg.startsWith("com.xiaomi.") ||
-    pkg.startsWith("com.miui.") ||
-    pkg.startsWith("com.huawei.") ||
-    pkg.startsWith("com.oppo.") ||
-    pkg.startsWith("com.coloros.") ||
-    pkg.startsWith("com.vivo.")
 
 @Composable
 fun AccessibilityGate(content: @Composable () -> Unit) {

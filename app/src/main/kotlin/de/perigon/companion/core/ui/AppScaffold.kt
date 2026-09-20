@@ -1,12 +1,10 @@
 package de.perigon.companion.core.ui
-import android.content.Context
 import androidx.compose.runtime.Composable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavController
 import androidx.navigation.compose.currentBackStackEntryAsState
 import kotlinx.coroutines.channels.Channel
@@ -35,27 +33,12 @@ private val NAV_ITEMS = listOf(
 
 val LocalBackgroundGps = compositionLocalOf { false }
 
-/**
- * Quick synchronous check for background GPS setting.
- * Reads from the DataStore's cached preferences file on disk.
- * This is only used for nav menu filtering — not a hot path.
- */
-private fun isBackgroundGpsEnabled(context: Context): Boolean {
-    return try {
-        context.getSharedPreferences("app_prefs_fallback_check", Context.MODE_PRIVATE)
-            .getBoolean("background_gps", false)
-    } catch (_: Exception) {
-        false
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppTopBar(navController: NavController) {
     val backStack by navController.currentBackStackEntryAsState()
     val route     = backStack?.destination?.route ?: ""
     var menuOpen  by remember { mutableStateOf(false) }
-    val context   = LocalContext.current
 
     val backgroundGps = LocalBackgroundGps.current
 
