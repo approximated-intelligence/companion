@@ -13,9 +13,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.rememberNavController
 import de.perigon.companion.audio.service.AudioRecordingService
 import de.perigon.companion.core.prefs.AppPrefs
+import de.perigon.companion.core.ui.AppAccessGate
 import de.perigon.companion.core.ui.LaunchRequest
 import de.perigon.companion.core.ui.NavGraph
-import de.perigon.companion.core.ui.PermissionGate
 import de.perigon.companion.core.ui.Route
 import de.perigon.companion.core.ui.deliver
 import de.perigon.companion.core.ui.shareTargetFor
@@ -39,7 +39,7 @@ class MainActivity : ComponentActivity() {
      * notification tap — goes through this one queue into the nav graph.
      * A Channel, not a StateFlow: requests are events (two identical taps are
      * two requests) and nothing may be conflated away. Buffered, so requests
-     * made while PermissionGate is still showing are delivered once the
+     * made while the access gate is still showing are delivered once the
      * graph exists.
      */
     private val launchRequests = Channel<LaunchRequest>(Channel.UNLIMITED)
@@ -55,7 +55,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             CompanionTheme {
-                PermissionGate {
+                AppAccessGate {
                     val navController = rememberNavController()
                     val backgroundGps by appPrefs.observeBackgroundGps()
                         .collectAsStateWithLifecycle(false)

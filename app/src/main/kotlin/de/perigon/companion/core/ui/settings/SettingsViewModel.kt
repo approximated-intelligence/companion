@@ -3,6 +3,7 @@ package de.perigon.companion.core.ui.settings
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.goterl.lazysodium.LazySodiumAndroid
@@ -30,6 +31,8 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import javax.inject.Inject
 import kotlin.coroutines.cancellation.CancellationException
+
+private const val TAG = "SettingsViewModel"
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -101,6 +104,17 @@ class SettingsViewModel @Inject constructor(
 
     val snackbar = SnackbarChannel()
 
+    /**
+     * Rebuild the derived fields, preserving anything the user is currently
+     * being asked about. A pending bootstrap is unapplied UI state, not
+     * something buildState can recompute: assigning a fresh buildState() while
+     * that dialog is open would dismiss it and silently drop the scan.
+     */
+    private fun refreshState() {
+        val pending = _state.value.pendingBootstrap
+        _state.value = buildState().copy(pendingBootstrap = pending)
+    }
+
     private fun buildState(): SettingsState {
         val owner          = appPrefs.githubOwner()
         val repo           = appPrefs.githubRepo()
@@ -146,7 +160,7 @@ class SettingsViewModel @Inject constructor(
             val label = uri.lastPathSegment?.substringAfterLast(':') ?: "DCIM"
             persistSafGrant(ctx, uri, write = true)
             appPrefs.setDcimTree(uri.toString(), label)
-            _state.value = buildState()
+            refreshState()
             snackbar.send("DCIM folder set: $label")
         }
     }
@@ -154,7 +168,7 @@ class SettingsViewModel @Inject constructor(
     fun clearDcimTree() {
         viewModelScope.launch {
             appPrefs.clearDcimTree()
-            _state.value = buildState()
+            refreshState()
             snackbar.send("DCIM folder cleared")
         }
     }
@@ -167,42 +181,42 @@ class SettingsViewModel @Inject constructor(
                     action = BackgroundService.ACTION_STOP
                 })
             }
-            _state.value = buildState()
+            refreshState()
         }
     }
 
     fun setS3MediaEnabled(enabled: Boolean) {
         viewModelScope.launch {
             appPrefs.setS3MediaEnabled(enabled)
-            _state.value = buildState()
+            refreshState()
         }
     }
 
     fun setHttpMediaEnabled(enabled: Boolean) {
         viewModelScope.launch {
             appPrefs.setHttpMediaEnabled(enabled)
-            _state.value = buildState()
+            refreshState()
         }
     }
 
     fun setHttpMediaEndpoint(endpoint: String) {
         viewModelScope.launch {
             appPrefs.setHttpMediaEndpoint(endpoint.trim())
-            _state.value = buildState()
+            refreshState()
         }
     }
 
     fun setHttpMediaStaticUrl(staticUrl: String) {
         viewModelScope.launch {
             appPrefs.setHttpMediaStaticUrl(staticUrl.trim())
-            _state.value = buildState()
+            refreshState()
         }
     }
 
     fun setHttpMediaUser(user: String) {
         viewModelScope.launch {
             appPrefs.setHttpMediaUser(user.trim())
-            _state.value = buildState()
+            refreshState()
         }
     }
 
@@ -210,13 +224,13 @@ class SettingsViewModel @Inject constructor(
         // KeyStore encryption is disk I/O — off the main thread.
         viewModelScope.launch {
             withContext(Dispatchers.IO) { creds.setHttpMediaPassword(password) }
-            _state.value = buildState()
+            refreshState()
         }
     }
     fun setHttpMediaAuthType(type: String) {
         viewModelScope.launch {
             appPrefs.setHttpMediaAuthType(type)
-            _state.value = buildState()
+            refreshState()
         }
     }
 
@@ -224,7 +238,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             appPrefs.clearHttpMediaConfig()
             creds.clearHttpMediaPassword()
-            _state.value = buildState()
+            refreshState()
             snackbar.send("HTTP media config cleared")
         }
     }
@@ -232,7 +246,7 @@ class SettingsViewModel @Inject constructor(
     fun setJourneyStartDate(date: String) {
         viewModelScope.launch {
             appPrefs.setJourneyStartDate(date)
-            _state.value = buildState()
+            refreshState()
         }
     }
 
@@ -261,21 +275,21 @@ class SettingsViewModel @Inject constructor(
     fun setAutosaveDebounceMs(ms: Long) {
         viewModelScope.launch {
             appPrefs.setAutosaveDebounceMs(ms)
-            _state.value = buildState()
+            refreshState()
         }
     }
 
     fun setAutosaveMaxIntervalMs(ms: Long) {
         viewModelScope.launch {
             appPrefs.setAutosaveMaxIntervalMs(ms)
-            _state.value = buildState()
+            refreshState()
         }
     }
 
     fun setMediaPickerMode(mode: String) {
         viewModelScope.launch {
             appPrefs.setMediaPickerMode(mode)
-            _state.value = buildState()
+            refreshState()
         }
     }
 
@@ -290,11 +304,11 @@ class SettingsViewModel @Inject constructor(
             require(hex.length == 64) { "Expected 32-byte hex key" }
             viewModelScope.launch {
                 val result = handleNaclKey(hex)
-                _state.value = buildState()
+                refreshState()
                 snackbar.send(result.message(hex))
             }
         }.getOrElse { e ->
-            _state.value = buildState()
+            refreshState()
             snackbar.send("NaCl QR not recognised: ${e.message}")
         }
     }
@@ -310,11 +324,11 @@ class SettingsViewModel @Inject constructor(
             viewModelScope.launch {
                 appPrefs.setB2Config(endpoint = endpoint, keyId = keyId, bucket = bucket, region = region)
                 creds.setB2AppKey(appKey)
-                _state.value = buildState()
+                refreshState()
                 snackbar.send("B2 credentials imported")
             }
         }.getOrElse { e ->
-            _state.value = buildState()
+            refreshState()
             snackbar.send("B2 QR not recognised: ${e.message}")
         }
     }
@@ -330,12 +344,12 @@ class SettingsViewModel @Inject constructor(
             viewModelScope.launch {
                 appPrefs.setGithubRepo(owner = owner, repo = repo)
                 creds.setGithubToken(token)
-                _state.value = buildState()
+                refreshState()
                 snackbar.send("GitHub credentials imported")
                 fetchCname(token, owner, repo)
             }
         }.getOrElse { e ->
-            _state.value = buildState()
+            refreshState()
             snackbar.send("GitHub QR not recognised: ${e.message}")
         }
     }
@@ -354,11 +368,11 @@ class SettingsViewModel @Inject constructor(
             viewModelScope.launch {
                 appPrefs.setS3Config(endpoint, staticUrl, bucket, keyId, region)
                 creds.setS3SecretKey(secretKey)
-                _state.value = buildState()
+                refreshState()
                 snackbar.send("S3 media credentials imported")
             }
         }.getOrElse { e ->
-            _state.value = buildState()
+            refreshState()
             snackbar.send("S3 QR not recognised: ${e.message}")
         }
     }
@@ -375,11 +389,11 @@ class SettingsViewModel @Inject constructor(
             viewModelScope.launch {
                 appPrefs.setHttpMediaConfig(endpoint, staticUrl, user)
                 creds.setHttpMediaPassword(password)
-                _state.value = buildState()
+                refreshState()
                 snackbar.send("HTTP media credentials imported")
             }
         }.getOrElse { e ->
-            _state.value = buildState()
+            refreshState()
             snackbar.send("HTTP media QR not recognised: ${e.message}")
         }
     }
@@ -396,7 +410,7 @@ class SettingsViewModel @Inject constructor(
         runCatching { parseBootstrap(raw) }
             .onSuccess { b -> _state.update { it.copy(pendingBootstrap = PendingBootstrap(b)) } }
             .onFailure { e ->
-                _state.value = buildState()
+                refreshState()
                 snackbar.send("Bootstrap QR not recognised: ${e.message}")
             }
     }
@@ -444,11 +458,11 @@ class SettingsViewModel @Inject constructor(
 
             ensurePhoneKeypair()
         }.onSuccess {
-            _state.value = buildState()
+            refreshState()
             snackbar.send("Bootstrap configuration imported")
             b.github?.let { gh -> fetchCname(gh.token, gh.owner, gh.repo) }
         }.onFailure { e ->
-            _state.value = buildState()
+            refreshState()
             snackbar.send("Bootstrap import failed: ${e.message}")
         }
     }
@@ -466,18 +480,29 @@ class SettingsViewModel @Inject constructor(
         return true
     }
 
+    /**
+     * Discover the site URL from the repo's CNAME. Best-effort — but LOGGED:
+     * a silent failure here leaves siteUrl empty, and the only symptom is
+     * share links missing their host much later.
+     */
     private suspend fun fetchCname(token: String, owner: String, repo: String) {
         if (appPrefs.siteUrl()?.isNotBlank() == true) return
         try {
             val github = GitHubClient(http, token, owner, repo)
             val cname  = github.getFileContent("CNAME")?.trim()
-            if (!cname.isNullOrBlank()) {
-                val url = if (cname.startsWith("http")) cname else "https://$cname"
-                appPrefs.setSiteUrl(url)
-                _state.value = buildState()
-                snackbar.send("Site URL discovered: $url")
+            if (cname.isNullOrBlank()) {
+                Log.d(TAG, "no CNAME in $owner/$repo — set the site URL manually")
+                return
             }
-        } catch (_: Exception) { }
+            val url = if (cname.startsWith("http")) cname else "https://$cname"
+            appPrefs.setSiteUrl(url)
+            refreshState()
+            snackbar.send("Site URL discovered: $url")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "CNAME lookup failed for $owner/$repo", e)
+        }
     }
 
     /**
@@ -521,6 +546,7 @@ class SettingsViewModel @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            Log.w(TAG, "bucket check failed during key change", e)
             NaclKeyResult.Refused("could not check bucket: ${e.message}")
         }
     }
@@ -545,7 +571,7 @@ class SettingsViewModel @Inject constructor(
         // KeyStore clear is disk I/O — off the main thread.
         viewModelScope.launch {
             withContext(Dispatchers.IO) { creds.clearAll() }
-            _state.value = buildState()
+            refreshState()
             snackbar.send("Secrets cleared (B2 app key + GitHub token + phone key + S3 secret + HTTP password)")
         }
     }
@@ -554,7 +580,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             creds.clearAll()
             appPrefs.clearAll()
-            _state.value = buildState()
+            refreshState()
             snackbar.send("All settings cleared")
         }
     }
