@@ -6,6 +6,7 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.util.Log
 import androidx.compose.runtime.Immutable
+import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.*
@@ -218,7 +219,7 @@ class ConsolidateViewModel @Inject constructor(
     // ── Preview ──
 
     fun showPreview(uri: String) {
-        val contentUri = Uri.parse(uri)
+        val contentUri = uri.toUri()
         val mime = ctx.contentResolver.getType(contentUri) ?: "image/*"
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(contentUri, mime)
@@ -298,7 +299,7 @@ class ConsolidateViewModel @Inject constructor(
 
             withContext(Dispatchers.IO) {
                 for ((index, item) in items.withIndex()) {
-                    if (deleteSafDocument(Uri.parse(item.uri))) deletedIds += item.id else failed++
+                    if (deleteSafDocument(item.uri.toUri())) deletedIds += item.id else failed++
                     _state.update { it.copy(deleteProgress = DeleteProgress(index + 1, items.size)) }
                 }
             }
@@ -363,7 +364,7 @@ class ConsolidateViewModel @Inject constructor(
     )
 
     private suspend fun scanAndBackfill(): Int {
-        val treeUri = folderGrants.uri(FolderKeys.DCIM)?.let(Uri::parse) ?: return 0
+        val treeUri = folderGrants.uri(FolderKeys.DCIM)?.toUri() ?: return 0
 
         val consolidatedNames = collectFileNames(ctx, treeUri, "Consolidated")
         if (consolidatedNames.isEmpty()) return 0
@@ -388,7 +389,7 @@ class ConsolidateViewModel @Inject constructor(
         if (entries.isEmpty()) return 0
 
         val hashes = hasher.hashAllOrCached(byKey.keys.toList()) { key ->
-            ctx.contentResolver.openInputStream(Uri.parse(byKey.getValue(key).uri))
+            ctx.contentResolver.openInputStream(byKey.getValue(key).uri.toUri())
                 ?: error("openInputStream returned null")
         }
 

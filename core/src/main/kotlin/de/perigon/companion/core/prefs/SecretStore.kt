@@ -6,6 +6,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
+import androidx.core.content.edit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -63,13 +64,13 @@ class SecretStore(
     }
 
     fun put(key: String, value: String?) {
-        val editor = prefs.edit()
-        if (value == null) editor.remove(key) else editor.putString(key, encrypt(value))
-        editor.apply()
+        prefs.edit {
+            if (value == null) remove(key) else putString(key, encrypt(value))
+        }
     }
 
     fun clear() {
-        prefs.edit().clear().apply()
+        prefs.edit { clear() }
     }
 
     private fun encrypt(plaintext: String): String {

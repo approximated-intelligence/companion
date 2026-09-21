@@ -3,6 +3,7 @@ package de.perigon.companion.backup.worker
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import androidx.core.net.toUri
 import androidx.hilt.work.HiltWorker
 import androidx.work.*
 import com.goterl.lazysodium.LazySodiumAndroid
@@ -359,7 +360,7 @@ class RestoreWorker @AssistedInject constructor(
         val grants = mutableMapOf<String, Uri>()
 
         if (dcimUri != null) {
-            val uri = Uri.parse(dcimUri)
+            val uri = dcimUri.toUri()
             val perms = applicationContext.contentResolver.persistedUriPermissions
             if (perms.any { it.uri == uri && it.isWritePermission }) {
                 grants["DCIM"] = uri

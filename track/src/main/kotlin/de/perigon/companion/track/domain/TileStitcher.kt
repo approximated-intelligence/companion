@@ -3,6 +3,7 @@ package de.perigon.companion.track.domain
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Rect
+import androidx.core.graphics.createBitmap
 import de.perigon.companion.track.domain.GpxTrack
 import de.perigon.companion.track.domain.LatLon
 import kotlin.math.*
@@ -93,7 +94,7 @@ fun stitchTiles(
     val rawW   = tilesW * TILE_SIZE
     val rawH   = tilesH * TILE_SIZE
 
-    val raw    = Bitmap.createBitmap(rawW, rawH, Bitmap.Config.ARGB_8888)
+    val raw    = createBitmap(rawW, rawH)
     val canvas = Canvas(raw)
 
     for (ty in tileYMin..tileYMax) {
@@ -117,7 +118,7 @@ fun stitchTiles(
     val cropR = (cropRd - originX).roundToInt().coerceIn(0, rawW)
     val cropB = (cropBd - originY).roundToInt().coerceIn(0, rawH)
 
-    val output       = Bitmap.createBitmap(outputPx, outputPx, Bitmap.Config.ARGB_8888)
+    val output       = createBitmap(outputPx, outputPx)
     val outputCanvas = Canvas(output)
     outputCanvas.drawBitmap(
         raw,

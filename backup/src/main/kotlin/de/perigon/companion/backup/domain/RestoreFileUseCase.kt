@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.util.Log
+import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
 import de.perigon.companion.backup.data.BackupFileEntity
 import de.perigon.companion.backup.data.BackupStateRepository
@@ -45,7 +46,7 @@ fun resolveDestination(
 
     return when {
         path.startsWith("DCIM/") -> {
-            val uri = dcimUri?.let { Uri.parse(it) } ?: safGrants["DCIM"] ?: return null
+            val uri = dcimUri?.toUri() ?: safGrants["DCIM"] ?: return null
             val subfolders = parts.drop(1).dropLast(1)
             SafDest(uri, subfolders, displayName)
         }

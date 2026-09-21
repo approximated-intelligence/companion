@@ -23,6 +23,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
@@ -463,7 +464,7 @@ private fun SortChip(label: String, field: SortField, state: ConsolidateUiState,
 private fun SafeToDeleteListRow(file: SafeToDeleteView, isProtected: Boolean, isSelected: Boolean, selectionMode: Boolean, onLongPress: () -> Unit, onTap: () -> Unit, onProtect: () -> Unit, onUnprotect: () -> Unit) {
     Row(Modifier.fillMaxWidth().then(if (isSelected) Modifier.background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)) else Modifier).combinedClickable(onClick = onTap, onLongClick = { if (!selectionMode) onLongPress() }).padding(vertical = 6.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(48.dp)) {
-            AsyncImage(model = android.net.Uri.parse(file.uri), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            AsyncImage(model = file.uri.toUri(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
             if (selectionMode && isSelected) {
                 Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)), contentAlignment = Alignment.Center) { Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(20.dp)) }
             }
@@ -483,7 +484,7 @@ private fun SafeToDeleteListRow(file: SafeToDeleteView, isProtected: Boolean, is
 @Composable
 private fun SafeToDeleteGridCell(file: SafeToDeleteView, isProtected: Boolean, isSelected: Boolean, selectionMode: Boolean, onLongPress: () -> Unit, onTap: () -> Unit, onProtect: () -> Unit, onUnprotect: () -> Unit) {
     Box(Modifier.aspectRatio(1f).combinedClickable(onClick = onTap, onLongClick = { if (!selectionMode) onLongPress() })) {
-        AsyncImage(model = android.net.Uri.parse(file.uri), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        AsyncImage(model = file.uri.toUri(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
         if (selectionMode && isSelected) {
             Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)), contentAlignment = Alignment.Center) { Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(28.dp)) }
         }

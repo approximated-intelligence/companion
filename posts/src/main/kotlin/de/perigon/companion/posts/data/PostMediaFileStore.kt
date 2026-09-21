@@ -5,6 +5,7 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.util.Log
 import android.webkit.MimeTypeMap
+import androidx.core.net.toUri
 import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.core.prefs.FolderGrants
 import de.perigon.companion.core.prefs.FolderKeys
@@ -67,7 +68,7 @@ class PostMediaFileStore @Inject constructor(
     @Volatile
     private var noMediaEnsured = false
 
-    private fun treeUri(): Uri? = folderGrants.uri(FolderKeys.DCIM)?.let(Uri::parse)
+    private fun treeUri(): Uri? = folderGrants.uri(FolderKeys.DCIM)?.toUri()
 
     fun rootLabel(): String =
         folderGrants.label(FolderKeys.DCIM)?.let { "$it/$SUBFOLDER" } ?: "DCIM not granted"
@@ -89,7 +90,7 @@ class PostMediaFileStore @Inject constructor(
         val tree = treeUri() ?: return false
         if (!uriStr.startsWith(tree.toString())) return false
         val treeId = runCatching { DocumentsContract.getTreeDocumentId(tree) }.getOrNull() ?: return false
-        val docId = runCatching { DocumentsContract.getDocumentId(Uri.parse(uriStr)) }.getOrNull() ?: return false
+        val docId = runCatching { DocumentsContract.getDocumentId(uriStr.toUri()) }.getOrNull() ?: return false
         return folderWithinTree(treeId, docId) == folders
     }
 
@@ -145,8 +146,8 @@ class PostMediaFileStore @Inject constructor(
 
     /** Processed copy first, then the original; missing media is broken, not "look elsewhere". */
     fun resolveDisplayMedia(entity: PostMediaEntity): ResolvedMedia = when {
-        isReadable(entity.mediaStoreUri) -> ResolvedMedia(Uri.parse(entity.mediaStoreUri), MediaSourceStatus.POST_MEDIA)
-        isReadable(entity.sourceUri) -> ResolvedMedia(Uri.parse(entity.sourceUri), MediaSourceStatus.ORIGINAL)
+        isReadable(entity.mediaStoreUri) -> ResolvedMedia(entity.mediaStoreUri.toUri(), MediaSourceStatus.POST_MEDIA)
+        isReadable(entity.sourceUri) -> ResolvedMedia(entity.sourceUri.toUri(), MediaSourceStatus.ORIGINAL)
         else -> ResolvedMedia(Uri.EMPTY, MediaSourceStatus.GONE)
     }
 
@@ -190,7 +191,7 @@ class PostMediaFileStore @Inject constructor(
     suspend fun deleteOriginalIfOwned(uriStr: String): Boolean = withContext(Dispatchers.IO) {
         if (!isOriginalUri(uriStr)) return@withContext false
         try {
-            DocumentsContract.deleteDocument(ctx.contentResolver, Uri.parse(uriStr))
+            DocumentsContract.deleteDocument(ctx.contentResolver, uriStr.toUri())
         } catch (e: Exception) {
             Log.w(TAG, "cannot delete original $uriStr", e)
             false
@@ -264,7 +265,7 @@ class PostMediaFileStore @Inject constructor(
 
     /** file:// only for this app's own temp files (frame grabs); everything else via the resolver. */
     fun openInputStream(uriStr: String): InputStream? {
-        val uri = Uri.parse(uriStr)
+        val uri = uriStr.toUri()
         return when (uri.scheme) {
             "file" -> uri.path?.let(::File)?.takeIf { it.exists() }?.inputStream()
             else -> ctx.contentResolver.openInputStream(uri)

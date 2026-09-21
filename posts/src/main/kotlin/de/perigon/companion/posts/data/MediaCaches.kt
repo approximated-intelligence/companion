@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
 import android.util.LruCache
+import androidx.core.net.toUri
 import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.core.di.ApplicationScope
 import de.perigon.companion.posts.data.PostsPrefs
@@ -143,7 +144,7 @@ class MediaResolutionCache @Inject constructor(
 
         val base = remoteBaseUrl() ?: return ResolvedMedia(Uri.EMPTY, MediaSourceStatus.GONE)
         val url = "${base.trimEnd('/')}/$path"
-        return ResolvedMedia(Uri.parse(url), MediaSourceStatus.POST_MEDIA)
+        return ResolvedMedia(url.toUri(), MediaSourceStatus.POST_MEDIA)
     }
 
     /** Pick the active remote base URL. S3 → HTTP → Jekyll site. */

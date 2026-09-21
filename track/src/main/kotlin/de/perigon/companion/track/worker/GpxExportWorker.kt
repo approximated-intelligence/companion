@@ -5,6 +5,7 @@ import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.net.toUri
 import androidx.hilt.work.HiltWorker
 import androidx.work.*
 import dagger.assisted.Assisted
@@ -62,7 +63,7 @@ class GpxExportWorker @AssistedInject constructor(
 
         val folderUriStr = inputData.getString(KEY_FOLDER_URI)
             ?: return fail("No export folder specified")
-        val folderUri = Uri.parse(folderUriStr)
+        val folderUri = folderUriStr.toUri()
 
         if (!hasPersistedWriteGrant(ctx, folderUri)) {
             return fail("Write permission lost for export folder — re-select it in Settings")

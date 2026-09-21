@@ -18,6 +18,7 @@ import android.provider.DocumentsContract
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import dagger.hilt.android.AndroidEntryPoint
 import de.perigon.companion.audio.data.AudioConfigEntity
 import de.perigon.companion.audio.data.AudioConfigPrefs
@@ -129,7 +130,7 @@ class AudioRecordingService : Service() {
                 return@launch
             }
 
-            val folderUri = Uri.parse(folderUriStr)
+            val folderUri = folderUriStr.toUri()
             config = cfg
 
             val name = generateName(cfg.format)

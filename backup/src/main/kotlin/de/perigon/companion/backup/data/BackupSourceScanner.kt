@@ -1,7 +1,7 @@
 package de.perigon.companion.backup.data
 
 import android.content.Context
-import android.net.Uri
+import androidx.core.net.toUri
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.core.prefs.FolderGrants
@@ -78,7 +78,7 @@ class BackupSourceScanner @Inject constructor(
         if (unknownSize > 0) Log.w(TAG, "dropped $unknownSize file(s) with unknown size")
 
         val hashes = hasher.hashAllOrCached(byKey.keys.toList(), onProgress) { key ->
-            context.contentResolver.openInputStream(Uri.parse(byKey.getValue(key).uri))
+            context.contentResolver.openInputStream(byKey.getValue(key).uri.toUri())
                 ?: error("openInputStream returned null")
         }
 
@@ -97,9 +97,9 @@ class BackupSourceScanner @Inject constructor(
 
     private fun walkDcim(): List<ScannedFile> {
         val dcimUri = folderGrants.uri(FolderKeys.DCIM) ?: return emptyList()
-        return walkDocumentTree(context, Uri.parse(dcimUri), "DCIM")
+        return walkDocumentTree(context, dcimUri.toUri(), "DCIM")
     }
 
     private fun walkCustom(uri: String, displayName: String): List<ScannedFile> =
-        walkDocumentTree(context, Uri.parse(uri), displayName)
+        walkDocumentTree(context, uri.toUri(), displayName)
 }

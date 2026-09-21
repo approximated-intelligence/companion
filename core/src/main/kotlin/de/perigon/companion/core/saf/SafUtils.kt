@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
+import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
 
 /**
@@ -21,7 +22,7 @@ import androidx.documentfile.provider.DocumentFile
 
 fun hasDcimWriteGrant(context: Context, dcimUri: String?): Boolean {
     if (dcimUri.isNullOrBlank()) return false
-    val uri = Uri.parse(dcimUri)
+    val uri = dcimUri.toUri()
     return context.contentResolver.persistedUriPermissions.any {
         it.uri == uri && it.isWritePermission
     }
@@ -54,7 +55,7 @@ fun hasPersistedWriteGrant(context: Context, uri: Uri): Boolean =
  */
 fun dcimPickerInitialUri(): Uri {
     val encoded = Uri.encode("DCIM")
-    return Uri.parse("content://com.android.externalstorage.documents/document/primary%3A$encoded")
+    return "content://com.android.externalstorage.documents/document/primary%3A$encoded".toUri()
 }
 
 // ---------------------------------------------------------------------------
@@ -446,4 +447,4 @@ fun openInputStream(context: Context, uri: Uri): java.io.InputStream? =
  * Open an InputStream for a SAF URI string.
  */
 fun openInputStream(context: Context, uriStr: String): java.io.InputStream? =
-    openInputStream(context, Uri.parse(uriStr))
+    openInputStream(context, uriStr.toUri())

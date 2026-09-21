@@ -35,6 +35,7 @@ import java.time.LocalDate
 import java.time.LocalTime
 import javax.inject.Inject
 import androidx.core.content.FileProvider
+import androidx.core.net.toUri
 import java.io.File
 
 enum class StopPromptChoice { STOP_FOR_TODAY, STOP_AND_DISABLE, CANCEL }
@@ -321,13 +322,13 @@ class RecordingViewModel @Inject constructor(
     }
 
     fun exportSelectedOrSnack() {
-        val uri = _state.value.gpxExportFolderUri?.let { Uri.parse(it) }
+        val uri = _state.value.gpxExportFolderUri?.toUri()
             ?: run { snackbar.send("Set export folder first"); return }
         exportSelected(uri)
     }
 
     fun exportAll() {
-        val uri = _state.value.gpxExportFolderUri?.let { Uri.parse(it) }
+        val uri = _state.value.gpxExportFolderUri?.toUri()
             ?: run { snackbar.send("Set export folder first"); return }
         val allIds = _state.value.recentTracks.map { it.id }.toSet()
         if (allIds.isEmpty()) return
@@ -395,7 +396,7 @@ class RecordingViewModel @Inject constructor(
         val fix = _state.value.lastProvidedFix ?: return
         ctx.startActivity(
             Intent.createChooser(
-                Intent(Intent.ACTION_VIEW, Uri.parse("geo:${fix.lat},${fix.lon}?z=16")).apply {
+                Intent(Intent.ACTION_VIEW, "geo:${fix.lat},${fix.lon}?z=16".toUri()).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 },
                 "Open location",

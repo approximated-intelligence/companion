@@ -6,12 +6,16 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import androidx.core.graphics.createBitmap
 import de.perigon.companion.track.network.TileSource
 
 private const val OUTPUT_PX    = 1080
 private const val PADDING_FRAC = 0.05f
 private const val STROKE_WIDTH = 6f
 private const val DOT_RADIUS   = 14f
+private const val TRACK_COLOR  = 0xFF2979FF.toInt()
+private const val START_COLOR  = 0xFF00C853.toInt()
+private const val END_COLOR    = 0xFFD50000.toInt()
 
 /**
  * Render one or more GPX tracks to a square Bitmap.
@@ -54,7 +58,7 @@ private fun renderWithTiles(tracks: List<GpxTrack>, tileSource: TileSource, outp
 }
 
 private fun renderWhiteBackground(tracks: List<GpxTrack>, outputPx: Int): Bitmap {
-    val bitmap = Bitmap.createBitmap(outputPx, outputPx, Bitmap.Config.ARGB_8888)
+    val bitmap = createBitmap(outputPx, outputPx)
     val canvas = Canvas(bitmap)
     canvas.drawColor(Color.WHITE)
 
@@ -106,7 +110,7 @@ private fun drawTrackOverlay(canvas: Canvas, points: List<Pair<Float, Float>>) {
     if (points.isEmpty()) return
 
     val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color       = Color.parseColor("#2979FF")
+        color       = TRACK_COLOR
         style       = Paint.Style.STROKE
         strokeWidth = STROKE_WIDTH
         strokeCap   = Paint.Cap.ROUND
@@ -120,9 +124,9 @@ private fun drawTrackOverlay(canvas: Canvas, points: List<Pair<Float, Float>>) {
     canvas.drawPath(path, trackPaint)
 
     points.firstOrNull()?.let { (x, y) ->
-        canvas.drawCircle(x, y, DOT_RADIUS, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#00C853") })
+        canvas.drawCircle(x, y, DOT_RADIUS, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = START_COLOR })
     }
     points.lastOrNull()?.let { (x, y) ->
-        canvas.drawCircle(x, y, DOT_RADIUS, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#D50000") })
+        canvas.drawCircle(x, y, DOT_RADIUS, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = END_COLOR })
     }
 }

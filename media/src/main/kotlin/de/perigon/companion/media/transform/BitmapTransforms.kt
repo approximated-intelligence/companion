@@ -1,6 +1,7 @@
 package de.perigon.companion.media.transform
 
 import android.graphics.Bitmap
+import androidx.core.graphics.scale
 
 /**
  * Scale [bmp] so its long side is at most [maxPx]; returns [bmp] itself when
@@ -14,10 +15,8 @@ import android.graphics.Bitmap
 fun scaleToFit(bmp: Bitmap, maxPx: Int): Bitmap {
     if (bmp.width <= maxPx && bmp.height <= maxPx) return bmp
     val scale = maxPx.toFloat() / maxOf(bmp.width, bmp.height)
-    return Bitmap.createScaledBitmap(
-        bmp,
+    return bmp.scale(
         (bmp.width * scale).toInt().coerceAtLeast(1),
         (bmp.height * scale).toInt().coerceAtLeast(1),
-        true,
     )
 }

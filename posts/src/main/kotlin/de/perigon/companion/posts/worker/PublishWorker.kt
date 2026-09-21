@@ -1,7 +1,7 @@
 package de.perigon.companion.posts.worker
 
 import android.content.Context
-import android.net.Uri
+import androidx.core.net.toUri
 import android.graphics.BitmapFactory
 import android.media.MediaDataSource
 import android.media.MediaMetadataRetriever
@@ -444,7 +444,7 @@ class PublishWorker @AssistedInject constructor(
         val displayName = "${media.contentHash}_processed.$ext"
 
         val jobId = transformQueue.submit(
-            sourceUri           = Uri.parse(sourceUri),
+            sourceUri           = sourceUri.toUri(),
             displayName         = displayName,
             mediaType           = if (isVideo) "VIDEO" else "IMAGE",
             boxPx               = if (isVideo) TransformQueue.DEFAULT_VIDEO_BOX_PX else TransformQueue.DEFAULT_BOX_PX,

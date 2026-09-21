@@ -2,6 +2,7 @@ package de.perigon.companion.posts.ui.prep
 
 import android.net.Uri
 import androidx.compose.runtime.Immutable
+import androidx.core.net.toUri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -222,7 +223,7 @@ class MediaPrepViewModel @Inject constructor(
                 snackbar.send("This media file is missing — remove it and add it again")
                 return@launch
             }
-            _editRequests.tryEmit(EditRequest(media, Uri.parse(media.sourceUri)))
+            _editRequests.tryEmit(EditRequest(media, media.sourceUri.toUri()))
         }
     }
 

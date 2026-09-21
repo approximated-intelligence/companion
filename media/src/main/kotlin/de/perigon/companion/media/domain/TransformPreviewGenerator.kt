@@ -5,6 +5,8 @@ import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Log
+import androidx.core.graphics.scale
+import androidx.core.net.toUri
 import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.media.transform.ImageTransformParams
 import de.perigon.companion.media.transform.ImageTransformer
@@ -36,7 +38,7 @@ class TransformPreviewGenerator @Inject constructor(
         previewSizePx: Int = DEFAULT_PREVIEW_SIZE_PX,
     ): Bitmap? {
         if (intent.isIdentity || sourceUri.isBlank()) return null
-        val uri = Uri.parse(sourceUri)
+        val uri = sourceUri.toUri()
         return if (isVideo) videoPreview(uri, intent, previewSizePx)
                else imagePreview(uri, intent, previewSizePx)
     }
@@ -91,11 +93,9 @@ class TransformPreviewGenerator @Inject constructor(
     private fun scaleToPreview(bmp: Bitmap, previewSizePx: Int): Bitmap {
         val scale = previewSizePx.toFloat() / maxOf(bmp.width, bmp.height)
         if (scale >= 1f) return bmp
-        val scaled = Bitmap.createScaledBitmap(
-            bmp,
+        val scaled = bmp.scale(
             (bmp.width * scale).toInt().coerceAtLeast(1),
             (bmp.height * scale).toInt().coerceAtLeast(1),
-            true,
         )
         if (scaled !== bmp) bmp.recycle()
         return scaled

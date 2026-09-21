@@ -3,6 +3,7 @@ package de.perigon.companion.backup.consolidate.worker
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import androidx.core.net.toUri
 import androidx.hilt.work.HiltWorker
 import androidx.work.*
 import de.perigon.companion.backup.BackupChannels
@@ -85,7 +86,7 @@ class ConsolidateWorker @AssistedInject constructor(
             UserNotifications.error(notificationDao, CALLER_TAG, "DCIM folder not configured")
             return Result.failure()
         }
-        val treeUri = Uri.parse(dcimUri)
+        val treeUri = dcimUri.toUri()
 
         setForeground(foregroundInfo("Scanning…"))
 
@@ -109,7 +110,7 @@ class ConsolidateWorker @AssistedInject constructor(
         val pendingJobs = mutableMapOf<Long, ConsolidateFileEntity>()
 
         for (entity in pending) {
-            val sourceUri = Uri.parse(entity.uri)
+            val sourceUri = entity.uri.toUri()
             val target = consolidateTarget(entity.path.substringAfterLast('/'))
             // Unknown type, or the source is gone (getType resolves nothing
             // for a deleted document): drop the row rather than fail it on
@@ -159,7 +160,7 @@ class ConsolidateWorker @AssistedInject constructor(
                                     displayName = tj.displayName,
                                     mediaType = tj.mediaType,
                                     tempFile = File(tj.outputPath),
-                                    sourceUri = Uri.parse(entity.uri),
+                                    sourceUri = entity.uri.toUri(),
                                     sourceMtime = entity.mtime,
                                 )
                                 consolidateRepo.markDone(entity.id, tj.displayName)
@@ -238,7 +239,7 @@ class ConsolidateWorker @AssistedInject constructor(
                 setForeground(foregroundInfo("Hashing $hashed / $misses"))
             },
         ) { key ->
-            ctx.contentResolver.openInputStream(Uri.parse(byKey.getValue(key).uri))
+            ctx.contentResolver.openInputStream(byKey.getValue(key).uri.toUri())
                 ?: error("openInputStream returned null")
         }
 

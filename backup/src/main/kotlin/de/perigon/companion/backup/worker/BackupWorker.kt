@@ -2,7 +2,7 @@ package de.perigon.companion.backup.worker
 
 import android.content.ContentResolver
 import android.content.Context
-import android.net.Uri
+import androidx.core.net.toUri
 import androidx.hilt.work.HiltWorker
 import androidx.work.*
 import com.goterl.lazysodium.LazySodiumAndroid
@@ -26,7 +26,7 @@ import kotlin.coroutines.cancellation.CancellationException
 
 private class AndroidBackupFileSource(private val resolver: ContentResolver) : BackupFileSource {
     override fun open(uri: String): InputStream =
-        resolver.openInputStream(Uri.parse(uri))
+        resolver.openInputStream(uri.toUri())
             ?: error("Cannot open stream for $uri")
 }
 

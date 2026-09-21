@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.runtime.Immutable
+import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -193,7 +194,7 @@ class AudioRecordingViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             val rec = repository.getById(id) ?: return@launch
             try {
-                ctx.contentResolver.delete(Uri.parse(rec.uri), null, null)
+                ctx.contentResolver.delete(rec.uri.toUri(), null, null)
             } catch (_: Exception) {}
             repository.delete(id)
             snackbar.send("Recording deleted")
@@ -205,7 +206,7 @@ class AudioRecordingViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             for (id in ids) {
                 val rec = repository.getById(id) ?: continue
-                try { ctx.contentResolver.delete(Uri.parse(rec.uri), null, null) } catch (_: Exception) {}
+                try { ctx.contentResolver.delete(rec.uri.toUri(), null, null) } catch (_: Exception) {}
                 repository.delete(id)
             }
             selectedIds.value = emptySet()
@@ -216,7 +217,7 @@ class AudioRecordingViewModel @Inject constructor(
     fun play(id: Long) {
         viewModelScope.launch {
             val rec = repository.getById(id) ?: return@launch
-            val uri = Uri.parse(rec.uri)
+            val uri = rec.uri.toUri()
             val mime = AudioFormat.ALL.firstOrNull { it.name == rec.format }?.mimeType ?: "audio/*"
             try {
                 ctx.startActivity(
@@ -242,7 +243,7 @@ class AudioRecordingViewModel @Inject constructor(
                 Intent.createChooser(
                     Intent(Intent.ACTION_SEND).apply {
                         type = mime
-                        putExtra(Intent.EXTRA_STREAM, Uri.parse(rec.uri))
+                        putExtra(Intent.EXTRA_STREAM, rec.uri.toUri())
                         putExtra(Intent.EXTRA_SUBJECT, rec.name)
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
                     },
@@ -258,7 +259,7 @@ class AudioRecordingViewModel @Inject constructor(
         val orphans = repository.getOrphaned()
         for (o in orphans) {
             val (duration, size) = try {
-                val uri = Uri.parse(o.uri)
+                val uri = o.uri.toUri()
                 val sizeBytes = ctx.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: 0L
                 val durationMs = probeDurationMs(uri) ?: 0L
                 durationMs to sizeBytes
