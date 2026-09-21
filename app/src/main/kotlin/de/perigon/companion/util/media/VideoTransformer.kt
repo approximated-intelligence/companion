@@ -25,7 +25,7 @@ import kotlin.math.max
  * Wraps Media3 Transformer. Each effect is only added when not identity.
  *
  * Stateless — requires a Handler/Looper for Transformer execution.
- * Used by TransformQueue (post publish) and ConsolidateWorker (DCIM compression).
+ * Used by TransformQueue, which serves both post publish and consolidation.
  */
 data class VideoTransformParams(
     val orientationDegrees: Int = 0,
@@ -106,29 +106,6 @@ object VideoTransformer {
         }
     }
 
-    /**
-     * Simple scale-and-encode with no user transforms. Used for consolidation.
-     */
-    suspend fun scaleAndEncode(
-        context: Context,
-        sourceUri: Uri,
-        outFile: File,
-        boxPx: Int = 640,
-        sourceWidth: Int = 0,
-        sourceHeight: Int = 0,
-        handler: Handler,
-    ) = transform(
-        context = context,
-        sourceUri = sourceUri,
-        outFile = outFile,
-        params = VideoTransformParams(
-            boxPx = boxPx,
-            sourceWidth = sourceWidth,
-            sourceHeight = sourceHeight,
-        ),
-        handler = handler,
-    )
-
     private fun buildMediaItem(sourceUri: Uri, params: VideoTransformParams): MediaItem {
         val builder = MediaItem.Builder().setUri(sourceUri)
 
@@ -147,7 +124,7 @@ object VideoTransformer {
     private fun buildEffects(params: VideoTransformParams): List<androidx.media3.common.Effect> {
         val effects = mutableListOf<androidx.media3.common.Effect>()
 
-        // Coarse orientation (90° steps + flip) — unchanged from original
+        // Coarse orientation (90° steps + flip)
         if (params.hasOrientation) {
             val builder = ScaleAndRotateTransformation.Builder()
             if (params.orientationDegrees != 0) {
@@ -159,7 +136,7 @@ object VideoTransformer {
             effects += builder.build()
         }
 
-        // Fine rotation — unchanged from original
+        // Fine rotation
         if (params.hasFineRotation) {
             effects += ScaleAndRotateTransformation.Builder()
                 .setRotationDegrees(-params.fineRotationDegrees)
@@ -167,7 +144,6 @@ object VideoTransformer {
         }
 
         // Crop — Media3 coordinates: X [-1,+1] left-to-right, Y [-1,+1] bottom-to-top
-        // unchanged from original
         if (params.hasCrop) {
             val cropLeftM3   =  2f * params.cropLeft - 1f
             val cropRightM3  =  2f * params.cropRight - 1f
@@ -178,7 +154,6 @@ object VideoTransformer {
 
         // Scale: constrain the longer side to boxPx, preserve aspect ratio, no black bars.
         // Only added when source dimensions are known AND downscaling is needed.
-        // If dimensions unknown: no Presentation added — source resolution passes through.
         val w = params.sourceWidth
         val h = params.sourceHeight
         if (w > 0 && h > 0) {
@@ -192,9 +167,7 @@ object VideoTransformer {
                     outW, outH, Presentation.LAYOUT_SCALE_TO_FIT
                 )
             }
-            // Source already within boxPx — no Presentation needed, no bars
         }
-        // else: dimensions unknown — skip Presentation entirely, pass through at source resolution
 
         return effects
     }

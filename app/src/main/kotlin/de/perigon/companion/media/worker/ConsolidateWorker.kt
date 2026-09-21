@@ -18,14 +18,19 @@ import de.perigon.companion.media.data.ConsolidateFileEntity
 import de.perigon.companion.media.data.ConsolidateRepository
 import de.perigon.companion.media.data.TransformJobStatus
 import de.perigon.companion.media.data.TransformQueue
+import de.perigon.companion.media.domain.consolidateTarget
 import de.perigon.companion.util.FileHasher
 import de.perigon.companion.util.HashKey
+import de.perigon.companion.util.media.readPreservedExif
+import de.perigon.companion.util.media.writeExif
 import de.perigon.companion.util.saf.ScannedFile
 import de.perigon.companion.util.saf.collectFileNames
+import de.perigon.companion.util.saf.listSubfolder
 import de.perigon.companion.util.saf.navigateOrCreate
 import de.perigon.companion.util.saf.setMtime
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import java.io.File
 
@@ -38,6 +43,13 @@ private const val NOTIF_ID = 4030
 private const val CONTENT_REQUEST_CODE = 9022
 private const val CALLER_TAG = "consolidate"
 
+/**
+ * Downscaled copies of DCIM/Camera in DCIM/Consolidated.
+ *
+ * Images go through the app's one decoder (upright pixels, HEIC/HEIF/AVIF
+ * included) and come out as JPEG carrying the source's whitelisted EXIF with
+ * Orientation NORMAL. Names come from [consolidateTarget] only.
+ */
 @HiltWorker
 class ConsolidateWorker @AssistedInject constructor(
     @Assisted private val ctx: Context,
@@ -99,25 +111,22 @@ class ConsolidateWorker @AssistedInject constructor(
         val pendingJobs = mutableMapOf<Long, ConsolidateFileEntity>()
 
         for (entity in pending) {
-            val mimeType = ctx.contentResolver.getType(Uri.parse(entity.uri))
-            if (mimeType == null) {
+            val sourceUri = Uri.parse(entity.uri)
+            val target = consolidateTarget(entity.path.substringAfterLast('/'))
+            // Unknown type, or the source is gone (getType resolves nothing
+            // for a deleted document): drop the row rather than fail it on
+            // every run.
+            if (target == null || ctx.contentResolver.getType(sourceUri) == null) {
                 consolidateRepo.deleteByIds(setOf(entity.id))
                 continue
             }
-            val isVideo = mimeType.startsWith("video")
-
-            val stem = entity.path.substringAfterLast('/').substringBeforeLast('.')
-            val outName = if (isVideo) "${stem}_s.mp4" else "${stem}_s.jpg"
-
-            val mediaType = if (isVideo) "VIDEO" else "IMAGE"
-            val boxPx = if (isVideo) TransformQueue.DEFAULT_VIDEO_BOX_PX
-                        else TransformQueue.DEFAULT_BOX_PX
 
             val transformId = transformQueue.submitIfAbsent(
-                sourceUri = Uri.parse(entity.uri),
-                displayName = outName,
-                mediaType = mediaType,
-                boxPx = boxPx,
+                sourceUri = sourceUri,
+                displayName = target.name,
+                mediaType = if (target.isVideo) "VIDEO" else "IMAGE",
+                boxPx = if (target.isVideo) TransformQueue.DEFAULT_VIDEO_BOX_PX
+                        else TransformQueue.DEFAULT_BOX_PX,
                 callerTag = CALLER_TAG,
             )
             pendingJobs[transformId] = entity
@@ -152,10 +161,14 @@ class ConsolidateWorker @AssistedInject constructor(
                                     displayName = tj.displayName,
                                     mediaType = tj.mediaType,
                                     tempFile = File(tj.outputPath),
+                                    sourceUri = Uri.parse(entity.uri),
                                     sourceMtime = entity.mtime,
                                 )
                                 consolidateRepo.markDone(entity.id, tj.displayName)
-                            } catch (_: Exception) {
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                Log.w(TAG, "placing ${tj.displayName} failed", e)
                                 failed++
                             }
                         } else {
@@ -210,10 +223,8 @@ class ConsolidateWorker @AssistedInject constructor(
         for (sf in cameraFiles) {
             val size = sf.size ?: continue
             if (size == 0L) continue
-            val stem = sf.path.substringAfterLast('/').substringBeforeLast('.')
-            val isVideo = sf.path.endsWith(".mp4", ignoreCase = true)
-            val outName = if (isVideo) "${stem}_s.mp4" else "${stem}_s.jpg"
-            if (outName in consolidatedNames) continue
+            val target = consolidateTarget(sf.path.substringAfterLast('/')) ?: continue
+            if (target.name in consolidatedNames) continue
             byKey.putIfAbsent(HashKey(sf.path, sf.mtime, size), sf)
         }
         if (byKey.isEmpty()) return 0
@@ -251,26 +262,22 @@ class ConsolidateWorker @AssistedInject constructor(
         return entities.size
     }
 
-    private fun walkCameraSubfolder(dcimTreeUri: Uri): List<ScannedFile> {
-        return de.perigon.companion.util.saf.listSubfolder(ctx, dcimTreeUri, CAMERA_SUBFOLDER)
-            ?.filter { sf ->
-                val name = sf.path.substringAfterLast('/')
-                val lower = name.lowercase()
-                lower.endsWith(".jpg") || lower.endsWith(".jpeg") ||
-                    lower.endsWith(".mp4") || lower.endsWith(".png")
-            }
+    private fun walkCameraSubfolder(dcimTreeUri: Uri): List<ScannedFile> =
+        listSubfolder(ctx, dcimTreeUri, CAMERA_SUBFOLDER)
+            ?.filter { sf -> consolidateTarget(sf.path.substringAfterLast('/')) != null }
             ?.map { sf -> sf.copy(path = "DCIM/${sf.path}") }
             ?: emptyList()
-    }
 
     private fun placeInConsolidated(
         dcimTreeUri: Uri,
         displayName: String,
         mediaType: String,
         tempFile: File,
+        sourceUri: Uri,
         sourceMtime: Long,
     ) {
         try {
+            if (mediaType != "VIDEO") copyExif(sourceUri, tempFile)
             val folder = navigateOrCreate(ctx, dcimTreeUri, listOf(CONSOLIDATED_SUBFOLDER))
             folder.findFile(displayName)?.delete()
             val mimeType = if (mediaType == "VIDEO") "video/mp4" else "image/jpeg"
@@ -282,6 +289,22 @@ class ConsolidateWorker @AssistedInject constructor(
             setMtime(ctx, doc.uri, sourceMtime)
         } finally {
             tempFile.delete()
+        }
+    }
+
+    /**
+     * Best-effort: the pixels are the point of consolidation. A source whose
+     * metadata can't be parsed still gets its copy — without EXIF, and the
+     * log says why.
+     */
+    private fun copyExif(sourceUri: Uri, target: File) {
+        try {
+            val tags = ctx.contentResolver.openFileDescriptor(sourceUri, "r")
+                ?.use { pfd -> readPreservedExif(pfd.fileDescriptor) }
+                ?: emptyMap()
+            if (tags.isNotEmpty()) writeExif(target, tags)
+        } catch (e: Exception) {
+            Log.w(TAG, "EXIF not copied from $sourceUri", e)
         }
     }
 

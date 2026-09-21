@@ -8,7 +8,6 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Log
 import androidx.core.content.FileProvider
-import androidx.exifinterface.media.ExifInterface
 import de.perigon.companion.util.media.ImageTransformParams
 import de.perigon.companion.util.media.ImageTransformer
 import java.io.File
@@ -85,6 +84,7 @@ object FrameGrabber {
      * + horizontal flip) and [fineRotationDegrees] via [ImageTransformer.applyPipeline]
      * with identity crop, write as PNG into the app cache, return content URI.
      *
+     * Video frames carry no EXIF; the pipeline takes upright pixels anyway.
      * Errors are logged and returned as [GrabResult.Failure] so the UI can show them.
      */
     fun extractKeyframeToCache(
@@ -106,19 +106,16 @@ object FrameGrabber {
             return GrabResult.Failure("Decoder returned no frame at $timestampUs µs")
         }
 
+        // applyPipeline consumes `bitmap`; from here on only `transformed` is live.
         val transformed = try {
             val params = ImageTransformParams(
                 orientationDegrees  = orientation.rotationDegrees,
                 flipHorizontal      = orientation.flipHorizontal,
                 fineRotationDegrees = fineRotationDegrees,
-                cropLeft   = 0f,
-                cropTop    = 0f,
-                cropRight  = 1f,
-                cropBottom = 1f,
                 boxPx      = maxOf(bitmap.width, bitmap.height),
                 quality    = 100,
             )
-            ImageTransformer.applyPipeline(bitmap, ExifInterface.ORIENTATION_NORMAL, params)
+            ImageTransformer.applyPipeline(bitmap, params)
         } catch (e: Exception) {
             Log.e(TAG, "extractKeyframeToCache: applyPipeline failed", e)
             bitmap.recycle()
@@ -131,8 +128,6 @@ object FrameGrabber {
             file.outputStream().use { out ->
                 transformed.compress(Bitmap.CompressFormat.PNG, 100, out)
             }
-            if (transformed !== bitmap) bitmap.recycle()
-            transformed.recycle()
             val uri = FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.fileprovider",
@@ -143,6 +138,8 @@ object FrameGrabber {
         } catch (e: Exception) {
             Log.e(TAG, "extractKeyframeToCache: write/FileProvider failed for $file", e)
             GrabResult.Failure("Write failed: ${e.message}", e)
+        } finally {
+            transformed.recycle()
         }
     }
 

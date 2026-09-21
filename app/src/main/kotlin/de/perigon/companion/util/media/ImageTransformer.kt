@@ -1,20 +1,18 @@
 package de.perigon.companion.util.media
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Matrix
-import androidx.exifinterface.media.ExifInterface
-import de.perigon.companion.util.applyExifOrientation
 import de.perigon.companion.util.scaleToFit
 import java.io.ByteArrayOutputStream
-import java.io.InputStream
+import kotlin.math.ceil
 
 /**
- * Pure image transform pipeline: decode → EXIF → orientation → fine rotation → crop → scale → compress.
- * No state, no Android context dependency beyond InputStream.
+ * Image transform pipeline over UPRIGHT pixels:
+ * orientation → fine rotation → crop → scale → JPEG.
  *
- * Used by TransformQueue (post publish transforms) and ConsolidateWorker
- * (DCIM compression). Caller provides the source stream and parameters.
+ * No decoding here. Every caller decodes through media.domain.decodeUpright
+ * or decodeBounded (ImageDecoder, EXIF already applied), so this pipeline has
+ * no EXIF step — and no way to apply orientation twice.
  */
 data class ImageTransformParams(
     val orientationDegrees: Int = 0,
@@ -40,128 +38,91 @@ data class ImageTransformParams(
         get() = hasCrop || hasOrientation || hasFineRotation
 }
 
+private const val MIN_CROP_FRACTION = 0.01f
+
+/**
+ * Pure: the long side to decode at so the output still reaches [boxPx]
+ * after cropping.
+ *
+ * Decoding straight to boxPx and then cropping would shrink the result (a
+ * 50% crop landing at 540px). Dividing by the smaller crop fraction is
+ * sufficient on every axis: whichever axis the decoded long side ends up on
+ * after rotation, that axis keeps at least that fraction, and fine rotation
+ * only enlarges the bounds. +1 absorbs the integer truncation of the crop.
+ */
+fun ImageTransformParams.decodeLongSide(): Int {
+    if (!hasCrop) return boxPx
+    val minFraction = minOf(cropRight - cropLeft, cropBottom - cropTop)
+        .coerceIn(MIN_CROP_FRACTION, 1f)
+    return ceil(boxPx / minFraction).toInt() + 1
+}
+
 object ImageTransformer {
 
-    /**
-     * Full transform pipeline. Reads EXIF from [exifStream], decodes pixels
-     * from [pixelStream], applies transforms, returns JPEG bytes.
-     *
-     * Two separate streams because EXIF reading consumes the stream.
-     * Caller is responsible for closing streams.
-     */
-    fun transform(
-        exifStream: InputStream,
-        pixelStream: InputStream,
-        params: ImageTransformParams,
-    ): ByteArray {
-        val exifOrientation = ExifInterface(exifStream).getAttributeInt(
-            ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL
-        )
-        return transformWithExif(pixelStream, exifOrientation, params)
-    }
+    /** Transform, scale into the box, encode JPEG. Consumes [source]. */
+    fun render(source: Bitmap, params: ImageTransformParams): ByteArray =
+        encode(applyPipeline(source, params), params)
 
     /**
-     * Transform with a known EXIF orientation value.
-     * Useful when the caller has already read EXIF separately.
+     * Coarse orientation, fine rotation, crop — on upright pixels.
+     * Consumes [source]: every intermediate that is replaced is recycled,
+     * [source] included. Returns [source] itself when nothing applies.
      */
-    fun transformWithExif(
-        pixelStream: InputStream,
-        exifOrientation: Int,
-        params: ImageTransformParams,
-    ): ByteArray {
-        var bmp = BitmapFactory.decodeStream(pixelStream)
-            ?: error("Failed to decode image")
-
-        bmp = applyPipeline(bmp, exifOrientation, params)
-
-        val scaled = scaleToFit(bmp, params.boxPx)
-        if (scaled !== bmp) bmp.recycle()
-
-        val bytes = ByteArrayOutputStream()
-            .also { scaled.compress(Bitmap.CompressFormat.JPEG, params.quality, it) }
-            .toByteArray()
-        scaled.recycle()
-
-        return bytes
-    }
-
-    /**
-     * Apply the transform pipeline to an already-decoded bitmap.
-     * Returns a new bitmap (or the same instance if no transforms needed).
-     * Caller must manage recycling of the input if the output differs.
-     */
-    fun applyPipeline(
-        source: Bitmap,
-        exifOrientation: Int,
-        params: ImageTransformParams,
-    ): Bitmap {
+    fun applyPipeline(source: Bitmap, params: ImageTransformParams): Bitmap {
         var bmp = source
 
-        // 1. EXIF orientation
-        val exifApplied = applyExifOrientation(bmp, exifOrientation)
-        if (exifApplied !== bmp) { bmp.recycle(); bmp = exifApplied }
-
-        // 2. Coarse orientation (90° steps + flip)
         if (params.hasOrientation) {
-            val m = Matrix()
-            if (params.flipHorizontal) m.postScale(-1f, 1f)
-            if (params.orientationDegrees != 0) m.postRotate(params.orientationDegrees.toFloat())
-            val oriented = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
-            if (oriented !== bmp) { bmp.recycle(); bmp = oriented }
+            bmp = bmp.replacedBy { b ->
+                Bitmap.createBitmap(b, 0, 0, b.width, b.height, coarseMatrix(params), true)
+            }
         }
 
-        // 3. Fine rotation
         if (params.hasFineRotation) {
-            val m = Matrix()
-            m.postRotate(params.fineRotationDegrees)
-            val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
-            if (rotated !== bmp) { bmp.recycle(); bmp = rotated }
+            bmp = bmp.replacedBy { b ->
+                val m = Matrix().apply { postRotate(params.fineRotationDegrees) }
+                Bitmap.createBitmap(b, 0, 0, b.width, b.height, m, true)
+            }
         }
 
-        // 4. Crop
         if (params.hasCrop) {
-            val x = (params.cropLeft * bmp.width).toInt().coerceIn(0, bmp.width - 1)
-            val y = (params.cropTop * bmp.height).toInt().coerceIn(0, bmp.height - 1)
-            val w = ((params.cropRight - params.cropLeft) * bmp.width).toInt()
-                .coerceIn(1, bmp.width - x)
-            val h = ((params.cropBottom - params.cropTop) * bmp.height).toInt()
-                .coerceIn(1, bmp.height - y)
-            val cropped = Bitmap.createBitmap(bmp, x, y, w, h)
-            if (cropped !== bmp) { bmp.recycle(); bmp = cropped }
+            bmp = bmp.replacedBy { b ->
+                val x = (params.cropLeft * b.width).toInt().coerceIn(0, b.width - 1)
+                val y = (params.cropTop * b.height).toInt().coerceIn(0, b.height - 1)
+                val w = ((params.cropRight - params.cropLeft) * b.width).toInt()
+                    .coerceIn(1, b.width - x)
+                val h = ((params.cropBottom - params.cropTop) * b.height).toInt()
+                    .coerceIn(1, b.height - y)
+                Bitmap.createBitmap(b, x, y, w, h)
+            }
         }
 
         return bmp
     }
 
-    /**
-     * Simple scale-and-compress with no transforms. Used for consolidation
-     * where the source is already correctly oriented.
-     */
-    fun scaleAndCompress(
-        pixelStream: InputStream,
-        boxPx: Int = 1080,
-        quality: Int = 85,
-    ): ByteArray {
-        val exifOrientation = ExifInterface(pixelStream).getAttributeInt(
-            ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL
-        )
-        // Need a fresh stream for decoding — caller must handle this.
-        // This overload exists for the case where caller can provide two streams.
-        error("Use the two-stream overload for scaleAndCompress")
+    /** Scale into params.boxPx and encode JPEG. Consumes [bitmap]. */
+    fun encode(bitmap: Bitmap, params: ImageTransformParams): ByteArray {
+        val scaled = scaleToFit(bitmap, params.boxPx)
+        try {
+            val out = ByteArrayOutputStream()
+            check(scaled.compress(Bitmap.CompressFormat.JPEG, params.quality, out)) {
+                "JPEG encode failed"
+            }
+            return out.toByteArray()
+        } finally {
+            if (scaled !== bitmap) scaled.recycle()
+            bitmap.recycle()
+        }
     }
 
-    /**
-     * Scale and compress from two streams (EXIF + pixels).
-     * Applies only EXIF correction, scale, and compression — no user transforms.
-     */
-    fun scaleAndCompress(
-        exifStream: InputStream,
-        pixelStream: InputStream,
-        boxPx: Int = 1080,
-        quality: Int = 85,
-    ): ByteArray = transform(
-        exifStream = exifStream,
-        pixelStream = pixelStream,
-        params = ImageTransformParams(boxPx = boxPx, quality = quality),
-    )
+    private fun coarseMatrix(params: ImageTransformParams) = Matrix().apply {
+        if (params.flipHorizontal) postScale(-1f, 1f)
+        if (params.orientationDegrees != 0) postRotate(params.orientationDegrees.toFloat())
+    }
+}
+
+/** Apply [step]; recycle the receiver if it was replaced. */
+private inline fun Bitmap.replacedBy(step: (Bitmap) -> Bitmap): Bitmap {
+    val next = step(this)
+    if (next !== this) recycle()
+    return next
 }

@@ -19,6 +19,7 @@ import de.perigon.companion.core.ui.SnackbarChannel
 import de.perigon.companion.media.data.ConsolidateFileEntity
 import de.perigon.companion.media.data.ConsolidateRepository
 import de.perigon.companion.media.data.SafeToDeleteView
+import de.perigon.companion.media.domain.consolidateTarget
 import de.perigon.companion.media.worker.ConsolidateWorker
 import de.perigon.companion.util.FileHasher
 import de.perigon.companion.util.HashKey
@@ -433,23 +434,13 @@ class ConsolidateViewModel @Inject constructor(
 
         val cameraFiles = listSubfolder(ctx, treeUri, "Camera") ?: return 0
 
-        // Match camera file -> consolidated output name by stem/extension.
-        val matched = mutableListOf<Pair<ScannedFile, String>>()
-        for (consolidatedName in consolidatedNames) {
-            val stem = consolidatedName
-                .removeSuffix("_s.jpg")
-                .removeSuffix("_s.mp4")
-                .removeSuffix("_s.jpeg")
-            val ext = when {
-                consolidatedName.endsWith(".mp4") -> ".mp4"
-                consolidatedName.endsWith(".jpeg") -> ".jpeg"
-                else -> ".jpg"
-            }
-            val originalName = "$stem$ext"
-            val camera = cameraFiles.firstOrNull {
-                it.path.substringAfterLast('/') == originalName
-            } ?: continue
-            matched += camera to consolidatedName
+        // Forward mapping only — the same consolidateTarget the worker names
+        // its output with. No parsing of consolidated names back into source
+        // names, so no ambiguity and no drift between the two.
+        val matched = cameraFiles.mapNotNull { camera ->
+            val target = consolidateTarget(camera.path.substringAfterLast('/'))
+                ?: return@mapNotNull null
+            if (target.name in consolidatedNames) camera to target.name else null
         }
 
         if (matched.isEmpty()) return 0

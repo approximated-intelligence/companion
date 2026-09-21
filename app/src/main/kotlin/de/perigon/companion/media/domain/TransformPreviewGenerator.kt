@@ -5,7 +5,6 @@ import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Log
-import androidx.exifinterface.media.ExifInterface
 import de.perigon.companion.posts.data.PostMediaEntity
 import de.perigon.companion.util.media.ImageTransformParams
 import de.perigon.companion.util.media.ImageTransformer
@@ -16,10 +15,9 @@ import javax.inject.Singleton
 /**
  * Generates preview thumbnails for media items with transform intents.
  *
- * Decoding goes through [decodeBounded], the same path the editor uses — one
- * decoder, one set of format support, one failure mode. Because that decoder
- * applies EXIF itself, the pipeline below is told ORIENTATION_NORMAL: the
- * bitmap it receives is already upright.
+ * Decoding goes through [decodeBounded], the same path the editor and the
+ * publish pipeline use — one decoder, one set of format support, one failure
+ * mode. The pipeline receives upright pixels.
  *
  * No state, no side effects beyond reading the source file.
  */
@@ -68,8 +66,7 @@ class TransformPreviewGenerator @Inject constructor(
 
         // Decode straight to roughly preview scale: the sampler picks the
         // smallest power of two that still covers the target.
-        val load = decodeBounded(context.contentResolver, Uri.parse(uriStr), previewSizePx * 2)
-        val decoded = when (load) {
+        val decoded = when (val load = decodeBounded(context.contentResolver, Uri.parse(uriStr), previewSizePx * 2)) {
             is ImageLoad.Failed -> {
                 Log.w(TAG, "preview decode failed for media ${entity.id}: ${load.message}")
                 return null
@@ -78,12 +75,8 @@ class TransformPreviewGenerator @Inject constructor(
         }
 
         return try {
-            // ORIENTATION_NORMAL: decodeBounded already applied EXIF.
-            val transformed = ImageTransformer.applyPipeline(
-                decoded, ExifInterface.ORIENTATION_NORMAL, paramsOf(intent)
-            )
-            if (transformed !== decoded) decoded.recycle()
-            scaleToPreview(transformed, previewSizePx)
+            // applyPipeline consumes `decoded`.
+            scaleToPreview(ImageTransformer.applyPipeline(decoded, paramsOf(intent)), previewSizePx)
         } catch (e: Exception) {
             Log.w(TAG, "preview transform failed for media ${entity.id}", e)
             decoded.recycle()
@@ -107,19 +100,13 @@ class TransformPreviewGenerator @Inject constructor(
                 val timeUs = if (intent.trimStartMs > 0L) intent.trimStartMs * 1000L else 0L
                 // Scaled extraction — a full-resolution frame only to shrink it
                 // to 256px is pure waste.
-                var bmp = retriever.getScaledFrameAtTime(
+                val frame = retriever.getScaledFrameAtTime(
                     timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
                     previewSizePx * 2, previewSizePx * 2,
                 ) ?: return null
 
-                // Video frames have no EXIF — pass ORIENTATION_NORMAL
-                val transformed = ImageTransformer.applyPipeline(
-                    bmp, ExifInterface.ORIENTATION_NORMAL, paramsOf(intent)
-                )
-                if (transformed !== bmp) bmp.recycle()
-                bmp = transformed
-
-                scaleToPreview(bmp, previewSizePx)
+                // applyPipeline consumes `frame`.
+                scaleToPreview(ImageTransformer.applyPipeline(frame, paramsOf(intent)), previewSizePx)
             } finally {
                 retriever.release()
             }

@@ -1,40 +1,23 @@
 package de.perigon.companion.util
 
 import android.graphics.Bitmap
-import android.graphics.Matrix
-import androidx.exifinterface.media.ExifInterface
 
+/**
+ * Scale [bmp] so its long side is at most [maxPx]; returns [bmp] itself when
+ * it already fits. Bilinear: inputs arrive pre-sampled by the decoder to
+ * within 2x of the target, so a wider kernel buys nothing visible.
+ *
+ * EXIF orientation helpers used to live here. They are gone on purpose:
+ * all decoding goes through media.domain.decodeUpright, which applies EXIF
+ * itself, so there is nothing left to rotate.
+ */
 fun scaleToFit(bmp: Bitmap, maxPx: Int): Bitmap {
     if (bmp.width <= maxPx && bmp.height <= maxPx) return bmp
     val scale = maxPx.toFloat() / maxOf(bmp.width, bmp.height)
     return Bitmap.createScaledBitmap(
-        bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true
+        bmp,
+        (bmp.width * scale).toInt().coerceAtLeast(1),
+        (bmp.height * scale).toInt().coerceAtLeast(1),
+        true,
     )
-}
-
-/**
- * Apply an EXIF orientation to already-decoded pixels.
- *
- * Only needed where the decoder did NOT do it — i.e. BitmapFactory paths such
- * as the publish transform pipeline. Anything decoded through
- * media.domain.decodeBounded (ImageDecoder) is already upright and must be
- * passed ORIENTATION_NORMAL instead, or it gets rotated twice.
- */
-fun applyExifOrientation(bmp: Bitmap, orientation: Int): Bitmap {
-    val matrix = Matrix()
-    when (orientation) {
-        ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
-        ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
-        ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
-        ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
-        ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
-        ExifInterface.ORIENTATION_TRANSPOSE -> {
-            matrix.postRotate(90f); matrix.postScale(-1f, 1f)
-        }
-        ExifInterface.ORIENTATION_TRANSVERSE -> {
-            matrix.postRotate(-90f); matrix.postScale(-1f, 1f)
-        }
-        else -> return bmp
-    }
-    return Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, matrix, true)
 }

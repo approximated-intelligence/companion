@@ -4,16 +4,17 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.HandlerThread
-import android.provider.MediaStore
 import android.util.Log
 import androidx.core.net.toUri
 import androidx.room.withTransaction
 import de.perigon.companion.core.db.AppDatabase
+import de.perigon.companion.media.domain.decodeUpright
 import de.perigon.companion.util.media.ImageTransformParams
 import de.perigon.companion.util.media.ImageTransformer
 import de.perigon.companion.util.media.VideoProbe
 import de.perigon.companion.util.media.VideoTransformParams
 import de.perigon.companion.util.media.VideoTransformer
+import de.perigon.companion.util.media.decodeLongSide
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -36,7 +37,8 @@ private const val TAG = "TransformQueue"
 
 /**
  * Singleton queue that orchestrates media transforms via Room-backed persistence.
- * Delegates actual image/video processing to [ImageTransformer] and [VideoTransformer].
+ * Images: decodeUpright (the app's one decoder) → [ImageTransformer.render].
+ * Videos: [VideoTransformer].
  *
  * Lifecycle: created at app start, runs until process death.
  * The HandlerThread provides a stable Looper for Media3 Transformer.
@@ -210,6 +212,14 @@ class TransformQueue @Inject constructor(
         }
     }
 
+    /**
+     * Every job is processed — there is no "already processed, copy as-is"
+     * shortcut. The former one keyed on MediaStore RELATIVE_PATH, which SAF
+     * document URIs (all our sources) never carry, so it could not fire; and
+     * had it fired, "DCIM/PostMedia" also matched PostMedia/Originals and
+     * would have shipped raw originals. Reuse of processed output is the
+     * caller's decision (PublishWorker), not the queue's.
+     */
     private suspend fun processJob(job: TransformJobEntity) {
         val sourceUri = job.sourceUri.toUri()
         val ext       = if (job.mediaType == "VIDEO") "mp4" else "jpg"
@@ -225,11 +235,7 @@ class TransformQueue @Inject constructor(
             // single serial loop forever (and be resurrected as PENDING on
             // every restart): poison job. Bound it.
             withTimeout(TRANSFORM_TIMEOUT_MS) {
-                if (!job.hasAnyTransform && isAlreadyProcessed(sourceUri)) {
-                    val input = context.contentResolver.openInputStream(sourceUri)
-                        ?: error("Cannot open input stream for $sourceUri")
-                    input.use { tempFile.outputStream().use { out -> it.copyTo(out) } }
-                } else if (job.mediaType == "VIDEO") {
+                if (job.mediaType == "VIDEO") {
                     val (srcW, srcH) = VideoProbe.displayDimensions(context, sourceUri)
                     VideoTransformer.transform(
                         context = context,
@@ -239,8 +245,7 @@ class TransformQueue @Inject constructor(
                         handler = handler,
                     )
                 } else {
-                    val bytes = processImage(sourceUri, job)
-                    tempFile.writeBytes(bytes)
+                    tempFile.writeBytes(processImage(sourceUri, job.toImageParams()))
                 }
             }
 
@@ -260,39 +265,14 @@ class TransformQueue @Inject constructor(
         }
     }
 
-    private fun processImage(sourceUri: Uri, job: TransformJobEntity): ByteArray {
-        val resolver = context.contentResolver
-        val exifStream = resolver.openInputStream(sourceUri)
-            ?: error("Cannot open input stream for EXIF: $sourceUri")
-        val exifOrientation = exifStream.use { stream ->
-            androidx.exifinterface.media.ExifInterface(stream).getAttributeInt(
-                androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION,
-                androidx.exifinterface.media.ExifInterface.ORIENTATION_NORMAL,
-            )
-        }
-        val pixelStream = resolver.openInputStream(sourceUri)
-            ?: error("Cannot open input stream for decode: $sourceUri")
-        return pixelStream.use { stream ->
-            ImageTransformer.transformWithExif(stream, exifOrientation, job.toImageParams())
-        }
-    }
-
-    private fun isAlreadyProcessed(uri: Uri): Boolean {
-        if (uri.scheme != "content") return false
-        return try {
-            context.contentResolver.query(
-                uri,
-                arrayOf(MediaStore.MediaColumns.RELATIVE_PATH),
-                null, null, null,
-            )?.use { cursor ->
-                if (!cursor.moveToFirst()) return false
-                val path = cursor.getString(0) ?: return false
-                path.contains("DCIM/Consolidated", ignoreCase = true) ||
-                    path.contains("DCIM/PostMedia", ignoreCase = true)
-            } ?: false
-        } catch (_: Exception) {
-            false
-        }
+    /**
+     * Same decoder as editor and previews: upright pixels, every platform
+     * format (HEIC/AVIF included), sampled during decode just enough that the
+     * crop still reaches the output box.
+     */
+    private fun processImage(sourceUri: Uri, params: ImageTransformParams): ByteArray {
+        val decoded = decodeUpright(context.contentResolver, sourceUri, params.decodeLongSide())
+        return ImageTransformer.render(decoded, params)
     }
 
     companion object {
