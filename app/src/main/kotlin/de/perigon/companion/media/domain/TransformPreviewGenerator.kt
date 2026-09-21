@@ -5,21 +5,18 @@ import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Log
-import de.perigon.companion.posts.data.PostMediaEntity
+import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.media.transform.ImageTransformParams
 import de.perigon.companion.media.transform.ImageTransformer
-import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Generates preview thumbnails for media items with transform intents.
+ * Preview thumbnails of a source with a transform intent applied.
  *
- * Decoding goes through [decodeBounded], the same path the editor and the
- * publish pipeline use — one decoder, one set of format support, one failure
- * mode. The pipeline receives upright pixels.
- *
- * No state, no side effects beyond reading the source file.
+ * Knows nothing about posts: callers pass the source and the intent. Decoding
+ * goes through [decodeBounded], the same path the editor and the pipeline
+ * use, so the pipeline receives upright pixels.
  */
 @Singleton
 class TransformPreviewGenerator @Inject constructor(
@@ -31,19 +28,17 @@ class TransformPreviewGenerator @Inject constructor(
         private const val DEFAULT_PREVIEW_SIZE_PX = 256
     }
 
-    /**
-     * Generate a preview bitmap for a media entity with transforms applied.
-     * Returns null if the transform is identity or generation fails.
-     * Must be called on a background thread.
-     */
-    fun generate(entity: PostMediaEntity, previewSizePx: Int = DEFAULT_PREVIEW_SIZE_PX): Bitmap? {
-        val intent = entity.toTransformIntent()
-        if (intent.isIdentity) return null
-        return if (entity.mimeType.startsWith("video")) {
-            generateVideoPreview(entity, intent, previewSizePx)
-        } else {
-            generateImagePreview(entity, intent, previewSizePx)
-        }
+    /** Null for identity intents, blank sources, or failure. Background thread only. */
+    fun generate(
+        sourceUri: String,
+        isVideo: Boolean,
+        intent: TransformIntent,
+        previewSizePx: Int = DEFAULT_PREVIEW_SIZE_PX,
+    ): Bitmap? {
+        if (intent.isIdentity || sourceUri.isBlank()) return null
+        val uri = Uri.parse(sourceUri)
+        return if (isVideo) videoPreview(uri, intent, previewSizePx)
+               else imagePreview(uri, intent, previewSizePx)
     }
 
     private fun paramsOf(intent: TransformIntent) = ImageTransformParams(
@@ -56,64 +51,41 @@ class TransformPreviewGenerator @Inject constructor(
         cropBottom = intent.cropRect.bottom,
     )
 
-    private fun generateImagePreview(
-        entity: PostMediaEntity,
-        intent: TransformIntent,
-        previewSizePx: Int,
-    ): Bitmap? {
-        val uriStr = entity.sourceUri.ifEmpty { entity.mediaStoreUri }
-        if (uriStr.isEmpty()) return null
-
-        // Decode straight to roughly preview scale: the sampler picks the
-        // smallest power of two that still covers the target.
-        val decoded = when (val load = decodeBounded(context.contentResolver, Uri.parse(uriStr), previewSizePx * 2)) {
+    private fun imagePreview(uri: Uri, intent: TransformIntent, previewSizePx: Int): Bitmap? {
+        // Decode straight to roughly preview scale.
+        val decoded = when (val load = decodeBounded(context.contentResolver, uri, previewSizePx * 2)) {
             is ImageLoad.Failed -> {
-                Log.w(TAG, "preview decode failed for media ${entity.id}: ${load.message}")
+                Log.w(TAG, "preview decode failed for $uri: ${load.message}")
                 return null
             }
             is ImageLoad.Loaded -> load.bitmap
         }
-
         return try {
             // applyPipeline consumes `decoded`.
             scaleToPreview(ImageTransformer.applyPipeline(decoded, paramsOf(intent)), previewSizePx)
         } catch (e: Exception) {
-            Log.w(TAG, "preview transform failed for media ${entity.id}", e)
+            Log.w(TAG, "preview transform failed for $uri", e)
             decoded.recycle()
             null
         }
     }
 
-    private fun generateVideoPreview(
-        entity: PostMediaEntity,
-        intent: TransformIntent,
-        previewSizePx: Int,
-    ): Bitmap? {
-        val uriStr = entity.sourceUri.ifEmpty { entity.mediaStoreUri }
-        if (uriStr.isEmpty()) return null
-
-        return try {
-            val uri = Uri.parse(uriStr)
-            val retriever = MediaMetadataRetriever()
-            try {
-                retriever.setDataSource(context, uri)
-                val timeUs = if (intent.trimStartMs > 0L) intent.trimStartMs * 1000L else 0L
-                // Scaled extraction — a full-resolution frame only to shrink it
-                // to 256px is pure waste.
-                val frame = retriever.getScaledFrameAtTime(
-                    timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                    previewSizePx * 2, previewSizePx * 2,
-                ) ?: return null
-
-                // applyPipeline consumes `frame`.
-                scaleToPreview(ImageTransformer.applyPipeline(frame, paramsOf(intent)), previewSizePx)
-            } finally {
-                retriever.release()
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "video preview failed for media ${entity.id}", e)
-            null
+    private fun videoPreview(uri: Uri, intent: TransformIntent, previewSizePx: Int): Bitmap? = try {
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(context, uri)
+            val timeUs = if (intent.trimStartMs > 0L) intent.trimStartMs * 1000L else 0L
+            val frame = retriever.getScaledFrameAtTime(
+                timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                previewSizePx * 2, previewSizePx * 2,
+            )
+            frame?.let { scaleToPreview(ImageTransformer.applyPipeline(it, paramsOf(intent)), previewSizePx) }
+        } finally {
+            retriever.release()
         }
+    } catch (e: Exception) {
+        Log.w(TAG, "video preview failed for $uri", e)
+        null
     }
 
     private fun scaleToPreview(bmp: Bitmap, previewSizePx: Int): Bitmap {

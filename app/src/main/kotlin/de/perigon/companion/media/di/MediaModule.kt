@@ -1,31 +1,30 @@
 package de.perigon.companion.media.di
 
-import de.perigon.companion.core.db.AppDatabase
-import de.perigon.companion.backup.consolidate.data.ConsolidateFileDao
-import de.perigon.companion.backup.consolidate.data.ConsolidateFileDoneDao
-import de.perigon.companion.backup.consolidate.data.ConsolidateProtectedFileDao
-import de.perigon.companion.media.data.MediaStoreRepository
-import de.perigon.companion.media.data.MediaStoreRepositoryImpl
-import de.perigon.companion.media.data.ProcessedFileDao
-import de.perigon.companion.backup.consolidate.data.SafeToDeleteDao
-import de.perigon.companion.media.data.TransformJobDao
+import android.content.Context
+import androidx.room.Room
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import dagger.multibindings.IntoSet
+import de.perigon.companion.core.feature.FeatureEntry
+import de.perigon.companion.media.MediaFeature
+import de.perigon.companion.media.data.MediaDatabase
+import de.perigon.companion.media.data.TransformJobDao
 import javax.inject.Singleton
 
 @Module
 @InstallIn(SingletonComponent::class)
 object MediaModule {
 
-    @Provides fun provideProcessedFileDao(db: AppDatabase): ProcessedFileDao = db.processedFileDao()
-    @Provides fun provideTransformJobDao(db: AppDatabase): TransformJobDao = db.transformJobDao()
-    @Provides fun provideConsolidateFileDao(db: AppDatabase): ConsolidateFileDao = db.consolidateFileDao()
-    @Provides fun provideConsolidateFileDoneDao(db: AppDatabase): ConsolidateFileDoneDao = db.consolidateFileDoneDao()
-    @Provides fun provideConsolidateProtectedFileDao(db: AppDatabase): ConsolidateProtectedFileDao = db.consolidateProtectedFileDao()
-    @Provides fun provideSafeToDeleteDao(db: AppDatabase): SafeToDeleteDao = db.safeToDeleteDao()
-
     @Provides @Singleton
-    fun provideMediaStoreRepository(impl: MediaStoreRepositoryImpl): MediaStoreRepository = impl
+    fun provideMediaDatabase(@ApplicationContext ctx: Context): MediaDatabase =
+        Room.databaseBuilder(ctx, MediaDatabase::class.java, "media.db").build()
+
+    @Provides
+    fun provideTransformJobDao(db: MediaDatabase): TransformJobDao = db.transformJobDao()
+
+    @Provides @IntoSet
+    fun provideFeature(feature: MediaFeature): FeatureEntry = feature
 }
