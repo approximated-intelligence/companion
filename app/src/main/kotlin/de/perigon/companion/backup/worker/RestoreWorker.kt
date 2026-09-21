@@ -24,9 +24,9 @@ import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.data.UserNotifications
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.prefs.CredentialStore
-import de.perigon.companion.util.fromHex
-import de.perigon.companion.util.network.S3Backend
-import de.perigon.companion.util.network.S3BackendFactory
+import de.perigon.companion.core.util.fromHex
+import de.perigon.companion.core.network.S3Backend
+import de.perigon.companion.core.network.S3BackendFactory
 import kotlinx.coroutines.delay
 import kotlin.coroutines.cancellation.CancellationException
 

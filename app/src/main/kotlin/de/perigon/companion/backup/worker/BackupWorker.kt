@@ -12,13 +12,13 @@ import de.perigon.companion.backup.data.BackupStateRepository
 import de.perigon.companion.backup.data.BackupSchedulePrefs
 import de.perigon.companion.backup.domain.BackupFileSource
 import de.perigon.companion.backup.domain.BackupOrchestrator
-import de.perigon.companion.util.FileHasher
-import de.perigon.companion.util.network.S3BackendFactory
+import de.perigon.companion.backup.data.FileHasher
+import de.perigon.companion.core.network.S3BackendFactory
 import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.data.UserNotifications
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.prefs.CredentialStore
-import de.perigon.companion.util.fromHex
+import de.perigon.companion.core.util.fromHex
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import java.io.InputStream

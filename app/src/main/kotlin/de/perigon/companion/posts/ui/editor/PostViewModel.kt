@@ -9,8 +9,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.prefs.CredentialStore
-import de.perigon.companion.media.data.MediaResolutionCache
-import de.perigon.companion.media.data.TransformPreviewCache
+import de.perigon.companion.posts.data.MediaResolutionCache
+import de.perigon.companion.posts.data.TransformPreviewCache
 import de.perigon.companion.posts.data.PostMediaEntity
 import de.perigon.companion.posts.data.PostMediaFileStore
 import de.perigon.companion.posts.data.MediaSourceStatus
@@ -25,7 +25,7 @@ import de.perigon.companion.posts.domain.autoTeaser
 import de.perigon.companion.posts.domain.prefillTitle
 import de.perigon.companion.posts.domain.computeSlug
 import de.perigon.companion.core.ui.SnackbarChannel
-import de.perigon.companion.util.network.GitHubClient
+import de.perigon.companion.posts.network.GitHubClient
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.ktor.client.HttpClient
 import kotlinx.coroutines.CancellationException

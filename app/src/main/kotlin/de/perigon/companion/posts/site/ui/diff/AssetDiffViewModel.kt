@@ -9,7 +9,7 @@ import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.prefs.CredentialStore
 import de.perigon.companion.posts.site.data.AssetRepository
 import de.perigon.companion.posts.site.data.AssetDao
-import de.perigon.companion.util.network.GitHubClient
+import de.perigon.companion.posts.network.GitHubClient
 import de.perigon.companion.core.ui.SnackbarChannel
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.ktor.client.HttpClient

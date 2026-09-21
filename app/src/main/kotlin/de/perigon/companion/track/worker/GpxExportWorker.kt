@@ -14,8 +14,8 @@ import de.perigon.companion.core.data.UserNotifications
 import de.perigon.companion.core.ui.NotificationChannels
 import de.perigon.companion.track.data.TrackRepository
 import de.perigon.companion.track.domain.GpxExporter
-import de.perigon.companion.util.saf.hasPersistedWriteGrant
-import de.perigon.companion.util.saf.writeFileFromStream
+import de.perigon.companion.core.saf.hasPersistedWriteGrant
+import de.perigon.companion.core.saf.writeFileFromStream
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 

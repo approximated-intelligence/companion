@@ -8,7 +8,7 @@ import de.perigon.companion.core.data.UserNotifications
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.prefs.CredentialStore
 import de.perigon.companion.posts.site.data.AssetRepository
-import de.perigon.companion.util.network.GitHubClient
+import de.perigon.companion.posts.network.GitHubClient
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import io.ktor.client.*

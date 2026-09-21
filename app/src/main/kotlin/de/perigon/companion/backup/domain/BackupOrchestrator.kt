@@ -11,8 +11,8 @@ import de.perigon.companion.backup.data.BackupSourceScanner
 import de.perigon.companion.backup.data.BackupStateRepository
 import de.perigon.companion.backup.data.TAIL_PART_REF
 import de.perigon.companion.backup.data.TailPartInfo
-import de.perigon.companion.util.FileHasher
-import de.perigon.companion.util.network.S3Backend
+import de.perigon.companion.backup.data.FileHasher
+import de.perigon.companion.core.network.S3Backend
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive

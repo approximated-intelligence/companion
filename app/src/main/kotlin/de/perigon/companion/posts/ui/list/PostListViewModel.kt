@@ -7,8 +7,8 @@ import androidx.lifecycle.viewModelScope
 import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.prefs.CredentialStore
-import de.perigon.companion.media.data.MediaResolutionCache
-import de.perigon.companion.media.data.TransformPreviewCache
+import de.perigon.companion.posts.data.MediaResolutionCache
+import de.perigon.companion.posts.data.TransformPreviewCache
 import de.perigon.companion.posts.data.PostEntity
 import de.perigon.companion.posts.data.PostMediaDao
 import de.perigon.companion.posts.data.PostMediaEntity
@@ -19,9 +19,9 @@ import de.perigon.companion.posts.data.PostRepository
 import de.perigon.companion.posts.data.PublishResult
 import de.perigon.companion.posts.domain.PostPublishState
 import de.perigon.companion.posts.domain.PostShareIntentBuilder
-import de.perigon.companion.util.network.GitHubClient
-import de.perigon.companion.util.network.NetworkFailure
-import de.perigon.companion.util.network.isTransportFailure
+import de.perigon.companion.posts.network.GitHubClient
+import de.perigon.companion.core.network.NetworkFailure
+import de.perigon.companion.core.network.isTransportFailure
 import de.perigon.companion.core.ui.SnackbarChannel
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext

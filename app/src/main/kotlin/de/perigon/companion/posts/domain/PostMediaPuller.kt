@@ -1,7 +1,7 @@
 package de.perigon.companion.posts.domain
 
 import de.perigon.companion.posts.data.PostMediaFileStore
-import de.perigon.companion.util.network.GitHubClient
+import de.perigon.companion.posts.network.GitHubClient
 
 /**
  * Pulls a post media file from GitHub into the local PostMedia store.

@@ -5,10 +5,10 @@ import android.net.Uri
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.core.prefs.AppPrefs
-import de.perigon.companion.util.FileHasher
-import de.perigon.companion.util.HashKey
-import de.perigon.companion.util.saf.ScannedFile
-import de.perigon.companion.util.saf.walkDocumentTree
+import de.perigon.companion.backup.data.FileHasher
+import de.perigon.companion.backup.data.HashKey
+import de.perigon.companion.core.saf.ScannedFile
+import de.perigon.companion.core.saf.walkDocumentTree
 import javax.inject.Inject
 import javax.inject.Singleton
 

@@ -29,10 +29,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import de.perigon.companion.core.prefs.AppPrefs
-import de.perigon.companion.util.saf.dcimPickerInitialUri
-import de.perigon.companion.util.saf.hasDcimWriteGrant
-import de.perigon.companion.util.saf.isDcimTree
-import de.perigon.companion.util.saf.persistSafGrant
+import de.perigon.companion.core.saf.dcimPickerInitialUri
+import de.perigon.companion.core.saf.hasDcimWriteGrant
+import de.perigon.companion.core.saf.isDcimTree
+import de.perigon.companion.core.saf.persistSafGrant
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow

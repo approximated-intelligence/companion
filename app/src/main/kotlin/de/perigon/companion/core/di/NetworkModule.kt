@@ -1,9 +1,9 @@
 package de.perigon.companion.core.di
 
-import de.perigon.companion.util.network.HttpMediaBackendFactory
-import de.perigon.companion.util.network.HttpMediaBackendFactoryImpl
-import de.perigon.companion.util.network.S3BackendFactory
-import de.perigon.companion.util.network.S3BackendFactoryImpl
+import de.perigon.companion.posts.network.HttpMediaBackendFactory
+import de.perigon.companion.posts.network.HttpMediaBackendFactoryImpl
+import de.perigon.companion.core.network.S3BackendFactory
+import de.perigon.companion.core.network.S3BackendFactoryImpl
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn

@@ -10,11 +10,11 @@ import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.prefs.CredentialStore
 import de.perigon.companion.posts.data.PostDao
 import de.perigon.companion.posts.data.PostMediaDao
-import de.perigon.companion.util.network.GitHubClient
-import de.perigon.companion.util.network.HttpMediaBackendFactory
-import de.perigon.companion.util.network.MediaBackend
-import de.perigon.companion.util.network.NetworkFailure
-import de.perigon.companion.util.network.S3BackendFactory
+import de.perigon.companion.posts.network.GitHubClient
+import de.perigon.companion.posts.network.HttpMediaBackendFactory
+import de.perigon.companion.core.network.MediaBackend
+import de.perigon.companion.core.network.NetworkFailure
+import de.perigon.companion.core.network.S3BackendFactory
 import de.perigon.companion.posts.domain.PostPublishState
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject

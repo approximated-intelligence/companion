@@ -8,7 +8,7 @@ import de.perigon.companion.posts.site.data.AssetDao
 import de.perigon.companion.posts.site.data.AssetEntity
 import de.perigon.companion.posts.site.data.AssetSyncState
 import de.perigon.companion.core.ui.SnackbarChannel
-import de.perigon.companion.util.gitBlobSha1
+import de.perigon.companion.core.util.gitBlobSha1
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.*

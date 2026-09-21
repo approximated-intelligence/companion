@@ -15,7 +15,7 @@ import de.perigon.companion.audio.service.AudioRecordingService
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.ui.AppAccessGate
 import de.perigon.companion.core.ui.LaunchRequest
-import de.perigon.companion.core.ui.NavGraph
+import de.perigon.companion.NavGraph
 import de.perigon.companion.core.ui.Route
 import de.perigon.companion.core.ui.deliver
 import de.perigon.companion.core.ui.shareTargetFor

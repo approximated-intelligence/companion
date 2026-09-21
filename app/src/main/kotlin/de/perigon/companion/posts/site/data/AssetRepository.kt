@@ -1,8 +1,8 @@
 package de.perigon.companion.posts.site.data
 
 import android.content.Context
-import de.perigon.companion.util.network.GitHubClient
-import de.perigon.companion.util.gitBlobSha1
+import de.perigon.companion.posts.network.GitHubClient
+import de.perigon.companion.core.util.gitBlobSha1
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext

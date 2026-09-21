@@ -7,7 +7,7 @@ import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import de.perigon.companion.core.prefs.AppPrefs
-import de.perigon.companion.media.data.MediaStoreWriter
+import de.perigon.companion.track.data.MediaStoreWriter
 import de.perigon.companion.track.data.TrackRepository
 import de.perigon.companion.track.data.TrackSummary
 import de.perigon.companion.track.domain.GpxTrack

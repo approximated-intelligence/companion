@@ -11,7 +11,7 @@ import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.core.prefs.AppPrefsImpl
 import de.perigon.companion.core.prefs.CredentialStore
 import de.perigon.companion.core.prefs.KeyStoreCredentialStore
-import de.perigon.companion.util.FileContentHashDao
+import de.perigon.companion.backup.data.FileContentHashDao
 import com.goterl.lazysodium.LazySodiumAndroid
 import com.goterl.lazysodium.SodiumAndroid
 import dagger.Module

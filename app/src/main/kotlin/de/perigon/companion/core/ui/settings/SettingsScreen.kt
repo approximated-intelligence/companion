@@ -60,7 +60,7 @@ import de.perigon.companion.core.ui.AccessibilityGate
 import de.perigon.companion.core.ui.AppTopBar
 import de.perigon.companion.core.ui.EmbeddedQrScanner
 import de.perigon.companion.core.ui.SecureWindow
-import de.perigon.companion.util.saf.dcimPickerInitialUri
+import de.perigon.companion.core.saf.dcimPickerInitialUri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel

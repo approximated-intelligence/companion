@@ -6,8 +6,8 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Log
 import de.perigon.companion.posts.data.PostMediaEntity
-import de.perigon.companion.util.media.ImageTransformParams
-import de.perigon.companion.util.media.ImageTransformer
+import de.perigon.companion.media.transform.ImageTransformParams
+import de.perigon.companion.media.transform.ImageTransformer
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton

@@ -8,10 +8,10 @@ import androidx.documentfile.provider.DocumentFile
 import de.perigon.companion.backup.data.BackupFileEntity
 import de.perigon.companion.backup.data.BackupStateRepository
 import de.perigon.companion.backup.data.RestoreSelectionEntity
-import de.perigon.companion.util.network.S3Backend
-import de.perigon.companion.util.saf.navigateOrCreate
-import de.perigon.companion.util.saf.setMtime
-import de.perigon.companion.util.toHex
+import de.perigon.companion.core.network.S3Backend
+import de.perigon.companion.core.saf.navigateOrCreate
+import de.perigon.companion.core.saf.setMtime
+import de.perigon.companion.core.util.toHex
 import java.io.OutputStream
 import java.security.DigestOutputStream
 import java.security.MessageDigest
