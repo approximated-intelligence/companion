@@ -29,3 +29,4 @@ replay_pid*
 .gradle/
 app/build/
 build
+scripts

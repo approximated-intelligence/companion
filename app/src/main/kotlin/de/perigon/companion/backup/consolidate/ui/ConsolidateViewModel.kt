@@ -4,30 +4,36 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
+import android.util.Log
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.*
-import de.perigon.companion.backup.data.BackupStateRepository
-import de.perigon.companion.backup.worker.BackupRequests
-import de.perigon.companion.backup.worker.BackupWorker
-import de.perigon.companion.backup.worker.enqueueBackup
-import de.perigon.companion.core.data.UserNotificationDao
-import de.perigon.companion.core.di.ApplicationScope
-import de.perigon.companion.core.prefs.AppPrefs
-import de.perigon.companion.core.ui.SnackbarChannel
+import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.backup.consolidate.data.ConsolidateFileEntity
 import de.perigon.companion.backup.consolidate.data.ConsolidateRepository
 import de.perigon.companion.backup.consolidate.data.SafeToDeleteView
 import de.perigon.companion.backup.consolidate.domain.consolidateTarget
 import de.perigon.companion.backup.consolidate.worker.ConsolidateWorker
+import de.perigon.companion.backup.data.BackupStateRepository
 import de.perigon.companion.backup.data.FileHasher
 import de.perigon.companion.backup.data.HashKey
+import de.perigon.companion.backup.ui.BackupProgress
+import de.perigon.companion.backup.ui.currentInfo
+import de.perigon.companion.backup.ui.toBackupProgress
+import de.perigon.companion.backup.worker.BackupRequests
+import de.perigon.companion.backup.worker.BackupWorker
+import de.perigon.companion.backup.worker.enqueueBackup
+import de.perigon.companion.core.data.UserNotificationDao
+import de.perigon.companion.core.di.ApplicationScope
+import de.perigon.companion.core.prefs.FolderGrants
+import de.perigon.companion.core.prefs.FolderKeys
 import de.perigon.companion.core.saf.ScannedFile
 import de.perigon.companion.core.saf.collectFileNames
+import de.perigon.companion.core.saf.isReadable
 import de.perigon.companion.core.saf.listSubfolder
-import dagger.hilt.android.lifecycle.HiltViewModel
-import dagger.hilt.android.qualifiers.ApplicationContext
+import de.perigon.companion.core.ui.SnackbarChannel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -35,6 +41,8 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
+
+private const val TAG = "ConsolidateViewModel"
 
 enum class SortField { NAME, MODIFIED, SIZE, TYPE }
 enum class SortDirection { ASC, DESC }
@@ -53,17 +61,7 @@ data class ConsolidateUiState(
     val consolidateProcessed: Int = 0,
     val consolidateFailed: Int = 0,
     val consolidateCurrentFile: String = "",
-    val backupRunning: Boolean = false,
-    val backupPackState: String = BackupWorker.STATE_DONE,
-    val backupPackPosition: Int = 0,
-    val backupPartNumber: Int = 0,
-    val backupPartsTotal: Int = 0,
-    val backupPackPercent: Int = 0,
-    val backupFileIndex: Int = 0,
-    val backupFilesTotal: Int = 0,
-    val backupCurrentFile: String = "",
-    val backupErrorType: String = BackupWorker.ERR_NONE,
-    val backupErrorDetail: String = "",
+    val backup: BackupProgress = BackupProgress(),
     val confirmedCount: Int = 0,
     val consolidatedCount: Int = 0,
     val safeToDelete: List<SafeToDeleteView> = emptyList(),
@@ -76,15 +74,12 @@ data class ConsolidateUiState(
     val deleteProgress: DeleteProgress? = null,
     val confirmUnprotectId: Long? = null,
     val backfillRunning: Boolean = false,
-    val dcimUri: String? = null,
 ) {
-    val backupHasError: Boolean get() = backupErrorType != BackupWorker.ERR_NONE
     val selectedCount: Int get() = selectedIds.size
     val isDeleting: Boolean get() = deleteProgress != null
 
-    // Every comparator carries a path tiebreak: with degenerate sort keys
-    // (equal or missing mtimes, equal sizes) a stable sort would otherwise
-    // pass DB emission order — i.e. scan/walk order — through to the screen.
+    // Every comparator carries a path tiebreak: with degenerate sort keys a
+    // stable sort would otherwise pass DB emission order through.
     val sortedSafeToDelete: List<SafeToDeleteView> get() {
         val comparator = when (sortField) {
             SortField.NAME -> compareBy<SafeToDeleteView>(
@@ -99,6 +94,7 @@ data class ConsolidateUiState(
     }
 }
 
+/** DCIM access is owned by the setup gate; this screen never asks for it. */
 @HiltViewModel
 class ConsolidateViewModel @Inject constructor(
     @param:ApplicationContext private val ctx: Context,
@@ -106,12 +102,12 @@ class ConsolidateViewModel @Inject constructor(
     private val consolidateRepo: ConsolidateRepository,
     private val backupStateRepo: BackupStateRepository,
     private val notificationDao: UserNotificationDao,
-    private val appPrefs: AppPrefs,
+    private val folderGrants: FolderGrants,
     private val hasher: FileHasher,
     @param:ApplicationScope private val appScope: CoroutineScope,
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow(ConsolidateUiState(dcimUri = appPrefs.dcimTreeUri()))
+    private val _state = MutableStateFlow(ConsolidateUiState())
     val state: StateFlow<ConsolidateUiState> = _state.asStateFlow()
 
     val snackbar = SnackbarChannel()
@@ -121,11 +117,6 @@ class ConsolidateViewModel @Inject constructor(
     val previewIntents = _previewIntent.receiveAsFlow()
 
     init {
-        viewModelScope.launch {
-            appPrefs.observeDcimTreeUri().collect { uri ->
-                _state.update { it.copy(dcimUri = uri) }
-            }
-        }
         observeConsolidateWorker()
         observeBackupWorker()
         observeCounts()
@@ -133,20 +124,10 @@ class ConsolidateViewModel @Inject constructor(
         cleanupStaleEntries()
     }
 
-    fun onDcimGranted(uri: Uri) {
-        val label = uri.lastPathSegment?.substringAfterLast(':') ?: "DCIM"
-        viewModelScope.launch {
-            appPrefs.setDcimTree(uri.toString(), label)
-        }
-    }
-
     private fun observeConsolidateWorker() {
         viewModelScope.launch {
             workManager.getWorkInfosForUniqueWorkFlow(ConsolidateWorker.WORK_NAME).collect { infos ->
-                val info = infos.firstOrNull {
-                    it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED
-                } ?: infos.firstOrNull() ?: return@collect
-
+                val info = infos.currentInfo() ?: return@collect
                 val p = info.progress
                 _state.update { s ->
                     s.copy(
@@ -159,7 +140,6 @@ class ConsolidateViewModel @Inject constructor(
                             ?: s.consolidateCurrentFile,
                     )
                 }
-
                 if (info.state == WorkInfo.State.SUCCEEDED || info.state == WorkInfo.State.FAILED) {
                     _state.update { it.copy(consolidateRunning = false, consolidateCurrentFile = "") }
                 }
@@ -170,39 +150,8 @@ class ConsolidateViewModel @Inject constructor(
     private fun observeBackupWorker() {
         viewModelScope.launch {
             workManager.getWorkInfosForUniqueWorkFlow(BackupWorker.WORK_NAME).collect { infos ->
-                val info = infos.firstOrNull {
-                    it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED
-                } ?: infos.firstOrNull() ?: return@collect
-
-                val p = info.progress
-                val out = info.outputData
-                _state.update { s ->
-                    s.copy(
-                        backupRunning = info.state == WorkInfo.State.RUNNING,
-                        backupPackState = p.getString(BackupWorker.KEY_PACK_STATE)
-                            ?: if (info.state == WorkInfo.State.SUCCEEDED)
-                                BackupWorker.STATE_DONE else s.backupPackState,
-                        backupPackPosition = p.getInt(BackupWorker.KEY_PACK_POSITION, s.backupPackPosition),
-                        backupPartNumber = p.getInt(BackupWorker.KEY_PART_NUMBER, s.backupPartNumber),
-                        backupPartsTotal = p.getInt(BackupWorker.KEY_PARTS_TOTAL, s.backupPartsTotal),
-                        backupPackPercent = p.getInt(BackupWorker.KEY_PACK_PERCENT, s.backupPackPercent),
-                        backupFileIndex = p.getInt(BackupWorker.KEY_FILE_INDEX, s.backupFileIndex),
-                        backupFilesTotal = p.getInt(BackupWorker.KEY_FILES_TOTAL, s.backupFilesTotal),
-                        backupCurrentFile = p.getString(BackupWorker.KEY_CURRENT_FILE)
-                            ?: s.backupCurrentFile,
-                        backupErrorType = when (info.state) {
-                            WorkInfo.State.FAILED -> out.getString(BackupWorker.KEY_ERROR_TYPE)
-                                ?: BackupWorker.ERR_B2_ERROR
-                            WorkInfo.State.SUCCEEDED -> BackupWorker.ERR_NONE
-                            else -> p.getString(BackupWorker.KEY_ERROR_TYPE) ?: s.backupErrorType
-                        },
-                        backupErrorDetail = when (info.state) {
-                            WorkInfo.State.FAILED -> out.getString(BackupWorker.KEY_ERROR_DETAIL) ?: ""
-                            WorkInfo.State.SUCCEEDED -> ""
-                            else -> p.getString(BackupWorker.KEY_ERROR_DETAIL) ?: s.backupErrorDetail
-                        },
-                    )
-                }
+                val info = infos.currentInfo() ?: return@collect
+                _state.update { s -> s.copy(backup = info.toBackupProgress(s.backup)) }
             }
         }
     }
@@ -251,14 +200,9 @@ class ConsolidateViewModel @Inject constructor(
     }
 
     /**
-     * Consolidate, then back up once consolidation is finished.
-     *
-     * App scope, not viewModelScope: leaving the screen must not cancel the
-     * chained backup. The job captures only locals (no VM reference kept
-     * alive). Awaiting the enqueue Operation first is what makes the wait
-     * correct: before it lands, the unique-work flow can still emit a
-     * PREVIOUS finished consolidate run, which would fire the backup
-     * immediately — concurrently with the new consolidation.
+     * Consolidate, then back up once consolidation is finished. App scope:
+     * leaving the screen must not cancel the chained backup. Awaiting the
+     * enqueue first keeps a PREVIOUS finished run from firing the backup early.
      */
     fun startConsolidateAndBackup() {
         val wm = workManager
@@ -354,37 +298,28 @@ class ConsolidateViewModel @Inject constructor(
 
             withContext(Dispatchers.IO) {
                 for ((index, item) in items.withIndex()) {
-                    val success = deleteSafDocument(Uri.parse(item.uri))
-                    if (success) {
-                        deletedIds += item.id
-                    } else {
-                        failed++
-                    }
+                    if (deleteSafDocument(Uri.parse(item.uri))) deletedIds += item.id else failed++
                     _state.update { it.copy(deleteProgress = DeleteProgress(index + 1, items.size)) }
                 }
             }
 
-            if (deletedIds.isNotEmpty()) {
-                consolidateRepo.deleteByIds(deletedIds)
-            }
+            if (deletedIds.isNotEmpty()) consolidateRepo.deleteByIds(deletedIds)
 
             _state.update { it.copy(selectionMode = false, selectedIds = emptySet(), deleteProgress = null) }
 
-            val message = when {
+            snackbar.send(when {
                 failed == 0 -> "Deleted ${deletedIds.size} file(s)"
                 deletedIds.isEmpty() -> "Failed to delete all files"
                 else -> "Deleted ${deletedIds.size} file(s), $failed failed"
-            }
-            snackbar.send(message)
+            })
         }
     }
 
-    private fun deleteSafDocument(uri: Uri): Boolean {
-        return try {
-            DocumentsContract.deleteDocument(ctx.contentResolver, uri)
-        } catch (_: Exception) {
-            false
-        }
+    private fun deleteSafDocument(uri: Uri): Boolean = try {
+        DocumentsContract.deleteDocument(ctx.contentResolver, uri)
+    } catch (e: Exception) {
+        Log.w(TAG, "delete failed: $uri", e)
+        false
     }
 
     // ── View controls ──
@@ -409,8 +344,10 @@ class ConsolidateViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val count = withContext(Dispatchers.IO) { scanAndBackfill() }
-                if (count > 0) snackbar.send("Found $count previously consolidated file(s)")
-                else snackbar.send("No additional consolidated files found")
+                snackbar.send(
+                    if (count > 0) "Found $count previously consolidated file(s)"
+                    else "No additional consolidated files found"
+                )
             } catch (e: Exception) {
                 snackbar.send("Backfill failed: ${e.message}")
             } finally {
@@ -426,28 +363,21 @@ class ConsolidateViewModel @Inject constructor(
     )
 
     private suspend fun scanAndBackfill(): Int {
-        val dcimUri = appPrefs.dcimTreeUri() ?: return 0
-        val treeUri = Uri.parse(dcimUri)
+        val treeUri = folderGrants.uri(FolderKeys.DCIM)?.let(Uri::parse) ?: return 0
 
         val consolidatedNames = collectFileNames(ctx, treeUri, "Consolidated")
         if (consolidatedNames.isEmpty()) return 0
 
         val cameraFiles = listSubfolder(ctx, treeUri, "Camera") ?: return 0
 
-        // Forward mapping only — the same consolidateTarget the worker names
-        // its output with. No parsing of consolidated names back into source
-        // names, so no ambiguity and no drift between the two.
+        // Forward mapping only — the same consolidateTarget the worker uses.
         val matched = cameraFiles.mapNotNull { camera ->
             val target = consolidateTarget(camera.path.substringAfterLast('/'))
                 ?: return@mapNotNull null
             if (target.name in consolidatedNames) camera to target.name else null
         }
-
         if (matched.isEmpty()) return 0
 
-        // Batch-hash via the shared cache: one lookup pass, only misses are
-        // read. Files with unknown size or that fail to hash are skipped —
-        // they'll be retried on the next backfill or scan.
         val byKey = LinkedHashMap<HashKey, ScannedFile>()
         val entries = matched.mapNotNull { (camera, consolidatedName) ->
             val size = camera.size ?: return@mapNotNull null
@@ -466,7 +396,7 @@ class ConsolidateViewModel @Inject constructor(
         if (hashed.isEmpty()) return 0
 
         val now = System.currentTimeMillis()
-        val entities = hashed.map { (m, sha) ->
+        consolidateRepo.insertScannedFiles(hashed.map { (m, sha) ->
             ConsolidateFileEntity(
                 path = m.key.path,
                 uri = m.camera.uri,
@@ -475,8 +405,7 @@ class ConsolidateViewModel @Inject constructor(
                 sha256 = sha,
                 createdAt = now,
             )
-        }
-        consolidateRepo.insertScannedFiles(entities)
+        })
 
         var count = 0
         for ((m, sha) in hashed) {
@@ -484,29 +413,18 @@ class ConsolidateViewModel @Inject constructor(
             consolidateRepo.markDone(entity.id, m.consolidatedName)
             count++
         }
-
         return count
     }
 
     private fun cleanupStaleEntries() {
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
-                val done = consolidateRepo.getAllDone()
-                val staleIds = done.filter { entry ->
-                    !isUriResolvable(Uri.parse(entry.uri))
-                }.map { it.id }.toSet()
-                if (staleIds.isNotEmpty()) {
-                    consolidateRepo.deleteByIds(staleIds)
-                }
+                val staleIds = consolidateRepo.getAllDone()
+                    .filter { !isReadable(ctx, it.uri) }
+                    .map { it.id }
+                    .toSet()
+                if (staleIds.isNotEmpty()) consolidateRepo.deleteByIds(staleIds)
             }
-        }
-    }
-
-    private fun isUriResolvable(uri: Uri): Boolean {
-        return try {
-            ctx.contentResolver.openInputStream(uri)?.use { true } ?: false
-        } catch (_: Exception) {
-            false
         }
     }
 }

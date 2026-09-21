@@ -1,61 +1,46 @@
 package de.perigon.companion.backup.ui
 
-import android.content.Context
 import android.net.Uri
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.work.*
-import de.perigon.companion.backup.data.BackupSourceScanner
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.WorkManager
+import dagger.hilt.android.lifecycle.HiltViewModel
 import de.perigon.companion.backup.data.BackupFolderEntity
 import de.perigon.companion.backup.data.BackupSchedulePrefs
+import de.perigon.companion.backup.data.BackupSourceScanner
 import de.perigon.companion.backup.data.BackupStateRepository
-import de.perigon.companion.core.data.UserNotificationDao
-import de.perigon.companion.core.prefs.AppPrefs
-import de.perigon.companion.core.ui.SnackbarChannel
 import de.perigon.companion.backup.worker.BackupRequests
 import de.perigon.companion.backup.worker.BackupWorker
 import de.perigon.companion.backup.worker.enqueueBackup
 import de.perigon.companion.backup.worker.syncBackupSchedule
-import dagger.hilt.android.lifecycle.HiltViewModel
-import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.flow.*
+import de.perigon.companion.core.data.UserNotificationDao
+import de.perigon.companion.core.ui.SnackbarChannel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @Immutable
 data class BackupUiState(
-    val autoEnabled:      Boolean               = true,
-    val intervalHours:    Int                    = BackupSchedulePrefs.DEFAULT_INTERVAL_HOURS,
-    val numPartsPerPack:  Int                    = BackupSchedulePrefs.DEFAULT_NUM_PARTS,
-    val confirmedCount:   Int                    = 0,
-    val lastConfirmedAt:  Long?                  = null,
-    val folders:          List<BackupFolderEntity> = emptyList(),
-    val dcimUri:          String?                = null,
-    val dcimLabel:        String                 = "",
-    val packState:        String                 = BackupWorker.STATE_DONE,
-    val packPosition:     Int                    = 0,
-    val partNumber:       Int                    = 0,
-    val partsTotal:       Int                    = 0,
-    val packPercent:      Int                    = 0,
-    val fileIndex:        Int                    = 0,
-    val filesTotal:       Int                    = 0,
-    val currentFile:      String                 = "",
-    val errorType:        String                 = BackupWorker.ERR_NONE,
-    val errorDetail:      String                 = "",
-    val isRunning:        Boolean                = false,
-) {
-    val hasError:  Boolean get() = errorType != BackupWorker.ERR_NONE
-}
+    val autoEnabled:     Boolean                  = true,
+    val intervalHours:   Int                      = BackupSchedulePrefs.DEFAULT_INTERVAL_HOURS,
+    val numPartsPerPack: Int                      = BackupSchedulePrefs.DEFAULT_NUM_PARTS,
+    val confirmedCount:  Int                      = 0,
+    val lastConfirmedAt: Long?                    = null,
+    val folders:         List<BackupFolderEntity> = emptyList(),
+    val progress:        BackupProgress           = BackupProgress(),
+)
 
+/** DCIM access is owned by the setup gate; this screen never asks for it. */
 @HiltViewModel
 class BackupViewModel @Inject constructor(
-    @param:ApplicationContext private val ctx: Context,
     private val workManager: WorkManager,
     private val stateRepo: BackupStateRepository,
     private val schedulePrefs: BackupSchedulePrefs,
     private val notificationDao: UserNotificationDao,
-    private val appPrefs: AppPrefs,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(
@@ -63,8 +48,6 @@ class BackupViewModel @Inject constructor(
             autoEnabled     = schedulePrefs.autoEnabled(),
             intervalHours   = schedulePrefs.intervalHours(),
             numPartsPerPack = schedulePrefs.numPartsPerPack(),
-            dcimUri         = appPrefs.dcimTreeUri(),
-            dcimLabel       = appPrefs.dcimTreeLabel() ?: "",
         )
     )
     val state: StateFlow<BackupUiState> = _state
@@ -77,44 +60,10 @@ class BackupViewModel @Inject constructor(
         viewModelScope.launch { seedDefaultFolders() }
 
         viewModelScope.launch {
-            appPrefs.observeDcimTreeUri().collect { uri ->
-                _state.update { it.copy(dcimUri = uri, dcimLabel = appPrefs.dcimTreeLabel() ?: "") }
-            }
-        }
-
-        viewModelScope.launch {
-            // Execution slot: shows progress for BOTH manual and scheduled
-            // runs, since the trigger funnels into WORK_NAME.
+            // Execution slot: covers manual and scheduled runs alike.
             workManager.getWorkInfosForUniqueWorkFlow(BackupWorker.WORK_NAME).collect { infos ->
-                val info = infos.firstOrNull {
-                    it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED
-                } ?: infos.firstOrNull() ?: return@collect
-
-                val p   = info.progress
-                val out = info.outputData
-                _state.update { s -> s.copy(
-                    isRunning    = info.state == WorkInfo.State.RUNNING,
-                    packState    = p.getString(BackupWorker.KEY_PACK_STATE)
-                                   ?: if (info.state == WorkInfo.State.SUCCEEDED)
-                                          BackupWorker.STATE_DONE else s.packState,
-                    packPosition = p.getInt(BackupWorker.KEY_PACK_POSITION, s.packPosition),
-                    partNumber   = p.getInt(BackupWorker.KEY_PART_NUMBER,   s.partNumber),
-                    partsTotal   = p.getInt(BackupWorker.KEY_PARTS_TOTAL,   s.partsTotal),
-                    packPercent  = p.getInt(BackupWorker.KEY_PACK_PERCENT,  s.packPercent),
-                    fileIndex    = p.getInt(BackupWorker.KEY_FILE_INDEX,    s.fileIndex),
-                    filesTotal   = p.getInt(BackupWorker.KEY_FILES_TOTAL,   s.filesTotal),
-                    currentFile  = p.getString(BackupWorker.KEY_CURRENT_FILE) ?: s.currentFile,
-                    errorType    = when (info.state) {
-                        WorkInfo.State.FAILED    -> out.getString(BackupWorker.KEY_ERROR_TYPE) ?: BackupWorker.ERR_B2_ERROR
-                        WorkInfo.State.SUCCEEDED -> BackupWorker.ERR_NONE
-                        else -> p.getString(BackupWorker.KEY_ERROR_TYPE) ?: s.errorType
-                    },
-                    errorDetail  = when (info.state) {
-                        WorkInfo.State.FAILED    -> out.getString(BackupWorker.KEY_ERROR_DETAIL) ?: ""
-                        WorkInfo.State.SUCCEEDED -> ""
-                        else -> p.getString(BackupWorker.KEY_ERROR_DETAIL) ?: s.errorDetail
-                    },
-                )}
+                val info = infos.currentInfo() ?: return@collect
+                _state.update { s -> s.copy(progress = info.toBackupProgress(s.progress)) }
             }
         }
 
@@ -138,10 +87,7 @@ class BackupViewModel @Inject constructor(
     }
 
     private suspend fun seedDefaultFolders() {
-        if (stateRepo.countDefaultFolders() > 0) {
-            migrateOldDefaults()
-            return
-        }
+        if (stateRepo.countDefaultFolders() > 0) return
         val now = System.currentTimeMillis()
         BackupSourceScanner.DEFAULT_FOLDERS.forEach { (uriPattern, displayName) ->
             stateRepo.insertFolderIgnore(BackupFolderEntity(
@@ -154,44 +100,12 @@ class BackupViewModel @Inject constructor(
         }
     }
 
-    private suspend fun migrateOldDefaults() {
-        val defaults = stateRepo.getDefaultFolders()
-        val hasOldEntries = defaults.any {
-            it.uri.startsWith("DCIM/Camera") || it.uri.startsWith("DCIM/Consolidated") || it.uri == "PostMedia/"
-        }
-        val hasNewDcim = defaults.any { it.uri == "DCIM" }
-
-        if (hasOldEntries && !hasNewDcim) {
-            for (d in defaults) {
-                if (d.uri.startsWith("DCIM/Camera") || d.uri.startsWith("DCIM/Consolidated") || d.uri == "PostMedia/") {
-                    stateRepo.deleteFolder(d.id)
-                }
-            }
-            val now = System.currentTimeMillis()
-            stateRepo.insertFolderIgnore(BackupFolderEntity(
-                uri = "DCIM",
-                displayName = "DCIM",
-                includeInBackup = true,
-                isDefault = true,
-                addedAt = now,
-            ))
-        }
-    }
-
-    fun onDcimGranted(uri: Uri) {
-        val label = uri.lastPathSegment?.substringAfterLast(':') ?: "DCIM"
-        viewModelScope.launch {
-            appPrefs.setDcimTree(uri.toString(), label)
-        }
-    }
-
     fun startBackup() {
         workManager.enqueueBackup(BackupRequests.manual())
     }
 
     fun cancelBackup() {
-        // Cancels the running/queued execution only; the periodic schedule
-        // (SCHEDULE_NAME) is a separate unique name and survives.
+        // The running execution only; the periodic schedule is a separate name.
         workManager.cancelUniqueWork(BackupWorker.WORK_NAME)
     }
 
@@ -199,7 +113,6 @@ class BackupViewModel @Inject constructor(
         viewModelScope.launch {
             schedulePrefs.setAutoEnabled(enabled)
             _state.update { it.copy(autoEnabled = enabled) }
-            // Touches the schedule only; a running backup (WORK_NAME) is untouched.
             workManager.syncBackupSchedule(
                 enabled       = enabled,
                 intervalHours = schedulePrefs.intervalHours(),
@@ -233,13 +146,12 @@ class BackupViewModel @Inject constructor(
 
     fun addFolder(uri: Uri, displayName: String) {
         viewModelScope.launch {
-            val now = System.currentTimeMillis()
             stateRepo.upsertFolder(BackupFolderEntity(
                 uri = uri.toString(),
                 displayName = displayName,
                 includeInBackup = true,
                 isDefault = false,
-                addedAt = now,
+                addedAt = System.currentTimeMillis(),
             ))
             snackbar.send("Folder '$displayName' added")
         }
