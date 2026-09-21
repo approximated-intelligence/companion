@@ -1,43 +1,57 @@
 package de.perigon.companion.core.ui
 
+import android.content.Intent
 import android.net.Uri
+import android.util.Log
 import androidx.navigation.NavController
+import de.perigon.companion.core.feature.FeatureEntry
+
+/** Extra naming a notification's target; resolved by FeatureEntry.routeFor. */
+const val EXTRA_NAVIGATE_TO = "navigate_to"
 
 /**
  * Everything an external launch (share, notification tap) can ask of the UI.
- * Produced by MainActivity from Intents — cold start and onNewIntent alike —
- * and delivered here, so there is exactly one path into the nav graph.
+ * Produced from Intents — cold start and onNewIntent alike — and delivered
+ * through one path into the nav graph.
  */
 sealed interface LaunchRequest {
-    /** Notification tap etc.: show this destination. */
-    data class Navigate(val route: Any) : LaunchRequest
-
-    /** ACTION_SEND / SEND_MULTIPLE into the app. */
-    data class Share(val target: ShareTarget, val uris: List<Uri>) : LaunchRequest
-}
-
-enum class ShareTarget { MEDIA, GPX }
-
-/** Pure: which destination a shared MIME type belongs to. */
-fun shareTargetFor(mimeType: String?): ShareTarget {
-    val mime = mimeType.orEmpty()
-    return if (mime.contains("gpx") || mime.contains("octet")) ShareTarget.GPX else ShareTarget.MEDIA
+    data class Navigate(val target: String) : LaunchRequest
+    data class Share(val mimeType: String?, val uris: List<Uri>) : LaunchRequest
 }
 
 /**
- * Shares always open a FRESH entry (never launchSingleTop): a shared set of
- * media starts a new post even when MediaPrep for another post is on top.
- * The URIs travel in the new entry's SavedStateHandle and are drained there
- * exactly once — same inbox mechanism as the in-app picker.
+ * Intent → request, or null for a plain launcher start. minSdk 34: the typed
+ * (String, Class) extra getters are always available.
  */
-fun NavController.deliver(request: LaunchRequest) {
+fun launchRequestOf(intent: Intent): LaunchRequest? {
+    intent.getStringExtra(EXTRA_NAVIGATE_TO)?.let { return LaunchRequest.Navigate(it) }
+
+    val uris: List<Uri> = when (intent.action) {
+        Intent.ACTION_SEND ->
+            listOfNotNull(intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java))
+        Intent.ACTION_SEND_MULTIPLE ->
+            intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java).orEmpty()
+        else -> return null
+    }
+    if (uris.isEmpty()) return null
+    return LaunchRequest.Share(intent.type, uris)
+}
+
+/**
+ * Shares always open a FRESH entry (never launchSingleTop): shared media
+ * starts a new post even when another post's media screen is on top. URIs
+ * travel in the new entry's SavedStateHandle and are drained there once.
+ */
+fun NavController.deliver(request: LaunchRequest, features: Collection<FeatureEntry>) {
     when (request) {
-        is LaunchRequest.Navigate -> navigate(request.route) { launchSingleTop = true }
+        is LaunchRequest.Navigate -> {
+            val route = features.firstNotNullOfOrNull { it.routeFor(request.target) }
+                ?: return Log.w("LaunchRequest", "no feature handles navigate_to=${request.target}").let { }
+            navigate(route) { launchSingleTop = true }
+        }
         is LaunchRequest.Share -> {
-            val route: Any = when (request.target) {
-                ShareTarget.MEDIA -> Route.MediaPrep()
-                ShareTarget.GPX   -> Route.TrackRender
-            }
+            val route = features.firstNotNullOfOrNull { it.shareRoute(request.mimeType) }
+                ?: return Log.w("LaunchRequest", "no feature accepts shared ${request.mimeType}").let { }
             navigate(route)
             currentBackStackEntry?.savedStateHandle
                 ?.set(NavResultKeys.SHARED_URIS, encodeUris(request.uris))
