@@ -31,10 +31,11 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import de.perigon.companion.core.prefs.AppPrefs
 import de.perigon.companion.util.saf.dcimPickerInitialUri
 import de.perigon.companion.util.saf.hasDcimWriteGrant
+import de.perigon.companion.util.saf.isDcimTree
 import de.perigon.companion.util.saf.persistSafGrant
-import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -60,11 +61,25 @@ class AppAccessViewModel @Inject constructor(
     private val appPrefs: AppPrefs,
 ) : ViewModel() {
 
-    val dcimUri: StateFlow<String?> =
-        appPrefs.observeDcimTreeUri()
-            .stateIn(viewModelScope, SharingStarted.Eagerly, appPrefs.dcimTreeUri())
+    private val _dcimUri = MutableStateFlow(appPrefs.dcimTreeUri())
+
+    /**
+     * The DCIM tree the gate checks against. Updated SYNCHRONOUSLY on pick
+     * (see [onDcimGranted]) rather than only via the prefs flow: the prefs
+     * write is async, and checking the old URI in the meantime would bounce
+     * the user straight back to the prompt they just answered.
+     */
+    val dcimUri: StateFlow<String?> = _dcimUri.asStateFlow()
+
+    init {
+        // External changes (Settings screen, clear-all) still flow in.
+        viewModelScope.launch {
+            appPrefs.observeDcimTreeUri().collect { _dcimUri.value = it }
+        }
+    }
 
     fun onDcimGranted(uri: Uri) {
+        _dcimUri.value = uri.toString()
         val label = uri.lastPathSegment?.substringAfterLast(':') ?: "DCIM"
         viewModelScope.launch { appPrefs.setDcimTree(uri.toString(), label) }
     }
@@ -75,14 +90,21 @@ class AppAccessViewModel @Inject constructor(
  *
  * Both requirements are app-wide, not screen-local:
  *  - media permission, to read photos and videos at all;
- *  - a WRITABLE DCIM tree grant, because every feature stores under it —
- *    PostMedia and its Originals, consolidation output, restore targets.
+ *  - a WRITABLE grant on the DCIM folder itself, because every feature
+ *    stores under it — PostMedia and its Originals, consolidation output,
+ *    restore targets.
  *
- * Gating once here is what lets the rest of the code treat DCIM access as an
- * invariant instead of a per-screen conditional. The previous arrangement had
- * three screens each wrapping themselves in a DcimGate while MediaPrep and the
- * post editor — which write the most — had none, so a missing grant surfaced
- * there as a failure deep inside a file write.
+ * Grant state is NOT observable: neither checkSelfPermission nor
+ * persistedUriPermissions emits when a grant is made (dialog, folder picker)
+ * or revoked (system settings). So both checks are derived from an explicit
+ * [accessEpoch], bumped at every point a grant can change. Deriving from the
+ * stored URI alone missed the commonest case: re-granting the SAME folder
+ * leaves the URI byte-identical, nothing recomposes, and the gate stayed shut
+ * until the app was restarted.
+ *
+ * Opening the gate resumes wherever the user was headed: launch requests
+ * (shares, notification taps) wait in MainActivity's channel and are
+ * delivered once the nav graph composes.
  */
 @Composable
 fun AppAccessGate(
@@ -92,14 +114,17 @@ fun AppAccessGate(
     val context = LocalContext.current
     val dcimUri by vm.dcimUri.collectAsStateWithLifecycle()
 
-    var mediaOk by remember { mutableStateOf(hasMediaAccess(context)) }
-    var mediaRequested by rememberSaveable { mutableStateOf(false) }
+    var accessEpoch by remember { mutableIntStateOf(0) }
+    val mediaOk = remember(accessEpoch) { hasMediaAccess(context) }
+    val dcimOk = remember(dcimUri, accessEpoch) { hasDcimWriteGrant(context, dcimUri) }
 
-    // Re-check on every resume: returning from the system permission dialog,
-    // from app settings, or from the folder picker must update the gate.
-    // Computing grant state once in remember left it stuck until process death.
+    var mediaRequested by rememberSaveable { mutableStateOf(false) }
+    var pickError by rememberSaveable { mutableStateOf<String?>(null) }
+
+    // Returning from system Settings (or any other app) may have changed
+    // either grant in either direction.
     LifecycleResumeEffect(Unit) {
-        mediaOk = hasMediaAccess(context)
+        accessEpoch++
         onPauseOrDispose { }
     }
 
@@ -107,16 +132,23 @@ fun AppAccessGate(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
         mediaRequested = true
-        mediaOk = hasMediaAccess(context)   // partial grant counts
+        accessEpoch++   // partial grant counts
     }
 
     val folderPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
-        if (uri != null) {
-            persistSafGrant(context, uri, write = true)
-            vm.onDcimGranted(uri)
+        if (uri == null) return@rememberLauncherForActivityResult
+        // Validate BEFORE persisting: a rejected pick must leave no grant.
+        if (!isDcimTree(uri)) {
+            pickError = "That's not the DCIM folder. Select the folder named DCIM " +
+                "at the top level of your storage."
+            return@rememberLauncherForActivityResult
         }
+        pickError = null
+        persistSafGrant(context, uri, write = true)
+        vm.onDcimGranted(uri)
+        accessEpoch++
     }
 
     if (!mediaOk) {
@@ -149,7 +181,7 @@ fun AppAccessGate(
 
     // Write access, always: posts, consolidation and restore all WRITE into
     // DCIM. A read-only grant was never enough for anything but browsing.
-    if (!hasDcimWriteGrant(context, dcimUri)) {
+    if (!dcimOk) {
         AccessRequest(
             icon = Icons.Default.FolderOpen,
             title = "DCIM folder access required",
@@ -157,6 +189,7 @@ fun AppAccessGate(
                 "under your DCIM folder, and reads originals from it. Select DCIM to continue.",
             actionLabel = "Select DCIM folder",
             onAction = { folderPicker.launch(dcimPickerInitialUri()) },
+            error = pickError,
         )
         return
     }
@@ -171,6 +204,7 @@ private fun AccessRequest(
     body: String,
     actionLabel: String,
     onAction: () -> Unit,
+    error: String? = null,
     secondary: (@Composable () -> Unit)? = null,
 ) {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -192,6 +226,14 @@ private fun AccessRequest(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )
+            if (error != null) {
+                Text(
+                    error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center,
+                )
+            }
             Button(onClick = onAction) {
                 Icon(icon, null, Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))

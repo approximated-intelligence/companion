@@ -39,8 +39,9 @@ class MainActivity : ComponentActivity() {
      * notification tap — goes through this one queue into the nav graph.
      * A Channel, not a StateFlow: requests are events (two identical taps are
      * two requests) and nothing may be conflated away. Buffered, so requests
-     * made while the access gate is still showing are delivered once the
-     * graph exists.
+     * made while the access gate is showing wait there and are delivered once
+     * the graph exists — which is what makes "grant access, then continue to
+     * where you were going" work.
      */
     private val launchRequests = Channel<LaunchRequest>(Channel.UNLIMITED)
 
@@ -55,11 +56,20 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             CompanionTheme {
+                // Hoisted ABOVE the gate: the gate can close mid-session (a
+                // grant revoked in system settings) and reopen. Created inside
+                // it, the controller — and the whole back stack with it — was
+                // discarded every time, so the user never got back to where
+                // they were.
+                val navController = rememberNavController()
+
                 AppAccessGate {
-                    val navController = rememberNavController()
                     val backgroundGps by appPrefs.observeBackgroundGps()
                         .collectAsStateWithLifecycle(false)
 
+                    // Inside the gate: navigate() needs the graph, and the
+                    // graph only exists while NavGraph is composed. Requests
+                    // arriving while the gate is closed stay in the channel.
                     LaunchedEffect(navController) {
                         for (request in launchRequests) navController.deliver(request)
                     }

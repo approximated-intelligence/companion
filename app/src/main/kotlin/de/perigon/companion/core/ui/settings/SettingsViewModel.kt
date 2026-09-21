@@ -16,6 +16,7 @@ import de.perigon.companion.util.network.GitHubClient
 import de.perigon.companion.track.service.BackgroundService
 import de.perigon.companion.core.ui.SnackbarChannel
 import de.perigon.companion.util.saf.persistSafGrant
+import de.perigon.companion.util.saf.isDcimTree
 import de.perigon.companion.util.toHex
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -156,6 +157,12 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun setDcimTree(uri: Uri) {
+        // Same guard as the access gate: everything the app writes lands
+        // under this tree, so it must be the DCIM root itself.
+        if (!isDcimTree(uri)) {
+            snackbar.send("That's not the DCIM folder — select DCIM at the top level of your storage")
+            return
+        }
         viewModelScope.launch {
             val label = uri.lastPathSegment?.substringAfterLast(':') ?: "DCIM"
             persistSafGrant(ctx, uri, write = true)
