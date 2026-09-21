@@ -29,6 +29,7 @@ zxing = "3.5.4"
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
+android-library = { id = "com.android.library", version.ref = "agp" }
 detekt = { id = "io.gitlab.arturbosch.detekt", version.ref = "detekt" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
@@ -37,6 +38,8 @@ ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 version-catalog-update = { id = "nl.littlerobots.version-catalog-update", version.ref = "version-catalog-update" }
 
 [libraries]
+# Build logic (compileOnly; the plugin itself comes from the root classpath)
+android-gradlePlugin = { module = "com.android.tools.build:gradle", version.ref = "agp" }
 # CameraX
 camerax-camera2 = { module = "androidx.camera:camera-camera2", version.ref = "camerax" }
 camerax-lifecycle = { module = "androidx.camera:camera-lifecycle", version.ref = "camerax" }

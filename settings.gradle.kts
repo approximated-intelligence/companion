@@ -1,4 +1,5 @@
 pluginManagement {
+    includeBuild("build-logic")
     repositories {
         google()
         mavenCentral()
@@ -14,4 +15,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "Companion"
-include(":app")
+include(":app", ":core", ":media", ":backup", ":posts", ":track", ":audio")

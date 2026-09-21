@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+
+    <application>
+        <service
+            android:name="de.perigon.companion.track.service.BackgroundService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
+        <receiver
+            android:name="de.perigon.companion.track.service.FixAlarmReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name="de.perigon.companion.track.service.AutoTrackReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="de.perigon.companion.track.AUTO_START" />
+                <action android:name="de.perigon.companion.track.AUTO_STOP" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Temp GPX files for sharing a single track (swept after a day). -->
+        <provider
+            android:name="de.perigon.companion.track.share.TrackFileProvider"
+            android:authorities="${applicationId}.track.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/track_file_paths" />
+        </provider>
+    </application>
+</manifest>

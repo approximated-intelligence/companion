@@ -1,0 +1,149 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "a9a1a2a2de3d206e263074198d454798",
+    "entities": [
+      {
+        "tableName": "transform_jobs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `sourceUri` TEXT NOT NULL, `displayName` TEXT NOT NULL, `mediaType` TEXT NOT NULL, `status` TEXT NOT NULL, `progress` INTEGER NOT NULL, `outputPath` TEXT, `error` TEXT, `boxPx` INTEGER NOT NULL, `quality` INTEGER NOT NULL, `trimStartMs` INTEGER NOT NULL, `trimEndMs` INTEGER NOT NULL, `cropLeft` REAL NOT NULL, `cropTop` REAL NOT NULL, `cropRight` REAL NOT NULL, `cropBottom` REAL NOT NULL, `orientationDegrees` INTEGER NOT NULL, `flipHorizontal` INTEGER NOT NULL, `fineRotationDegrees` REAL NOT NULL, `callerTag` TEXT NOT NULL, `createdAt` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceUri",
+            "columnName": "sourceUri",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mediaType",
+            "columnName": "mediaType",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "progress",
+            "columnName": "progress",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outputPath",
+            "columnName": "outputPath",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "error",
+            "columnName": "error",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "boxPx",
+            "columnName": "boxPx",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "quality",
+            "columnName": "quality",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "trimStartMs",
+            "columnName": "trimStartMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "trimEndMs",
+            "columnName": "trimEndMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cropLeft",
+            "columnName": "cropLeft",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cropTop",
+            "columnName": "cropTop",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cropRight",
+            "columnName": "cropRight",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cropBottom",
+            "columnName": "cropBottom",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "orientationDegrees",
+            "columnName": "orientationDegrees",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "flipHorizontal",
+            "columnName": "flipHorizontal",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fineRotationDegrees",
+            "columnName": "fineRotationDegrees",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "callerTag",
+            "columnName": "callerTag",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'a9a1a2a2de3d206e263074198d454798')"
+    ]
+  }
+}

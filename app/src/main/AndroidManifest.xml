@@ -1,31 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- App shell: permissions, services and providers come from the feature
+     modules' manifests; only the activity and its share filters live here. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
-
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.CAMERA" />
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
-    <!-- Android 14+ "Select photos" grants ONLY this permission. Without
-         declaring it, the partial-access flow can never succeed and the
-         PermissionGate dead-ends the whole app. -->
-    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
-
-    <!-- CAMERA is used only by the in-app QR scanner; not required (keeps
-         Play from implying a mandatory camera large-screen hardware feature). -->
-    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
         android:name=".CompanionApp"
@@ -37,9 +14,7 @@
         android:enableOnBackInvokedCallback="true"
         android:dataExtractionRules="@xml/data_extraction_rules">
 
-        <!-- singleTask: one app instance. A share while the app is running is
-             delivered to onNewIntent (→ new post), instead of spawning a
-             second MainActivity inside the sharing app's task. -->
+        <!-- singleTask: shares while running arrive in onNewIntent. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -49,6 +24,7 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- GPX → track render -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <action android:name="android.intent.action.SEND_MULTIPLE" />
@@ -56,6 +32,7 @@
                 <data android:mimeType="application/gpx+xml" />
                 <data android:mimeType="application/octet-stream" />
             </intent-filter>
+            <!-- Images/videos → new post -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <action android:name="android.intent.action.SEND_MULTIPLE" />
@@ -63,52 +40,11 @@
                 <data android:mimeType="image/*" />
                 <data android:mimeType="video/*" />
             </intent-filter>
-            <!-- companion://oauth/callback removed: no code anywhere consumes
-                 an OAuth callback (SettingsViewModel has no handler). A
-                 browsable deep link with no consumer is pure attack surface.
-                 Re-add together with an actual implementation. -->
         </activity>
 
-        <service
-            android:name="de.perigon.companion.track.service.BackgroundService"
-            android:exported="false"
-            android:foregroundServiceType="location" />
-
-        <service
-            android:name="de.perigon.companion.audio.service.AudioRecordingService"
-            android:exported="false"
-            android:foregroundServiceType="microphone" />
-
-        <receiver
-            android:name="de.perigon.companion.track.service.FixAlarmReceiver"
-            android:exported="false" />
-
-        <receiver
-            android:name="de.perigon.companion.track.service.AutoTrackReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
-                <action android:name="de.perigon.companion.track.AUTO_START" />
-                <action android:name="de.perigon.companion.track.AUTO_STOP" />
-            </intent-filter>
-        </receiver>
-
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.fileprovider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_provider_paths" />
-        </provider>
-
-        <service
-            android:name="androidx.work.impl.foreground.SystemForegroundService"
-            android:foregroundServiceType="dataSync"
-            tools:node="merge" />
-
+        <!-- CompanionApp implements Configuration.Provider (Hilt workers):
+             the default on-start WorkManager initializer must go. Lives in
+             the shell because the Application does. -->
         <provider
             android:name="androidx.startup.InitializationProvider"
             android:authorities="${applicationId}.androidx-startup"
@@ -119,6 +55,5 @@
                 android:value="androidx.startup"
                 tools:node="remove" />
         </provider>
-
     </application>
 </manifest>
