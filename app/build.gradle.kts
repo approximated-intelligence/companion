@@ -15,7 +15,7 @@ android {
     defaultConfig {
         applicationId = "de.perigon.companion"
         minSdk = 34
-        targetSdk = 36
+        targetSdk = 37
         versionCode = 1
         versionName = "0.1.3"
     }
