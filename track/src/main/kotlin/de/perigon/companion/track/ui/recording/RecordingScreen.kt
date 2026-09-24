@@ -643,8 +643,10 @@ private fun ActiveTrackInfo(
             }
         }
         val secondLine = buildList {
-            if (providedFix.ele        != null) add("%.0fm".format(providedFix.ele))
+            if (providedFix.ele        != null) add("ortho: %.1fm".format(providedFix.ele))
             if (providedFix.undulation != null) add("geoid: %.1fm".format(providedFix.undulation))
+            // if (providedFix.ele != null && providedFix.undulation != null)
+            //     add("wgs84: %.1fm".format(providedFix.ele+providedFix.undulation))
             if (providedFix.bearing    != null) add("%.0f°".format(providedFix.bearing))
             if (providedFix.speedMs    != null) add("%.1f km/h".format(providedFix.speedMs * 3.6f))
         }
