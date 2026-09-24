@@ -3,6 +3,7 @@ package de.perigon.companion.backup.data
 import de.perigon.companion.core.util.sha256Hex
 import de.perigon.companion.core.util.sha256HexWithSize
 
+import android.util.Log
 import androidx.room.Dao
 import androidx.room.Entity
 import androidx.room.Insert
@@ -156,7 +157,8 @@ class FileHasher @Inject constructor(
 
             val digest = try {
                 open(key).use { stream -> sha256Hex(stream) }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.w("FileHasher", "hash failed for ${key.path} (${e.javaClass.simpleName}): ${e.message}")
                 continue
             }
             result[key] = digest
@@ -188,7 +190,9 @@ class FileHasher @Inject constructor(
         dao.lookup(path, normMtime(mtime), size)?.let { return it }
         val digest = try {
             open().use { stream -> sha256Hex(stream) }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w("FileHasher", "hashOrCached failed for $path (${e.javaClass.simpleName}): ${e.message}")
+
             return null
         }
         dao.upsert(FileContentHashEntity(
@@ -210,7 +214,8 @@ class FileHasher @Inject constructor(
     ): Pair<String, Long>? {
         val (hex, actualSize) = try {
             open().use { stream -> sha256HexWithSize(stream) }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w("FileHasher", "rehash failed for $path (${e.javaClass.simpleName}): ${e.message}")
             return null
         }
         dao.upsert(FileContentHashEntity(

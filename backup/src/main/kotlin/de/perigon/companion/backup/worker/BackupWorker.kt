@@ -18,15 +18,16 @@ import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.data.UserNotifications
 import de.perigon.companion.backup.data.BackupPrefs
 import de.perigon.companion.backup.data.BackupSecrets
+import de.perigon.companion.core.saf.openInputStream
 import de.perigon.companion.core.util.fromHex
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import java.io.InputStream
 import kotlin.coroutines.cancellation.CancellationException
 
-private class AndroidBackupFileSource(private val resolver: ContentResolver) : BackupFileSource {
+private class AndroidBackupFileSource(private val context: Context) : BackupFileSource {
     override fun open(uri: String): InputStream =
-        resolver.openInputStream(uri.toUri())
+        openInputStream(context, uri.toUri())
             ?: error("Cannot open stream for $uri")
 }
 
@@ -107,7 +108,7 @@ class BackupWorker @AssistedInject constructor(
         return try {
             val b2 = s3Factory.create(b2Config.endpoint, b2Config.bucket, b2Config.keyId, b2RwAppKey, b2Config.region)
             val orchestrator = BackupOrchestrator(
-                fileSource   = AndroidBackupFileSource(applicationContext.contentResolver),
+                fileSource   = AndroidBackupFileSource(applicationContext),
                 serverPk     = serverPkHex.fromHex(),
                 phoneSk      = phoneSkHex.fromHex(),
                 sodium       = lazySodium,

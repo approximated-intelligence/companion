@@ -14,6 +14,8 @@ import de.perigon.companion.core.feature.NotificationIds
 import de.perigon.companion.core.feature.RequestCodes
 import de.perigon.companion.core.prefs.FolderGrants
 import de.perigon.companion.core.prefs.FolderKeys
+import de.perigon.companion.core.saf.openFileDescriptor
+import de.perigon.companion.core.saf.openInputStream
 import de.perigon.companion.core.ui.WorkNotifier
 import de.perigon.companion.backup.consolidate.data.ConsolidateFileEntity
 import de.perigon.companion.backup.consolidate.data.ConsolidateRepository
@@ -153,13 +155,14 @@ class ConsolidateWorker @AssistedInject constructor(
                 when (tj.status) {
                     TransformJobStatus.DONE -> {
                         val entity = pendingJobs.remove(tj.id) ?: continue
-                        if (tj.outputPath != null) {
+                        val outputPath = tj.outputPath
+                        if (outputPath != null) {
                             try {
                                 placeInConsolidated(
                                     dcimTreeUri = treeUri,
                                     displayName = tj.displayName,
                                     mediaType = tj.mediaType,
-                                    tempFile = File(tj.outputPath),
+                                    tempFile = File(outputPath),
                                     sourceUri = entity.uri.toUri(),
                                     sourceMtime = entity.mtime,
                                 )
@@ -239,7 +242,7 @@ class ConsolidateWorker @AssistedInject constructor(
                 setForeground(foregroundInfo("Hashing $hashed / $misses"))
             },
         ) { key ->
-            ctx.contentResolver.openInputStream(byKey.getValue(key).uri.toUri())
+            openInputStream(ctx, byKey.getValue(key).uri.toUri())
                 ?: error("openInputStream returned null")
         }
 
@@ -298,7 +301,7 @@ class ConsolidateWorker @AssistedInject constructor(
      */
     private fun copyExif(sourceUri: Uri, target: File) {
         try {
-            val tags = ctx.contentResolver.openFileDescriptor(sourceUri, "r")
+            val tags = openFileDescriptor(ctx, sourceUri)
                 ?.use { pfd -> readPreservedExif(pfd.fileDescriptor) }
                 ?: emptyMap()
             if (tags.isNotEmpty()) writeExif(target, tags)

@@ -9,6 +9,7 @@ import de.perigon.companion.core.prefs.FolderKeys
 import de.perigon.companion.backup.data.FileHasher
 import de.perigon.companion.backup.data.HashKey
 import de.perigon.companion.core.saf.ScannedFile
+import de.perigon.companion.core.saf.openInputStream
 import de.perigon.companion.core.saf.walkDocumentTree
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -76,9 +77,8 @@ class BackupSourceScanner @Inject constructor(
             byKey.putIfAbsent(HashKey(sf.path, sf.mtime, size), sf)
         }
         if (unknownSize > 0) Log.w(TAG, "dropped $unknownSize file(s) with unknown size")
-
         val hashes = hasher.hashAllOrCached(byKey.keys.toList(), onProgress) { key ->
-            context.contentResolver.openInputStream(byKey.getValue(key).uri.toUri())
+            openInputStream(context, byKey.getValue(key).uri.toUri())
                 ?: error("openInputStream returned null")
         }
 

@@ -46,7 +46,11 @@ class BackupFeature @Inject constructor() : FeatureEntry {
         MenuItem("Consolidate", BackupRoute.Consolidate, order = 40),
     )
 
-    override val requirements = listOf(CommonRequirements.dcim, CommonRequirements.notifications)
+    override val requirements = listOf(
+        CommonRequirements.dcim,
+        CommonRequirements.mediaAccess,
+        CommonRequirements.notifications,
+    )
 
     override fun register(graph: NavGraphBuilder, nav: NavHostController) {
         graph.composable<BackupRoute.Backup> { BackupScreen(navController = nav) }

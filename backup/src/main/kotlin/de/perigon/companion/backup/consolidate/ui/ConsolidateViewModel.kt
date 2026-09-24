@@ -34,6 +34,8 @@ import de.perigon.companion.core.saf.ScannedFile
 import de.perigon.companion.core.saf.collectFileNames
 import de.perigon.companion.core.saf.isReadable
 import de.perigon.companion.core.saf.listSubfolder
+import de.perigon.companion.core.saf.openFileDescriptor
+import de.perigon.companion.core.saf.openInputStream
 import de.perigon.companion.core.ui.SnackbarChannel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -389,7 +391,7 @@ class ConsolidateViewModel @Inject constructor(
         if (entries.isEmpty()) return 0
 
         val hashes = hasher.hashAllOrCached(byKey.keys.toList()) { key ->
-            ctx.contentResolver.openInputStream(byKey.getValue(key).uri.toUri())
+            openInputStream(ctx, byKey.getValue(key).uri.toUri())
                 ?: error("openInputStream returned null")
         }
 
