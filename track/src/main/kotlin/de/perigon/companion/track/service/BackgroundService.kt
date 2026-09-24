@@ -62,7 +62,8 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.nio.ByteOrder
 import java.nio.channels.FileChannel
-import java.nio.FloatBuffer
+import java.nio.ShortBuffer
+// import java.nio.FloatBuffer
 import java.time.LocalDate
 import javax.inject.Inject
 
@@ -124,7 +125,8 @@ class BackgroundService : Service() {
     private lateinit var fixScheduler: FixScheduler
     private lateinit var locationManager: LocationManager
     private lateinit var notificationManager: NotificationManager
-    private lateinit var geoid: FloatBuffer
+    private lateinit var geoid: ShortBuffer
+    // private lateinit var geoid: FloatBuffer
 
     private var buffer: TrackPointBuffer? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -166,12 +168,37 @@ class BackgroundService : Service() {
         val y1 = y0 + 1
         val tx = (x - x0).toFloat()
         val ty = (y - y0).toFloat()
-        return linearInterpolate(
-            linearInterpolate(geoid.get(y0 * cols + x0), geoid.get(y0 * cols + x1), tx),
-            linearInterpolate(geoid.get(y1 * cols + x0), geoid.get(y1 * cols + x1), tx),
+
+        val raw = linearInterpolate(
+            linearInterpolate(geoid.get(y0 * cols + x0).toFloat(), geoid.get(y0 * cols + x1).toFloat(), tx),
+            linearInterpolate(geoid.get(y1 * cols + x0).toFloat(), geoid.get(y1 * cols + x1).toFloat(), tx),
             ty,
         )
+        return raw / 10f   // for dm level precision in the geoid_v2, would be / 100f for cm
     }
+
+    // private fun undulation(lat: Double, lon: Double): Float {
+    //     val cols = 1441
+    //     val step = 0.25
+    //     val normLon = when {
+    //         lon < -180.0 -> lon + 360.0
+    //         lon > 180.0  -> lon - 360.0
+    //         else         -> lon
+    //     }
+    //     val x  = (normLon + 180.0) / step
+    //     val y  = (lat + 90.0) / step
+    //     val x0 = x.toInt().coerceIn(0, cols - 2)
+    //     val y0 = y.toInt().coerceIn(0, 719)
+    //     val x1 = x0 + 1
+    //     val y1 = y0 + 1
+    //     val tx = (x - x0).toFloat()
+    //     val ty = (y - y0).toFloat()
+    //     return linearInterpolate(
+    //         linearInterpolate(geoid.get(y0 * cols + x0), geoid.get(y0 * cols + x1), tx),
+    //         linearInterpolate(geoid.get(y1 * cols + x0), geoid.get(y1 * cols + x1), tx),
+    //         ty,
+    //     )
+    // }
 
     private fun convert(location: Location): TrackPointEntity {
         val undulation = undulation(location.latitude, location.longitude)
@@ -236,23 +263,47 @@ class BackgroundService : Service() {
         notificationManager = getSystemService(NotificationManager::class.java)
         fixScheduler        = FixScheduler(this) { dispatchFixEvent(FixEvent.StartCycle) }
 
-        // Copy the geoid.bin to cache directory
-        val geoidFile = File(cacheDir, "geoid.bin")
-        if (!geoidFile.exists()) {
-            assets.open("gnss/geoid.bin").use { inputStream ->
-                FileOutputStream(geoidFile).use { outputStream ->
-                    inputStream.copyTo(outputStream)
-                }
+        // Copy the geoid grid to cache directory (int16 LE, dm scale, 1441 x 721).
+        val geoidFile = File(cacheDir, "geoid_v2.bin")
+        val expectedBytes = 1441L * 721L * 2L   // 2_078_082 for Short
+        // val geoidFile = File(cacheDir, "geoid.bin")
+        // val expectedBytes = 1441L * 721L * 4L   // 4_194_304 for Float
+
+        // // Copy the geoid_v2.bin to cache directory, checking for truncation
+        if (!geoidFile.exists() || geoidFile.length() != expectedBytes) {
+            val tmp = File(cacheDir, "geoid_v2.bin.tmp")
+            assets.open("gnss/geoid_v2.bin").use { inputStream ->
+                FileOutputStream(tmp).use { inputStream.copyTo(it) }
+            }
+            if (!tmp.renameTo(geoidFile)) {
+                tmp.delete()
+                error("Failed to install geoid grid")
             }
         }
+        // // Copy the geoid.bin to cache directory
+        // if (!geoidFile.exists()) {
+        //     assets.open("gnss/geoid.bin").use { inputStream ->
+        //         FileOutputStream(geoidFile).use { outputStream ->
+        //             inputStream.copyTo(outputStream)
+        //         }
+        //     }
+        // }
 
-        // Map the file from the cache directory
+
+        // Map the file from the cache directory, as ShortBuffer()
         geoid = FileInputStream(geoidFile).channel
             .map(FileChannel.MapMode.READ_ONLY, 0, geoidFile.length())
             .order(ByteOrder.nativeOrder())
-            .asFloatBuffer()
+            .asShortBuffer()
 
-        // geoid               = assets.openFd("gnss/geoid.bin").use { afd ->
+        // // Map the file from the cache directory, as FloatBuffer
+        // geoid = FileInputStream(geoidFile).channel
+        //     .map(FileChannel.MapMode.READ_ONLY, 0, geoidFile.length())
+        //     .order(ByteOrder.nativeOrder())
+        //     .asFloatBuffer()
+
+        // // Map the file from the asset in the apk
+        // geoid = assets.openFd("gnss/geoid.bin").use { afd ->
         //    FileInputStream(afd.fileDescriptor).channel
         //        .map(FileChannel.MapMode.READ_ONLY, afd.startOffset, afd.length)
         //        .order(ByteOrder.nativeOrder())
