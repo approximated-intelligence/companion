@@ -1,9 +1,13 @@
 package de.perigon.companion.core.saf
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.DocumentsContract
+import android.provider.MediaStore
+import android.util.Log
 import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
 
@@ -437,14 +441,54 @@ fun findFile(
     return documentFileInTree(context, treeUri, child.documentId)
 }
 
+private fun isMediaUri(context: Context, uri: Uri): Boolean =
+    context.contentResolver.getType(uri)?.substringBefore('/') in setOf("image", "video")
+
+/**
+ * Resolve a SAF document URI to the URI that reads the file's ORIGINAL
+ * bytes, including unredacted EXIF/XMP GPS. minSdk 34 > S (31) and Q (29):
+ * for media this runs the full promote-then-require-original path.
+ *
+ * Falls back to the input URI when promotion isn't possible (SD
+ * card, non-media file) — those aren't affected by redaction anyway.
+ */
+fun resolveOriginalUri(context: Context, uri: Uri): Uri {
+    // Non-media: promotion doesn't apply. This is the correct path,
+    // not a fallback — there are no "original bytes" to distinguish.
+    if (!isMediaUri(context, uri)) return uri
+
+    if (context.checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION)
+        != PackageManager.PERMISSION_GRANTED) {
+        throw SecurityException("ACCESS_MEDIA_LOCATION not granted for $uri")
+    }
+    val mediaUri = try {
+        MediaStore.getMediaUri(context, uri)
+    } catch (t: Throwable) {
+        throw IllegalStateException("getMediaUri failed for $uri", t)
+    } ?: throw IllegalStateException("not a MediaStore URI: $uri")
+
+    return try {
+        MediaStore.setRequireOriginal(mediaUri)
+    } catch (t: Throwable) {
+        throw IllegalStateException("setRequireOriginal failed for $mediaUri", t)
+    }
+}
+
 /**
  * Open an InputStream for a SAF URI.
  */
 fun openInputStream(context: Context, uri: Uri): java.io.InputStream? =
-    context.contentResolver.openInputStream(uri)
+    context.contentResolver.openInputStream(resolveOriginalUri(context, uri))
 
 /**
  * Open an InputStream for a SAF URI string.
  */
 fun openInputStream(context: Context, uriStr: String): java.io.InputStream? =
     openInputStream(context, uriStr.toUri())
+
+/**
+ * Open a file descriptor for a SAF URI, promoted to read original bytes
+ * (unredacted EXIF/GPS) the same way [openInputStream] does.
+ */
+fun openFileDescriptor(context: Context, uri: Uri, mode: String = "r"): android.os.ParcelFileDescriptor? =
+    context.contentResolver.openFileDescriptor(resolveOriginalUri(context, uri), mode)

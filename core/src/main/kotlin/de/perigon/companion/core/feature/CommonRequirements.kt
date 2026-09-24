@@ -20,6 +20,17 @@ object CommonRequirements {
         },
     )
 
+    val mediaAccess: AccessRequirement = AccessRequirement.Permissions(
+        key = "media_access",
+        title = "Photo and video access",
+        rationale = "Needed to read original file bytes (with GPS intact) via MediaStore.",
+        permissions = listOf(
+            Manifest.permission.READ_MEDIA_IMAGES,
+            Manifest.permission.READ_MEDIA_VIDEO,
+            Manifest.permission.ACCESS_MEDIA_LOCATION,
+        ),
+    )
+
     val notifications: AccessRequirement = AccessRequirement.Permissions(
         key = "notifications",
         title = "Notifications",
