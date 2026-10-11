@@ -1,0 +1,1 @@
+gdal_translate -ot Float32 -of ENVI height_anomaly_XGM2019e_2159_ad89d126e84a18b7dc0d8822d1be15f4e970343d35fe22c37f11b43eae9867b3.tiff geoid.bin
