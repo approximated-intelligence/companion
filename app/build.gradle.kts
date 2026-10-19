@@ -29,11 +29,13 @@ android {
                 "proguard-rules.pro"
             )
         }
+        // R8-minified like release, debug-signed. Currently not debuggable;
+        // flip isDebuggable to true to attach a debugger to the minified build.
+        // Library modules only have debug/release.
         create("releaseDebuggable") {
             initWith(getByName("release"))
             isDebuggable = false
-            signingConfig = signingConfigs.getByName("debug") // still signed with debug key
-            // Library modules only have debug/release.
+            signingConfig = signingConfigs.getByName("debug")
             matchingFallbacks += listOf("release")
         }
     }
