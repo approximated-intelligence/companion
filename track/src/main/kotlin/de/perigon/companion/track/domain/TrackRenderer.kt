@@ -9,7 +9,7 @@ import android.graphics.RectF
 import androidx.core.graphics.createBitmap
 import de.perigon.companion.track.network.TileSource
 
-private const val OUTPUT_PX    = 1080
+private const val OUTPUT_PX    = 960
 private const val PADDING_FRAC = 0.05f
 private const val STROKE_WIDTH = 6f
 private const val DOT_RADIUS   = 14f
