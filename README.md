@@ -12,31 +12,33 @@ Android journaling app. Write posts with photos and videos, publish to your own 
 
 **Media consolidation** - Batch-compress camera roll into DCIM/Consolidated for reduced storage.
 
-**Backup** - Media files are packed and uploaded to B2-compatible object storage. Restore available on-device.
+**Backup** - Media files are packed, encrypted, and uploaded to B2-compatible object storage. Restore available on-device.
 
 ## Architecture
 
-Single-module Android app. Kotlin, Jetpack Compose, Hilt, Room, WorkManager, Media3 Transformer.
+Multi-module Android app. Kotlin, Jetpack Compose, Hilt, Room, WorkManager, Media3 Transformer.
 
 ```
+app/         App shell: activity, nav graph, feature wiring
+core/        DI, preferences, SAF, networking, navigation, UI
 posts/       Post editor, media prep, Jekyll publishing, site assets
-media/       Transform queue, consolidation, MediaStore integration
-backup/      Pack-based backup to B2, restore
-core/        Database, DI, preferences, navigation, UI
-util/        Image/video transforms, hashing, GitHub client
+media/       Transform queue, image/video editing, EXIF
+backup/      Pack-based backup to B2, restore, consolidation
+track/       Track rendering using local or remote tile sources
+scaffold/    `companion.library` convention plugin for feature modules
 ```
 
 **Transform queue** - All media processing flows through a Room-backed job queue. Jobs run sequentially on a dedicated HandlerThread. Media3 Transformer handles video; bitmap pipeline handles images.
 
-**Atomic publishing** - Posts publish via GitHub's Git Trees API. All media blobs and markdown committed in one operation.
+**Atomic publishing** - Posts commit atomically via GitHub's Git Trees API: markdown always, media blobs only when media is stored on GitHub.
 
 ## Building
 
-```
+```bash
 ./gradlew assembleDebug
 ```
 
-Requires JDK 21. Dependencies managed via version catalog (`gradle/libs.versions.toml`).
+Requires JDK 21+ (developed against JDK 25). Dependencies managed via version catalog (`gradle/libs.versions.toml`).
 
 ## Updating dependencies
 
@@ -54,14 +56,15 @@ The plugin modifies `gradle/libs.versions.toml` in place. Review the diff before
 
 ## Configuration
 
-Done on-device in Settings via QR scan or manual entry:
+Done on-device in Settings. Credentials (B2, GitHub) are imported by scanning a QR code; preferences are entered manually.
 
 - **B2 storage** - S3-compatible endpoint, bucket, credentials
-- **GitHub** - Token, owner, repo. CNAME auto-detected for site URL
+- **GitHub** - Token, owner, repo. Site URL read from the repo's CNAME when present
 - **Journey** - Start date, title, tag for auto-generating post titles ("Day 42: ...")
 
 ## Requirements
 
-- Android 12+ (minSdk 31)
-- Camera permission for QR scanning
-- Storage permissions for media access
+- Android 14+ (minSdk 34)
+- Camera permission for QR scanning (optional)
+- SAF folder access for DCIM
+- Media permissions for photos and videos, including original EXIF/GPS
