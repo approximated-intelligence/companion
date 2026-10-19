@@ -38,7 +38,7 @@ scaffold/    `companion.library` convention plugin for feature modules
 ./gradlew assembleDebug
 ```
 
-Requires JDK 21+ (developed against JDK 25). Dependencies managed via version catalog (`gradle/libs.versions.toml`).
+Requires JDK 21+ (developed against JDK 25). On JDK 24+, Gradle's launcher prints a restricted native-access warning; silence it with `export GRADLE_OPTS="--enable-native-access=ALL-UNNAMED"`. Dependencies managed via version catalog (`gradle/libs.versions.toml`).
 
 ## Updating dependencies
 
