@@ -275,7 +275,7 @@ class TransformQueue @Inject constructor(
     }
 
     companion object {
-        const val DEFAULT_BOX_PX       = 1080
+        const val DEFAULT_BOX_PX       = 960
         const val DEFAULT_VIDEO_BOX_PX = 640
         const val DEFAULT_QUALITY      = 85
 

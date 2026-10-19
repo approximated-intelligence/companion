@@ -15,7 +15,7 @@ data class TransformJobEntity(
     val progress: Int = 0,
     val outputPath: String? = null,
     val error: String? = null,
-    val boxPx: Int = 1080,
+    val boxPx: Int = 960,
     val quality: Int = 85,
     val trimStartMs: Long = 0L,
     val trimEndMs: Long = Long.MAX_VALUE,

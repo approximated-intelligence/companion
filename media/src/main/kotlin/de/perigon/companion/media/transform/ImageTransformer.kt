@@ -22,7 +22,7 @@ data class ImageTransformParams(
     val cropTop: Float = 0f,
     val cropRight: Float = 1f,
     val cropBottom: Float = 1f,
-    val boxPx: Int = 1080,
+    val boxPx: Int = 960,
     val quality: Int = 85,
 ) {
     val hasCrop: Boolean
