@@ -1,5 +1,5 @@
 pluginManagement {
-    includeBuild("build-logic")
+    includeBuild("scaffold")
     repositories {
         google()
         mavenCentral()

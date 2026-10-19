@@ -8,5 +8,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "build-logic"
-include(":convention")
+rootProject.name = "scaffold"
+
