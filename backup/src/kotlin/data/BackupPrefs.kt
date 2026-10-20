@@ -83,6 +83,12 @@ class BackupSecrets @Inject constructor(
     fun phoneSecretKey(): String? = store.get(PHONE_SECRET_KEY)
     fun setPhoneSecretKey(hex: String) = store.put(PHONE_SECRET_KEY, hex)
 
+    /**
+     * Ticks on every put/clear. Settings UIs that read secrets must merge this
+     * with their non-secret flow: a secret-only change is otherwise invisible.
+     */
+    fun changes(): Flow<Unit> = store.changes
+
     fun clear() = store.clear()
 
     private companion object {

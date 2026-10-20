@@ -9,6 +9,9 @@ import android.util.Log
 import androidx.core.content.edit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.security.KeyStore
 import javax.crypto.Cipher
@@ -27,6 +30,10 @@ private const val GCM_IV_BYTES = 12
  *
  * Excluded from backup by name in data_extraction_rules — values cannot be
  * decrypted on another device anyway.
+ *
+ * [changes] emits on every put/clear. Consumers that display secret-derived
+ * state MUST merge it with their config flow: a change to a secret without a
+ * corresponding config change is otherwise invisible to the UI.
  */
 class SecretStore(
     context: Context,
@@ -38,6 +45,16 @@ class SecretStore(
         context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
 
     @Volatile private var keyReady = false
+
+    /**
+     * Monotonic version counter, incremented on every put/clear. Exposed as a
+     * `Flow<Unit>` so callers can merge it with any other reactive source
+     * without juggling types.
+     */
+    private val version = MutableStateFlow(0L)
+
+    /** Emits once per put/clear. Re-read via [get] on emission. */
+    val changes: Flow<Unit> = version.map { }
 
     init {
         // Keystore work off the main thread; get/put stay correct if they win the race.
@@ -67,10 +84,12 @@ class SecretStore(
         prefs.edit {
             if (value == null) remove(key) else putString(key, encrypt(value))
         }
+        version.value += 1
     }
 
     fun clear() {
         prefs.edit { clear() }
+        version.value += 1
     }
 
     private fun encrypt(plaintext: String): String {
