@@ -1,9 +1,9 @@
 package de.perigon.companion.posts.domain
 
-import de.perigon.companion.media.domain.CropRect
-import de.perigon.companion.media.domain.MediaType
-import de.perigon.companion.media.domain.OrientationTransform
-import de.perigon.companion.media.domain.TransformIntent
+import de.perigon.companion.core.transform.CropRect
+import de.perigon.companion.core.transform.MediaType
+import de.perigon.companion.core.transform.OrientationTransform
+import de.perigon.companion.core.transform.TransformIntent
 import de.perigon.companion.posts.data.PostMediaEntity
 
 /** Pure: the stored transform columns of a post media row as media's intent type. */

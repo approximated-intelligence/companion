@@ -1,4 +1,4 @@
-package de.perigon.companion.track.ui.recording
+package de.perigon.companion.sensors.ui.recording
 
 import de.perigon.companion.core.ui.ToggleRow
 import de.perigon.companion.core.ui.formatSpan
@@ -32,15 +32,15 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import de.perigon.companion.core.ui.AppTopBar
 import de.perigon.companion.core.ui.SecureWindow
-import de.perigon.companion.track.data.RecordingMode
-import de.perigon.companion.track.data.TrackConfigEntity
-import de.perigon.companion.track.data.TrackPointEntity
-import de.perigon.companion.track.data.TrackStatsEntity
-import de.perigon.companion.track.data.TrackSummary
-import de.perigon.companion.track.data.isValidLoggingRate
-import de.perigon.companion.track.domain.formatIntervalLabel
-import de.perigon.companion.track.domain.formatModeLabel
-import de.perigon.companion.track.service.GnssInfo
+import de.perigon.companion.sensors.data.RecordingMode
+import de.perigon.companion.sensors.data.TrackConfigEntity
+import de.perigon.companion.sensors.data.TrackPointEntity
+import de.perigon.companion.sensors.data.TrackStatsEntity
+import de.perigon.companion.sensors.data.TrackSummary
+import de.perigon.companion.sensors.data.isValidLoggingRate
+import de.perigon.companion.sensors.domain.formatIntervalLabel
+import de.perigon.companion.sensors.domain.formatModeLabel
+import de.perigon.companion.sensors.service.GnssInfo
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 

@@ -1,4 +1,4 @@
-package de.perigon.companion.track.data
+package de.perigon.companion.sensors.data
 
 import android.content.Context
 import androidx.datastore.core.DataStore

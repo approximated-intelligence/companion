@@ -3,11 +3,9 @@ plugins {
 }
 
 android {
-    namespace = "de.perigon.companion.track"
+    namespace = "de.perigon.companion.sensors"
 }
 
 dependencies {
     implementation(project(":core"))
-
-    implementation(libs.coil.compose)
 }

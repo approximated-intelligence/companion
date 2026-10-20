@@ -30,7 +30,7 @@ import de.perigon.companion.posts.data.PostsPrefs
 import de.perigon.companion.posts.PostsRoute as Route
 import de.perigon.companion.posts.domain.ItemStatus
 import de.perigon.companion.posts.domain.MediaPrepItem
-import de.perigon.companion.media.domain.MediaType
+import de.perigon.companion.core.transform.MediaType
 import de.perigon.companion.posts.domain.toTransformIntent
 import de.perigon.companion.posts.data.MediaSourceStatus
 import de.perigon.companion.posts.data.ResolvedMedia

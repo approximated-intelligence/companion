@@ -11,6 +11,7 @@ import de.perigon.companion.core.feature.AppInitializer
 import de.perigon.companion.core.feature.ChannelSpec
 import de.perigon.companion.core.feature.FeatureEntry
 import de.perigon.companion.core.feature.MediaInbox
+import de.perigon.companion.core.feature.RecordedTrackSource
 import de.perigon.companion.core.feature.SettingsSection
 import de.perigon.companion.core.files.CacheSweep
 import de.perigon.companion.core.ui.settings.SettingsFeature
@@ -28,6 +29,7 @@ abstract class FeatureContractsModule {
     @Multibinds abstract fun channels(): Set<ChannelSpec>
 
     @BindsOptionalOf abstract fun mediaInbox(): MediaInbox
+    @BindsOptionalOf abstract fun recordedTrackSource(): RecordedTrackSource
 
     @Binds @IntoSet abstract fun cacheSweep(impl: CacheSweep): AppInitializer
     @Binds @IntoSet abstract fun settingsFeature(impl: SettingsFeature): FeatureEntry

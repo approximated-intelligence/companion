@@ -1,4 +1,4 @@
-package de.perigon.companion.track.di
+package de.perigon.companion.sensors.di
 
 import android.content.Context
 import androidx.room.Room
@@ -12,20 +12,22 @@ import dagger.multibindings.IntoSet
 import de.perigon.companion.core.feature.AppInitializer
 import de.perigon.companion.core.feature.ChannelSpec
 import de.perigon.companion.core.feature.FeatureEntry
+import de.perigon.companion.core.feature.RecordedTrackSource
 import de.perigon.companion.core.feature.SettingsSection
-import de.perigon.companion.track.TrackChannels
-import de.perigon.companion.track.TrackFeature
-import de.perigon.companion.track.TrackResumeInitializer
-import de.perigon.companion.track.TrackSettingsSection
-import de.perigon.companion.track.data.MIGRATION_1_2
-import de.perigon.companion.track.data.TrackDao
-import de.perigon.companion.track.data.TrackDatabase
-import de.perigon.companion.track.data.TrackRepository
+import de.perigon.companion.sensors.SensorsChannels
+import de.perigon.companion.sensors.SensorsFeature
+import de.perigon.companion.sensors.SensorsResumeInitializer
+import de.perigon.companion.sensors.SensorsSettingsSection
+import de.perigon.companion.sensors.data.MIGRATION_1_2
+import de.perigon.companion.sensors.data.SensorsRecordedTrackSource
+import de.perigon.companion.sensors.data.TrackDao
+import de.perigon.companion.sensors.data.TrackDatabase
+import de.perigon.companion.sensors.data.TrackRepository
 import javax.inject.Singleton
 
 @Module
 @InstallIn(SingletonComponent::class)
-object TrackModule {
+object SensorsModule {
 
     @Provides @Singleton
     fun provideTrackDatabase(@ApplicationContext ctx: Context): TrackDatabase =
@@ -38,18 +40,22 @@ object TrackModule {
     @Provides @Singleton
     fun provideTrackRepository(dao: TrackDao): TrackRepository = TrackRepository(dao)
 
-    @Provides @IntoSet fun provideFeature(feature: TrackFeature): FeatureEntry = feature
+    @Provides @IntoSet fun provideFeature(feature: SensorsFeature): FeatureEntry = feature
 
-    // Without this binding the TrackSettingsSection never appears in the
+    // Without this binding the SensorsSettingsSection never appears in the
     // app's Settings screen — Hilt silently omits it from the Set, and the
     // SettingsScreen just renders the sections that are registered.
-    @Provides @IntoSet fun provideSettings(section: TrackSettingsSection): SettingsSection = section
+    @Provides @IntoSet fun provideSettings(section: SensorsSettingsSection): SettingsSection = section
 
-    @Provides @IntoSet fun provideResume(init: TrackResumeInitializer): AppInitializer = init
+    @Provides @IntoSet fun provideResume(init: SensorsResumeInitializer): AppInitializer = init
+
+    // Offered for media's render picker; consumed as Optional<RecordedTrackSource>.
+    @Provides @Singleton
+    fun provideRecordedTrackSource(impl: SensorsRecordedTrackSource): RecordedTrackSource = impl
 
     @Provides @ElementsIntoSet
     fun provideChannels(): Set<ChannelSpec> = setOf(
-        ChannelSpec(TrackChannels.RECORDER, "Background Track"),
-        ChannelSpec(TrackChannels.EXPORT, "GPX export"),
+        ChannelSpec(SensorsChannels.RECORDER, "Background Track"),
+        ChannelSpec(SensorsChannels.EXPORT, "GPX export"),
     )
 }

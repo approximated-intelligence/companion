@@ -13,8 +13,8 @@ import de.perigon.companion.posts.data.MediaResolutionCache
 import de.perigon.companion.posts.data.TransformPreviewCache
 import de.perigon.companion.posts.domain.ItemStatus
 import de.perigon.companion.posts.domain.MediaPrepItem
-import de.perigon.companion.media.domain.MediaType
-import de.perigon.companion.media.domain.TransformIntent
+import de.perigon.companion.core.transform.MediaType
+import de.perigon.companion.core.transform.TransformIntent
 import de.perigon.companion.posts.data.PostMediaEntity
 import de.perigon.companion.posts.data.PostMediaFileStore
 import de.perigon.companion.posts.data.ResolvedMedia

@@ -1,4 +1,4 @@
-package de.perigon.companion.track.service
+package de.perigon.companion.sensors.service
 
 import android.Manifest
 import android.app.Notification
@@ -29,24 +29,24 @@ import de.perigon.companion.core.feature.NotificationIds
 import de.perigon.companion.core.feature.RequestCodes
 import de.perigon.companion.core.ui.CoreIcons
 import de.perigon.companion.core.ui.navigatePendingIntent
-import de.perigon.companion.track.TrackChannels
-import de.perigon.companion.track.data.RecordingMode
-import de.perigon.companion.track.data.TrackConfigEntity
-import de.perigon.companion.track.data.TrackConfigPrefs
-import de.perigon.companion.track.data.TrackPointBuffer
-import de.perigon.companion.track.data.TrackPointEntity
-import de.perigon.companion.track.data.TrackRepository
-import de.perigon.companion.track.domain.AltitudeKalmanFilter
-import de.perigon.companion.track.domain.FixEffect
-import de.perigon.companion.track.domain.FixEvent
-import de.perigon.companion.track.domain.FixState
-import de.perigon.companion.track.domain.FixStrategy
-import de.perigon.companion.track.domain.Background
-import de.perigon.companion.track.domain.BackgroundConfig
-import de.perigon.companion.track.domain.fixTransition
-import de.perigon.companion.track.domain.formatIntervalLabel
-import de.perigon.companion.track.domain.formatModeLabel
-import de.perigon.companion.track.data.TrackPrefs
+import de.perigon.companion.sensors.SensorsChannels
+import de.perigon.companion.sensors.data.RecordingMode
+import de.perigon.companion.sensors.data.TrackConfigEntity
+import de.perigon.companion.sensors.data.TrackConfigPrefs
+import de.perigon.companion.sensors.data.TrackPointBuffer
+import de.perigon.companion.sensors.data.TrackPointEntity
+import de.perigon.companion.sensors.data.TrackRepository
+import de.perigon.companion.sensors.domain.AltitudeKalmanFilter
+import de.perigon.companion.sensors.domain.FixEffect
+import de.perigon.companion.sensors.domain.FixEvent
+import de.perigon.companion.sensors.domain.FixState
+import de.perigon.companion.sensors.domain.FixStrategy
+import de.perigon.companion.sensors.domain.Background
+import de.perigon.companion.sensors.domain.BackgroundConfig
+import de.perigon.companion.sensors.domain.fixTransition
+import de.perigon.companion.sensors.domain.formatIntervalLabel
+import de.perigon.companion.sensors.domain.formatModeLabel
+import de.perigon.companion.sensors.data.TrackPrefs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -121,7 +121,7 @@ class BackgroundService : Service() {
         const val NAV_RECORDING        = "BackgroundService"
 
         private const val TAG                  = "BackgroundService"
-        private const val CHANNEL_ID           = TrackChannels.RECORDER
+        private const val CHANNEL_ID           = SensorsChannels.RECORDER
         private const val NOTIFICATION_ID      = NotificationIds.TRACK
         private const val STOP_REQUEST_CODE    = RequestCodes.TRACK
         private const val CONTENT_REQUEST_CODE = RequestCodes.TRACK + 1

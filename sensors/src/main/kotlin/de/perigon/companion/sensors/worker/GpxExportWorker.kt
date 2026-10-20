@@ -1,4 +1,4 @@
-package de.perigon.companion.track.worker
+package de.perigon.companion.sensors.worker
 
 import android.content.Context
 import android.content.pm.ServiceInfo
@@ -15,10 +15,10 @@ import de.perigon.companion.core.data.UserNotifications
 import de.perigon.companion.core.feature.NotificationIds
 import de.perigon.companion.core.feature.RequestCodes
 import de.perigon.companion.core.ui.WorkNotifier
-import de.perigon.companion.track.TrackChannels
-import de.perigon.companion.track.TrackTargets
-import de.perigon.companion.track.data.TrackRepository
-import de.perigon.companion.track.domain.GpxExporter
+import de.perigon.companion.sensors.SensorsChannels
+import de.perigon.companion.sensors.SensorsTargets
+import de.perigon.companion.sensors.data.TrackRepository
+import de.perigon.companion.sensors.domain.GpxExporter
 import de.perigon.companion.core.saf.hasPersistedWriteGrant
 import de.perigon.companion.core.saf.writeFileFromStream
 import java.io.ByteArrayInputStream
@@ -139,8 +139,8 @@ class GpxExportWorker @AssistedInject constructor(
     private val notifier = WorkNotifier(
         context = ctx,
         notificationId = NOTIF_ID,
-        channelId = TrackChannels.EXPORT,
-        navigateTo = TrackTargets.RECORDING,
+        channelId = SensorsChannels.EXPORT,
+        navigateTo = SensorsTargets.RECORDING,
         requestCode = RequestCodes.TRACK + 5,
     )
 

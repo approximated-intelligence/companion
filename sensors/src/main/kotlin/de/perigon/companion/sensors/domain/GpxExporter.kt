@@ -1,6 +1,6 @@
-package de.perigon.companion.track.domain
+package de.perigon.companion.sensors.domain
 
-import de.perigon.companion.track.data.TrackPointEntity
+import de.perigon.companion.sensors.data.TrackPointEntity
 import java.io.OutputStream
 import java.io.OutputStreamWriter
 import java.time.Instant

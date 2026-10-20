@@ -1,4 +1,4 @@
-package de.perigon.companion.track.ui.render
+package de.perigon.companion.media.ui.render
 
 import android.content.Context
 import android.content.Intent
@@ -6,20 +6,19 @@ import android.net.Uri
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import de.perigon.companion.track.data.TrackPrefs
+import de.perigon.companion.core.feature.RecordedTrackSource
+import de.perigon.companion.core.feature.RecordedTrackSummary
 import de.perigon.companion.core.prefs.FolderGrants
 import de.perigon.companion.core.prefs.FolderKeys
 import de.perigon.companion.core.saf.writeFileFromStream
-import de.perigon.companion.track.data.TrackRepository
-import de.perigon.companion.track.data.TrackSummary
-import de.perigon.companion.track.domain.GpxTrack
-import de.perigon.companion.track.domain.toGpxTrack
-import de.perigon.companion.track.network.NetworkTileSource
-import de.perigon.companion.track.network.SqliteTileSource
-import de.perigon.companion.track.network.TileSource
-import de.perigon.companion.track.domain.parseGpx
-import de.perigon.companion.track.domain.renderTracks
 import de.perigon.companion.core.ui.SnackbarChannel
+import de.perigon.companion.media.data.RenderPrefs
+import de.perigon.companion.media.domain.GpxTrack
+import de.perigon.companion.media.domain.parseGpx
+import de.perigon.companion.media.domain.renderTracks
+import de.perigon.companion.media.network.NetworkTileSource
+import de.perigon.companion.media.network.SqliteTileSource
+import de.perigon.companion.media.network.TileSource
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -27,6 +26,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -36,6 +36,7 @@ import java.io.ByteArrayOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.Optional
 import javax.inject.Inject
 
 /** Renders are plain files in DCIM/RenderedTracks: browsable, and indexed by the gallery. */
@@ -56,14 +57,14 @@ data class TileSourceState(
     val localLabel:           String  = "",
     val hasNetworkTiles:      Boolean = false,
     val networkUrl:           String  = "",
-    val mode:                 String  = TrackPrefs.TILE_MODE_LOCAL,
+    val mode:                 String  = RenderPrefs.TILE_MODE_LOCAL,
 )
 
 @HiltViewModel
 class TrackRenderViewModel @Inject constructor(
     @param:ApplicationContext private val context: Context,
-    private val appPrefs: TrackPrefs,
-    private val trackRepository: TrackRepository,
+    private val renderPrefs: RenderPrefs,
+    private val recordedTrackSource: Optional<RecordedTrackSource>,
     private val folderGrants: FolderGrants,
 ) : ViewModel() {
 
@@ -75,23 +76,23 @@ class TrackRenderViewModel @Inject constructor(
 
     val snackbar = SnackbarChannel()
 
-    val backgroundGpsEnabled: Boolean get() = appPrefs.isBackgroundGpsEnabled()
+    val recordedTracksAvailable: Boolean get() = recordedTrackSource.isPresent
 
-    val recordedTracks: StateFlow<List<TrackSummary>> =
-        trackRepository.observeSummaries()
+    val recordedTracks: StateFlow<List<RecordedTrackSummary>> =
+        (recordedTrackSource.orElse(null)?.observeSummaries() ?: flowOf(emptyList()))
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     // --- tile source state ---
 
     private fun buildTileState(): TileSourceState {
-        val localUri   = appPrefs.tileSourceUri()
-        val networkUrl = appPrefs.tileSourceNetworkUrl()
+        val localUri   = renderPrefs.tileSourceUri()
+        val networkUrl = renderPrefs.tileSourceNetworkUrl()
         return TileSourceState(
             hasLocalTiles   = localUri != null,
-            localLabel      = appPrefs.tileSourceLabel() ?: "",
+            localLabel      = renderPrefs.tileSourceLabel() ?: "",
             hasNetworkTiles = networkUrl?.isNotBlank() == true,
             networkUrl      = networkUrl ?: "",
-            mode            = appPrefs.tileSourceMode(),
+            mode            = renderPrefs.tileSourceMode(),
         )
     }
 
@@ -108,7 +109,7 @@ class TrackRenderViewModel @Inject constructor(
                 true
             }
             if (!copied) { snackbar.send("Cannot read tile file"); return@launch }
-            appPrefs.setTileSource(uri.toString(), displayName)
+            renderPrefs.setTileSource(uri.toString(), displayName)
             _tileState.value = buildTileState()
             snackbar.send("Tile source set: $displayName")
         }
@@ -119,9 +120,9 @@ class TrackRenderViewModel @Inject constructor(
         viewModelScope.launch {
             val trimmed = url.trim()
             if (trimmed.isNotBlank()) {
-                appPrefs.setTileSourceNetwork(trimmed)
+                renderPrefs.setTileSourceNetwork(trimmed)
             } else {
-                appPrefs.clearTileSourceNetwork()
+                renderPrefs.clearTileSourceNetwork()
             }
             _tileState.value = buildTileState()
         }
@@ -129,7 +130,7 @@ class TrackRenderViewModel @Inject constructor(
 
     fun setTileSourceMode(mode: String) {
         viewModelScope.launch {
-            appPrefs.setTileSourceMode(mode)
+            renderPrefs.setTileSourceMode(mode)
             _tileState.value = buildTileState()
         }
     }
@@ -137,7 +138,7 @@ class TrackRenderViewModel @Inject constructor(
     fun clearTileSourceLocal() {
         viewModelScope.launch {
             SqliteTileSource.cacheFile(context.cacheDir).delete()
-            appPrefs.clearTileSourceLocal()
+            renderPrefs.clearTileSourceLocal()
             _tileState.value = buildTileState()
             snackbar.send("Local tile source cleared")
         }
@@ -145,7 +146,7 @@ class TrackRenderViewModel @Inject constructor(
 
     fun clearTileSourceNetwork() {
         viewModelScope.launch {
-            appPrefs.clearTileSourceNetwork()
+            renderPrefs.clearTileSourceNetwork()
             _tileState.value = buildTileState()
             snackbar.send("Network tile source cleared")
         }
@@ -153,16 +154,16 @@ class TrackRenderViewModel @Inject constructor(
 
     // --- tile source resolution ---
 
-    private fun loadTileSource(): TileSource? = when (appPrefs.tileSourceMode()) {
-        TrackPrefs.TILE_MODE_NETWORK -> {
-            val url = appPrefs.tileSourceNetworkUrl()
+    private fun loadTileSource(): TileSource? = when (renderPrefs.tileSourceMode()) {
+        RenderPrefs.TILE_MODE_NETWORK -> {
+            val url = renderPrefs.tileSourceNetworkUrl()
             if (url != null) NetworkTileSource(url) else loadLocalTileSource()
         }
         else -> loadLocalTileSource()
     }
 
     private fun loadLocalTileSource(): TileSource? {
-        if (appPrefs.tileSourceUri() == null) return null
+        if (renderPrefs.tileSourceUri() == null) return null
         val cacheFile = SqliteTileSource.cacheFile(context.cacheDir)
         if (!cacheFile.exists()) return null
         return SqliteTileSource.open(cacheFile)
@@ -188,15 +189,14 @@ class TrackRenderViewModel @Inject constructor(
     }
 
     fun loadRecordedTracks(trackIds: List<Long>) {
-        if (trackIds.isEmpty()) return
+        val source = recordedTrackSource.orElse(null)
+        if (source == null || trackIds.isEmpty()) return
         viewModelScope.launch {
             _state.value = TrackRenderUiState.Parsing
             _state.value = withContext(Dispatchers.IO) {
                 try {
                     val tracks = trackIds.mapNotNull { id ->
-                        val track    = trackRepository.getTrackById(id) ?: return@mapNotNull null
-                        val segments = trackRepository.getSegmentsWithPoints(id)
-                        segments.takeIf { it.isNotEmpty() }?.toGpxTrack(track.name)
+                        source.renderable(id)?.let { GpxTrack(segments = it.segments, name = it.name) }
                     }
                     if (tracks.isEmpty()) TrackRenderUiState.Error("No track points found")
                     else TrackRenderUiState.Loaded(tracks)

@@ -1,4 +1,4 @@
-package de.perigon.companion.track.network
+package de.perigon.companion.media.network
 
 import android.database.sqlite.SQLiteDatabase
 import android.graphics.Bitmap

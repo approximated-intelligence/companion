@@ -1,4 +1,4 @@
-package de.perigon.companion.track.domain
+package de.perigon.companion.media.domain
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -7,7 +7,8 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import androidx.core.graphics.createBitmap
-import de.perigon.companion.track.network.TileSource
+import de.perigon.companion.core.geo.LatLon
+import de.perigon.companion.media.network.TileSource
 
 private const val OUTPUT_PX    = 960
 private const val PADDING_FRAC = 0.05f

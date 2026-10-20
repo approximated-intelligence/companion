@@ -8,6 +8,7 @@ import android.util.Log
 import androidx.core.graphics.scale
 import androidx.core.net.toUri
 import dagger.hilt.android.qualifiers.ApplicationContext
+import de.perigon.companion.core.transform.TransformIntent
 import de.perigon.companion.media.transform.ImageTransformParams
 import de.perigon.companion.media.transform.ImageTransformer
 import javax.inject.Inject

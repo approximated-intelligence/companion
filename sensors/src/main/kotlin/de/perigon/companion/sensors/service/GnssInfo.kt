@@ -1,4 +1,4 @@
-package de.perigon.companion.track.service
+package de.perigon.companion.sensors.service
 
 import android.location.GnssStatus
 

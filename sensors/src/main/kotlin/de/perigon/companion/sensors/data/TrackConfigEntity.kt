@@ -1,4 +1,4 @@
-package de.perigon.companion.track.data
+package de.perigon.companion.sensors.data
 
 object RecordingMode {
     const val CONTINUOUS = "CONTINUOUS"

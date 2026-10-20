@@ -1,4 +1,4 @@
-package de.perigon.companion.track.domain
+package de.perigon.companion.sensors.domain
 
 /**
  * 3-state Kalman filter for altitude, fusing GNSS and barometric altimeters.

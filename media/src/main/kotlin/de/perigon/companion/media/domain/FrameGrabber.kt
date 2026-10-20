@@ -7,6 +7,7 @@ import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.util.Log
+import de.perigon.companion.core.transform.OrientationTransform
 import de.perigon.companion.media.transform.ImageTransformParams
 import de.perigon.companion.media.transform.ImageTransformer
 import java.io.File

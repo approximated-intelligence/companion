@@ -1,9 +1,9 @@
-package de.perigon.companion.track.domain
+package de.perigon.companion.sensors.domain
 
 import android.content.Context
 import android.content.Intent
 import androidx.core.content.FileProvider
-import de.perigon.companion.track.data.TrackRepository
+import de.perigon.companion.sensors.data.TrackRepository
 import java.io.File
 
 class TrackShareUseCase(

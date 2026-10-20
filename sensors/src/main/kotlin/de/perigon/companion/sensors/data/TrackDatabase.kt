@@ -1,4 +1,4 @@
-package de.perigon.companion.track.data
+package de.perigon.companion.sensors.data
 
 import androidx.room.Database
 import androidx.room.RoomDatabase

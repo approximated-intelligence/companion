@@ -6,7 +6,7 @@ import androidx.room.withTransaction
 import androidx.work.ExistingWorkPolicy
 import androidx.work.WorkManager
 import androidx.work.await
-import de.perigon.companion.media.domain.TransformIntent
+import de.perigon.companion.core.transform.TransformIntent
 import de.perigon.companion.posts.domain.PostPublishState
 import de.perigon.companion.posts.worker.PublishWorker
 import de.perigon.companion.posts.worker.UnpublishWorker

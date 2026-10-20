@@ -11,28 +11,28 @@
 
     <application>
         <service
-            android:name="de.perigon.companion.track.service.BackgroundService"
+            android:name="de.perigon.companion.sensors.service.BackgroundService"
             android:exported="false"
             android:foregroundServiceType="location" />
 
         <receiver
-            android:name="de.perigon.companion.track.service.FixAlarmReceiver"
+            android:name="de.perigon.companion.sensors.service.FixAlarmReceiver"
             android:exported="false" />
 
         <receiver
-            android:name="de.perigon.companion.track.service.AutoTrackReceiver"
+            android:name="de.perigon.companion.sensors.service.AutoTrackReceiver"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
-                <action android:name="de.perigon.companion.track.AUTO_START" />
-                <action android:name="de.perigon.companion.track.AUTO_STOP" />
+                <action android:name="de.perigon.companion.sensors.AUTO_START" />
+                <action android:name="de.perigon.companion.sensors.AUTO_STOP" />
             </intent-filter>
         </receiver>
 
         <!-- Temp GPX files for sharing a single track (swept after a day). -->
         <provider
-            android:name="de.perigon.companion.track.share.TrackFileProvider"
+            android:name="de.perigon.companion.sensors.share.SensorsFileProvider"
             android:authorities="${applicationId}.track.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">

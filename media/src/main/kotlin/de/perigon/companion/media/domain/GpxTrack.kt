@@ -1,7 +1,7 @@
-package de.perigon.companion.track.domain
+package de.perigon.companion.media.domain
 
 import android.util.Log
-import de.perigon.companion.track.data.TrackPointEntity
+import de.perigon.companion.core.geo.LatLon
 import java.io.InputStream
 import javax.xml.XMLConstants
 import javax.xml.parsers.SAXParserFactory
@@ -11,12 +11,10 @@ import kotlin.math.*
 
 private const val TAG = "GpxTrack"
 
-data class LatLon(val lat: Float, val lon: Float)
-
 /**
  * Segment-aware track. [segments] is the source of truth: one list per
- * <trkseg> (or <rte>) in the GPX, or per recorded segment in the DB. [points]
- * is derived and kept for callers that only want to iterate lat/lon.
+ * <trkseg> (or <rte>) in the GPX. [points] is derived and kept for callers
+ * that only want to iterate lat/lon.
  *
  * Why segments: a gap in a recorded track is a *real* gap (user paused, the
  * phone was off, the segment was split at midnight). Drawing a single
@@ -59,13 +57,6 @@ data class GpxTrack(
 
     data class Bounds(val minLat: Float, val maxLat: Float, val minLon: Float, val maxLon: Float)
 }
-
-/** Build a segment-aware [GpxTrack] from recorded DB segments. */
-fun List<List<TrackPointEntity>>.toGpxTrack(name: String): GpxTrack = GpxTrack(
-    segments = map { seg -> seg.map { LatLon(it.lat, it.lon) } },
-    name     = name,
-    firstTimestamp = firstOrNull()?.firstOrNull()?.time,
-)
 
 private fun haversine(a: LatLon, b: LatLon): Double {
     val r    = 6_371_000.0

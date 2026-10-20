@@ -1,4 +1,4 @@
-package de.perigon.companion.track.service
+package de.perigon.companion.sensors.service
 
 import de.perigon.companion.core.feature.RequestCodes
 
@@ -8,9 +8,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
-import de.perigon.companion.track.data.TrackPrefs
-import de.perigon.companion.track.data.TrackConfigEntity
-import de.perigon.companion.track.data.TrackConfigPrefs
+import de.perigon.companion.sensors.data.TrackPrefs
+import de.perigon.companion.sensors.data.TrackConfigEntity
+import de.perigon.companion.sensors.data.TrackConfigPrefs
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers

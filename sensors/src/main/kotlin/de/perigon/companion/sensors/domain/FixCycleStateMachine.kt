@@ -1,7 +1,7 @@
-package de.perigon.companion.track.domain
+package de.perigon.companion.sensors.domain
 
 import android.location.Location
-import de.perigon.companion.track.data.TrackPointEntity
+import de.perigon.companion.sensors.data.TrackPointEntity
 
 sealed class FixState {
     data object Idle : FixState()

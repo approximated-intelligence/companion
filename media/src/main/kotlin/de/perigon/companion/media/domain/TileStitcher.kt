@@ -1,13 +1,12 @@
-package de.perigon.companion.track.domain
+package de.perigon.companion.media.domain
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Rect
 import androidx.core.graphics.createBitmap
-import de.perigon.companion.track.domain.GpxTrack
-import de.perigon.companion.track.domain.LatLon
+import de.perigon.companion.core.geo.LatLon
 import kotlin.math.*
-import de.perigon.companion.track.network.TileSource
+import de.perigon.companion.media.network.TileSource
 
 private const val TILE_SIZE = 256
 

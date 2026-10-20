@@ -1,6 +1,7 @@
 package de.perigon.companion.media.domain
 
 import androidx.compose.ui.geometry.Offset
+import de.perigon.companion.core.transform.CropRect
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color

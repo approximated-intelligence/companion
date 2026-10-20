@@ -1,4 +1,4 @@
-package de.perigon.companion.track.service
+package de.perigon.companion.sensors.service
 
 import de.perigon.companion.core.feature.RequestCodes
 
@@ -10,7 +10,7 @@ import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import de.perigon.companion.track.domain.FixStrategy
+import de.perigon.companion.sensors.domain.FixStrategy
 
 /**
  * Schedules the next fix cycle using the appropriate Android mechanism.

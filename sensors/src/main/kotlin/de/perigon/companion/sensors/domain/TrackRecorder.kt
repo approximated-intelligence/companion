@@ -1,6 +1,6 @@
-package de.perigon.companion.track.domain
+package de.perigon.companion.sensors.domain
 
-import de.perigon.companion.track.data.RecordingMode
+import de.perigon.companion.sensors.data.RecordingMode
 
 data class BackgroundConfig(
     val mode: String,

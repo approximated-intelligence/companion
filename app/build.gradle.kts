@@ -68,7 +68,7 @@ dependencies {
     implementation(project(":media"))
     implementation(project(":backup"))
     implementation(project(":posts"))
-    implementation(project(":track"))
+    implementation(project(":sensors"))
     implementation(project(":audio"))
 
     val bom = platform(libs.compose.bom)

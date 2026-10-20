@@ -1,9 +1,9 @@
-package de.perigon.companion.track.data
+package de.perigon.companion.sensors.data
 
 import android.os.SystemClock
 import android.util.Log
 import androidx.room.*
-import de.perigon.companion.track.domain.Background
+import de.perigon.companion.sensors.domain.Background
 import kotlinx.coroutines.flow.Flow
 import java.time.LocalDate
 import java.time.LocalDateTime
