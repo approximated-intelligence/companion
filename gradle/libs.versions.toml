@@ -11,6 +11,7 @@ detekt = "1.23.8"
 diff-utils = "4.18"
 documentfile = "1.1.0"
 exifinterface = "1.4.2"
+heifwriter = "1.1.0"
 hilt = "2.60.1"
 hilt-androidx = "1.4.0"
 jna = "5.19.1"
@@ -66,6 +67,8 @@ datastore-preferences = { module = "androidx.datastore:datastore-preferences", v
 diff-utils = { module = "io.github.java-diff-utils:java-diff-utils", version.ref = "diff-utils" }
 documentfile = { module = "androidx.documentfile:documentfile", version.ref = "documentfile" }
 exifinterface = { module = "androidx.exifinterface:exifinterface", version.ref = "exifinterface" }
+# HEIF/AVIF
+heifwriter = { module = "androidx.heifwriter:heifwriter", version.ref = "heifwriter" }
 # Hilt
 hilt-android = { module = "com.google.dagger:hilt-android", version.ref = "hilt" }
 hilt-compiler = { module = "com.google.dagger:hilt-android-compiler", version.ref = "hilt" }
