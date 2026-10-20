@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -21,6 +22,11 @@ import kotlinx.coroutines.runBlocking
  * the short window before that lands, and never returns defaults in place of
  * stored values, so read-modify-write through [current] cannot clobber
  * persisted data. Every [edit] installs the newer snapshot.
+ *
+ * [data] installs the emission into the cache before downstream operators run.
+ * DataStore emits DURING `edit`, i.e. before `edit`'s assignment to `cache`:
+ * without this the first downstream `.map { snapshot() }` would read the OLD
+ * snapshot and publish stale state, and no further emission would correct it.
  */
 class SnapshotStore(
     private val ds: DataStore<Preferences>,
@@ -33,7 +39,12 @@ class SnapshotStore(
         ds.data.first().also { snapshot -> if (cache == null) cache = snapshot }
     }
 
-    val data: Flow<Preferences> get() = ds.data
+    /**
+     * Observe the store. Emits run with `cache` already up to date: the
+     * `onEach` sits before any downstream `.map`/`.collect`, so readers never
+     * observe a value older than the emission that triggered them.
+     */
+    val data: Flow<Preferences> get() = ds.data.onEach { cache = it }
 
     fun snapshot(): Preferences = cache ?: runBlocking { seed.await() }
 
