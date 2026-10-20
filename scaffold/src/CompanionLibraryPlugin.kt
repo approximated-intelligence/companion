@@ -30,6 +30,7 @@ class CompanionLibraryPlugin : Plugin<Project> {
                 targetCompatibility = JavaVersion.VERSION_21
             }
             buildFeatures { compose = true }
+            sourceSets.getByName("main").kotlin.directories.addAll(listOf("kt"))
             lint {
                 abortOnError = true
                 lintConfig = rootProject.file("lint.xml")

@@ -60,6 +60,8 @@ android {
     buildFeatures {
         compose = true
     }
+
+    sourceSets.getByName("main").kotlin.directories.addAll(listOf("kt"))
 }
 
 dependencies {

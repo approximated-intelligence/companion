@@ -4,6 +4,10 @@ plugins {
 
 group = "de.perigon.companion.buildlogic"
 
+kotlin {
+    sourceSets.getByName("main").kotlin.srcDir("src")
+}
+
 dependencies {
     // compileOnly: at runtime the root project's plugin classpath provides AGP.
     compileOnly(libs.android.gradlePlugin)
