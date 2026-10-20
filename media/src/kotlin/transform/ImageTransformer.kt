@@ -154,16 +154,16 @@ object ImageTransformer {
      */
     private fun encodeAvif(bitmap: Bitmap, quality: Int): ByteArray {
         val tempFile = File.createTempFile("avif_", ".avif")
-        var writer: AvifWriter? = null
         try {
-            val pfd = ParcelFileDescriptor.open(
+            ParcelFileDescriptor.open(
                 tempFile,
                 ParcelFileDescriptor.MODE_READ_WRITE or
                     ParcelFileDescriptor.MODE_CREATE or
                     ParcelFileDescriptor.MODE_TRUNCATE,
-            )
-            try {
-                writer = AvifWriter.Builder(
+            ).use { pfd ->
+                // `use` closes via AutoCloseable.close(); WriterBase.close() is
+                // @RestrictTo(LIBRARY_GROUP) and would fail lint's RestrictedApi.
+                AvifWriter.Builder(
                     pfd.fileDescriptor,
                     bitmap.width,
                     bitmap.height,
@@ -171,15 +171,11 @@ object ImageTransformer {
                 )
                     .setQuality(quality.coerceIn(0, 100))
                     .build()
-
-                writer.start()
-                writer.addBitmap(bitmap)
-                writer.stop(10_000_000L) // 10 seconds, in microseconds
-            } finally {
-                // close() on a writer that just failed stop() may also throw;
-                // the temp file is deleted unconditionally below.
-                try { writer?.close() } catch (_: Exception) {}
-                try { pfd.close() } catch (_: Exception) {}
+                    .use { writer ->
+                        writer.start()
+                        writer.addBitmap(bitmap)
+                        writer.stop(10_000_000L) // 10 seconds, in microseconds
+                    }
             }
             return tempFile.readBytes()
         } catch (e: TimeoutException) {
