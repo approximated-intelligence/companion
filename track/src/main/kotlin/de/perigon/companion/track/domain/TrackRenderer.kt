@@ -21,6 +21,12 @@ private const val END_COLOR    = 0xFFD50000.toInt()
  * Render one or more GPX tracks to a square Bitmap.
  * All tracks share the same projection (merged bounds).
  * If a TileSource is provided, stitches map tiles as background.
+ *
+ * Segment handling: each segment is drawn as its own polyline, so a gap in
+ * the recording is a visible break rather than a false straight line. Only
+ * the global first and last points of the whole track get the start/end
+ * markers — per-segment markers would clutter a multi-segment track and are
+ * not needed to read the gap (the line break says it).
  */
 fun renderTracks(
     tracks:     List<GpxTrack>,
@@ -52,7 +58,8 @@ private fun renderWithTiles(tracks: List<GpxTrack>, tileSource: TileSource, outp
     val stitch = stitchTiles(tileSource, bounds, outputPx)
     val canvas = Canvas(stitch.bitmap)
     tracks.forEach { track ->
-        drawTrackOverlay(canvas, track.points.map { stitch.project(it) })
+        val projectedSegments = track.segments.map { seg -> seg.map { stitch.project(it) } }
+        drawTrackOverlay(canvas, projectedSegments)
     }
     return stitch.bitmap
 }
@@ -99,15 +106,18 @@ private fun renderWhiteBackground(tracks: List<GpxTrack>, outputPx: Int): Bitmap
     )
 
     tracks.forEach { track ->
-        val scaled = track.points.map { it.toMercator().scaled() }
-        drawTrackOverlay(canvas, scaled)
+        val projectedSegments = track.segments.map { seg ->
+            seg.map { it.toMercator().scaled() }
+        }
+        drawTrackOverlay(canvas, projectedSegments)
     }
 
     return bitmap
 }
 
-private fun drawTrackOverlay(canvas: Canvas, points: List<Pair<Float, Float>>) {
-    if (points.isEmpty()) return
+private fun drawTrackOverlay(canvas: Canvas, segments: List<List<Pair<Float, Float>>>) {
+    val allPoints = segments.flatten()
+    if (allPoints.isEmpty()) return
 
     val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color       = TRACK_COLOR
@@ -116,17 +126,26 @@ private fun drawTrackOverlay(canvas: Canvas, points: List<Pair<Float, Float>>) {
         strokeCap   = Paint.Cap.ROUND
         strokeJoin  = Paint.Join.ROUND
     }
-    val path = Path().apply {
-        points.forEachIndexed { i, (x, y) ->
-            if (i == 0) moveTo(x, y) else lineTo(x, y)
-        }
-    }
-    canvas.drawPath(path, trackPaint)
 
-    points.firstOrNull()?.let { (x, y) ->
+    // One path per segment: a gap is a visible break, not a straight line
+    // across empty space.
+    for (seg in segments) {
+        if (seg.isEmpty()) continue
+        val path = Path().apply {
+            seg.forEachIndexed { i, (x, y) ->
+                if (i == 0) moveTo(x, y) else lineTo(x, y)
+            }
+        }
+        canvas.drawPath(path, trackPaint)
+    }
+
+    // Global start and end only. Per-segment markers were considered and
+    // rejected: the polyline already shows where the gap is, and a marker
+    // at every segment boundary clutters a track with many short segments.
+    allPoints.firstOrNull()?.let { (x, y) ->
         canvas.drawCircle(x, y, DOT_RADIUS, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = START_COLOR })
     }
-    points.lastOrNull()?.let { (x, y) ->
+    allPoints.lastOrNull()?.let { (x, y) ->
         canvas.drawCircle(x, y, DOT_RADIUS, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = END_COLOR })
     }
 }
