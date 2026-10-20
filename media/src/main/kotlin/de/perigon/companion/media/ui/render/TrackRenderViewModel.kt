@@ -196,7 +196,7 @@ class TrackRenderViewModel @Inject constructor(
             _state.value = withContext(Dispatchers.IO) {
                 try {
                     val tracks = trackIds.mapNotNull { id ->
-                        source.renderable(id)?.let { GpxTrack(segments = it.segments, name = it.name) }
+                        source.renderable(id)?.let { GpxTrack(segments = it.segments, firstTimestamp = it.firstTimestamp, name = it.name) }
                     }
                     if (tracks.isEmpty()) TrackRenderUiState.Error("No track points found")
                     else TrackRenderUiState.Loaded(tracks)

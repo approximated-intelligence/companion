@@ -14,6 +14,7 @@ data class RecordedTrackSummary(
 /** A track ready to be handed to a renderer. */
 data class RenderableRecordedTrack(
     val name: String,
+    val firstTimestamp: Long?,
     val segments: List<List<LatLon>>,
 )
 

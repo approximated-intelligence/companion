@@ -32,6 +32,7 @@ class SensorsRecordedTrackSource @Inject constructor(
         if (segments.isEmpty()) return null
         return RenderableRecordedTrack(
             name     = entity.name,
+            firstTimestamp = segments.firstOrNull()?.firstOrNull()?.time,
             segments = segments.map { seg -> seg.map { LatLon(it.lat, it.lon) } },
         )
     }
