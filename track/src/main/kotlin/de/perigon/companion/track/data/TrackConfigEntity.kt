@@ -6,15 +6,20 @@ object RecordingMode {
     const val ALARM      = "ALARM"
     const val PASSIVE    = "PASSIVE"
     val ALL = listOf(CONTINUOUS, SINGLE_FIX, ALARM, PASSIVE)
+
+    val DEPRECATED = setOf(SINGLE_FIX, ALARM)
 }
 
 data class TrackConfigEntity(
     val mode: String                     = RecordingMode.CONTINUOUS,
     val intervalMs: Long                 = DEFAULT_INTERVAL_MS,
+    val hardwareIntervalMs: Long         = DEFAULT_HARDWARE_INTERVAL_MS,
     val fixTimeoutMs: Long               = DEFAULT_FIX_TIMEOUT_MS,
     val maxInaccuracyM: Float            = DEFAULT_MAX_INACCURACY_M,
     val keepEphemerisWarm: Boolean       = true,
     val holdWakeLock: Boolean            = false,
+    val recordBaroAltitude: Boolean      = false,
+    val airplaneMode: Boolean            = false,
     val autoScheduleEnabled: Boolean     = false,
     val autoStartSeconds: Long           = 25200L,
     val autoStopSeconds: Long            = 75600L,
@@ -26,9 +31,26 @@ data class TrackConfigEntity(
 
     companion object {
         const val DEFAULT_INTERVAL_MS           = 10_000L
+        const val DEFAULT_HARDWARE_INTERVAL_MS  = 1_000L
         const val DEFAULT_FIX_TIMEOUT_MS        = 30_000L
         const val DEFAULT_MAX_INACCURACY_M      = 50f
         const val DEFAULT_AUTO_SEGMENT_GAP_MS   = 30 * 60 * 1000L // 30 min
+
+        // Two interval scales with the same shape (1/2/5/10/15/30/60…), kept
+        // side by side because they are read together by the recording UI.
+        // The logging rate is filtered against the hardware rate at runtime
+        // by isValidLoggingRate() — 15 s logging with 10 s hardware is
+        // hidden, not silently rounded.
+        val HARDWARE_INTERVAL_OPTIONS_MS        = listOf(
+            1_000L, 2_000L, 5_000L, 10_000L, 15_000L,
+            30_000L, 60_000L, 120_000L, 300_000L,
+        )
+        val INTERVAL_OPTIONS_MS                 = listOf(
+            1_000L, 2_000L, 5_000L, 10_000L, 15_000L, 30_000L,
+            60_000L, 120_000L, 300_000L, 600_000L, 900_000L,
+            1_800_000L, 3_600_000L,
+        )
+
         val FIX_TIMEOUT_OPTIONS_MS              = listOf(15_000L, 30_000L, 45_000L, 60_000L)
         val MAX_INACCURACY_OPTIONS_M            = listOf(10f, 25f, 50f, 100f, 200f)
         val AUTO_SEGMENT_GAP_OPTIONS_MS         = listOf(
@@ -37,3 +59,9 @@ data class TrackConfigEntity(
         val DEFAULT = TrackConfigEntity()
     }
 }
+
+fun isValidLoggingRate(loggingMs: Long, hardwareMs: Long): Boolean =
+    hardwareMs > 0L && loggingMs >= hardwareMs && loggingMs % hardwareMs == 0L
+
+fun smallestValidLoggingRate(hardwareMs: Long, options: List<Long>): Long =
+    options.firstOrNull { isValidLoggingRate(it, hardwareMs) } ?: hardwareMs

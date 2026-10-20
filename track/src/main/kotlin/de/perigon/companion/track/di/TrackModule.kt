@@ -17,6 +17,7 @@ import de.perigon.companion.track.TrackChannels
 import de.perigon.companion.track.TrackFeature
 import de.perigon.companion.track.TrackResumeInitializer
 import de.perigon.companion.track.TrackSettingsSection
+import de.perigon.companion.track.data.MIGRATION_1_2
 import de.perigon.companion.track.data.TrackDao
 import de.perigon.companion.track.data.TrackDatabase
 import de.perigon.companion.track.data.TrackRepository
@@ -28,7 +29,9 @@ object TrackModule {
 
     @Provides @Singleton
     fun provideTrackDatabase(@ApplicationContext ctx: Context): TrackDatabase =
-        Room.databaseBuilder(ctx, TrackDatabase::class.java, "track.db").build()
+        Room.databaseBuilder(ctx, TrackDatabase::class.java, "track.db")
+            .addMigrations(MIGRATION_1_2)
+            .build()
 
     @Provides fun provideTrackDao(db: TrackDatabase): TrackDao = db.trackDao()
 
@@ -36,7 +39,12 @@ object TrackModule {
     fun provideTrackRepository(dao: TrackDao): TrackRepository = TrackRepository(dao)
 
     @Provides @IntoSet fun provideFeature(feature: TrackFeature): FeatureEntry = feature
+
+    // Without this binding the TrackSettingsSection never appears in the
+    // app's Settings screen — Hilt silently omits it from the Set, and the
+    // SettingsScreen just renders the sections that are registered.
     @Provides @IntoSet fun provideSettings(section: TrackSettingsSection): SettingsSection = section
+
     @Provides @IntoSet fun provideResume(init: TrackResumeInitializer): AppInitializer = init
 
     @Provides @ElementsIntoSet

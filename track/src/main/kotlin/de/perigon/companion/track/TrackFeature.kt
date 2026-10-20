@@ -151,11 +151,13 @@ class TrackSettingsSection @Inject constructor(
         val context = LocalContext.current
         val scope = rememberCoroutineScope()
         val enabled by prefs.observeBackgroundGps().collectAsStateWithLifecycle(prefs.isBackgroundGpsEnabled())
+        val showDeprecated by prefs.observeShowDeprecatedModes()
+            .collectAsStateWithLifecycle(prefs.isShowDeprecatedModesEnabled())
 
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SectionHeader("Background GPS", "Required for recording. Rendering and sharing work without it.")
             ToggleRow(
-                title = "GPS recording",
+                title = "Enable Background GPS",
                 subtitle = if (enabled) "Enabled - background location available" else "Disabled",
                 checked = enabled,
                 onCheckedChange = { on ->
@@ -169,6 +171,16 @@ class TrackSettingsSection @Inject constructor(
                     }
                 },
             )
+            if (enabled) {
+                ToggleRow(
+                    title = "Show deprecated recording modes",
+                    subtitle = "Single fix and Alarm. Older scheduling strategies; hidden by default.",
+                    checked = showDeprecated,
+                    onCheckedChange = { on ->
+                        scope.launch { prefs.setShowDeprecatedModes(on) }
+                    },
+                )
+            }
         }
     }
 

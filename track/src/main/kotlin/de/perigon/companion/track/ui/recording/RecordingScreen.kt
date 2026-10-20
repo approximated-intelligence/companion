@@ -8,19 +8,23 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -33,7 +37,7 @@ import de.perigon.companion.track.data.TrackConfigEntity
 import de.perigon.companion.track.data.TrackPointEntity
 import de.perigon.companion.track.data.TrackStatsEntity
 import de.perigon.companion.track.data.TrackSummary
-import de.perigon.companion.track.domain.INTERVAL_OPTIONS_MS
+import de.perigon.companion.track.data.isValidLoggingRate
 import de.perigon.companion.track.domain.formatIntervalLabel
 import de.perigon.companion.track.domain.formatModeLabel
 import de.perigon.companion.track.service.GnssInfo
@@ -50,10 +54,16 @@ fun RecordingScreen(
     vm: RecordingViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val showDeprecatedModes by vm.showDeprecatedModes.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
 
     SecureWindow()
+
+    DisposableEffect(Unit) {
+        vm.onScreenEnter()
+        onDispose { vm.onScreenExit() }
+    }
 
     LaunchedEffect(Unit) {
         vm.snackbar.events.collect { snackbar.showSnackbar(it) }
@@ -97,13 +107,6 @@ fun RecordingScreen(
         if (uri == null) return@rememberLauncherForActivityResult
         val display = folderLabel(uri)
         vm.setGpxExportFolder(uri, display)
-    }
-
-    val selectionExportPicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocumentTree()
-    ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        vm.exportSelected(uri)
     }
 
     val selectionMode = state.selectedTrackIds.isNotEmpty()
@@ -155,6 +158,10 @@ fun RecordingScreen(
         )
     }
 
+    val currentTrack = state.recentTracks.find { it.id == state.currentTrackId }
+    val showLiveCard = state.previewActive || state.isRecording
+    val otherTracks = state.recentTracks.filter { it.id != state.currentTrackId }
+
     Scaffold(
         topBar       = { AppTopBar(navController) },
         snackbarHost = { SnackbarHost(snackbar) },
@@ -162,7 +169,7 @@ fun RecordingScreen(
             if (selectionMode) {
                 SelectionBottomBar(
                     selectedCount = state.selectedTrackIds.size,
-                    allSelected   = state.selectedTrackIds == state.recentTracks.map { it.id }.toSet(),
+                    allSelected   = state.selectedTrackIds == otherTracks.map { it.id }.toSet(),
                     onClear       = vm::clearSelection,
                     onToggleAll   = vm::toggleSelectAll,
                     onExport      = vm::exportSelectedOrSnack,
@@ -190,27 +197,95 @@ fun RecordingScreen(
                 )
             }
 
+            if (showLiveCard) {
+                item {
+                    LiveCard(
+                        isRecording          = state.isRecording,
+                        isPaused             = state.isPaused,
+                        livePointCount       = (currentTrack?.pointCount ?: 0) + state.pendingPoints,
+                        pendingPoints        = state.pendingPoints,
+                        lastProvidedFix      = state.lastProvidedFix,
+                        lastAcceptedFix      = state.lastAcceptedFix,
+                        lastEnqueuedFix      = state.lastEnqueuedFix,
+                        liveDistanceM        = state.liveDistanceM,
+                        currentBaroAltitudeM = state.currentBaroAltitudeM,
+                        kalmanAltitudeM      = state.kalmanAltitudeM,
+                        currentQnhHpa        = state.currentQnhHpa,
+                        verticalSpeedMps     = state.verticalSpeedMps,
+                        slopePercent         = state.slopePercent,
+                        kalmanBiasM          = state.kalmanBiasM,
+                        baroEnabled          = state.config.recordBaroAltitude,
+                        hasBarometer         = state.hasBarometer,
+                        airplaneMode         = state.config.airplaneMode,
+                        gnssInfo             = state.gnssInfo,
+                        onShareGeo           = vm::shareLastProvidedFixAsGeo,
+                        onCalibrateBaro      = vm::calibrateBaro,
+                        onSetAirplaneMode    = vm::setAirplaneMode,
+                    )
+                }
+            }
+
             item { HorizontalDivider() }
             item { Text("Recording mode", style = MaterialTheme.typography.titleSmall) }
-            item { RecordingModeSelector(currentMode = state.config.mode, onModeSelected = vm::setMode) }
+            item {
+                RecordingModeSelector(
+                    currentMode    = state.config.mode,
+                    showDeprecated = showDeprecatedModes,
+                    onModeSelected = vm::setMode,
+                )
+            }
 
             if (state.config.mode != RecordingMode.PASSIVE) {
-                item { Text("Fix interval", style = MaterialTheme.typography.titleSmall) }
+                val isContinuous = state.config.mode == RecordingMode.CONTINUOUS
+
+                if (isContinuous) {
+                    item { Text("Hardware rate", style = MaterialTheme.typography.titleSmall) }
+                    item {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            TrackConfigEntity.HARDWARE_INTERVAL_OPTIONS_MS.forEach { ms ->
+                                FilterChip(selected = state.config.hardwareIntervalMs == ms, onClick = { vm.setHardwareInterval(ms) }, label = { Text(formatIntervalLabel(ms)) })
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text("How often the GPS chip produces a fix. Lower = better accuracy and faster fixes, more battery.",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+
                 item {
+                    Text(
+                        if (isContinuous) "Logging rate" else "Fix interval",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                }
+                item {
+                    val loggingOptions = remember(state.config.hardwareIntervalMs, isContinuous) {
+                        if (isContinuous) TrackConfigEntity.INTERVAL_OPTIONS_MS.filter { isValidLoggingRate(it, state.config.hardwareIntervalMs) }
+                        else TrackConfigEntity.INTERVAL_OPTIONS_MS
+                    }
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        INTERVAL_OPTIONS_MS.forEach { ms ->
+                        loggingOptions.forEach { ms ->
                             FilterChip(selected = state.config.intervalMs == ms, onClick = { vm.setInterval(ms) }, label = { Text(formatIntervalLabel(ms)) })
                         }
                     }
+                    if (isContinuous && loggingOptions.size < TrackConfigEntity.INTERVAL_OPTIONS_MS.size) {
+                        Spacer(Modifier.height(4.dp))
+                        Text("Options restricted to multiples of the hardware rate.",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
-                item { Text("Fix timeout", style = MaterialTheme.typography.titleSmall) }
-                item {
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        TrackConfigEntity.FIX_TIMEOUT_OPTIONS_MS.forEach { ms ->
-                            FilterChip(selected = state.config.fixTimeoutMs == ms, onClick = { vm.setFixTimeout(ms) }, label = { Text("${ms / 1000}s") })
+
+                if (state.config.mode == RecordingMode.SINGLE_FIX || state.config.mode == RecordingMode.ALARM) {
+                    item { Text("Fix timeout", style = MaterialTheme.typography.titleSmall) }
+                    item {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            TrackConfigEntity.FIX_TIMEOUT_OPTIONS_MS.forEach { ms ->
+                                FilterChip(selected = state.config.fixTimeoutMs == ms, onClick = { vm.setFixTimeout(ms) }, label = { Text("${ms / 1000}s") })
+                            }
                         }
                     }
                 }
+
                 item { Text("Max inaccuracy", style = MaterialTheme.typography.titleSmall) }
                 item {
                     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -228,6 +303,10 @@ fun RecordingScreen(
             item { Text("Power management", style = MaterialTheme.typography.titleSmall) }
             item { ToggleRow("Hold wake lock", "Prevents CPU from sleeping. Required for reliable continuous mode.", state.config.holdWakeLock, vm::setHoldWakeLock) }
             item { ToggleRow("Keep ephemeris warm", "Passive listener keeps GPS chip data fresh between fixes. Low power.", state.config.keepEphemerisWarm, vm::setKeepEphemerisWarm) }
+
+            item { HorizontalDivider() }
+            item { Text("Barometric altitude", style = MaterialTheme.typography.titleSmall) }
+            item { ToggleRow("Record barometric altitude", "MEMS pressure sensor via standard atmosphere. Adds relative climb precision; ~100 µA at 5 Hz.", state.config.recordBaroAltitude, vm::setRecordBaroAltitude) }
 
             item { HorizontalDivider() }
             item { Text("Segmentation", style = MaterialTheme.typography.titleSmall) }
@@ -320,28 +399,17 @@ fun RecordingScreen(
                 }
             }
 
-            if (state.recentTracks.isNotEmpty()) {
+            if (otherTracks.isNotEmpty()) {
                 item { HorizontalDivider() }
                 item { Text("Recent tracks", style = MaterialTheme.typography.titleSmall) }
-                items(state.recentTracks, key = { it.id }) { track ->
-                    val isActive      = state.isRecording && track.id == state.currentTrackId
-                    val isPausedTrack = state.isPaused   && track.id == state.currentTrackId
+                items(otherTracks, key = { it.id }) { track ->
                     TrackRow(
                         track             = track,
-                        isActive          = isActive,
-                        isPaused          = isPausedTrack,
                         isSelected        = track.id in state.selectedTrackIds,
                         selectionMode     = selectionMode,
-                        livePointCount    = if (isActive) track.pointCount + state.pendingPoints else track.pointCount,
-                        pendingPoints     = state.pendingPoints,
-                        lastProvidedFix   = state.lastProvidedFix,
-                        lastAcceptedFix   = state.lastAcceptedFix,
-                        gnssInfo          = state.gnssInfo,
                         onToggleSelection = { vm.toggleSelection(track.id) },
                         onShare           = { vm.shareTrack(track.id) },
                         onDelete          = { vm.deleteTrack(track.id) },
-                        onDeleteActive    = vm::deleteActiveTrack,
-                        onShareGeo        = vm::shareLastProvidedFixAsGeo,
                         onRename          = { name -> vm.renameTrack(track.id, name) },
                         onEnsureStats     = { vm.ensureStats(track.id) },
                     )
@@ -437,48 +505,477 @@ private fun RecordingControls(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+/**
+ * Bicycle-computer card. No live-state-driven conditional hiding: every
+ * stat stays on screen and shows "--" until the data arrives.
+ *
+ *   [status · points]
+ *   [distance]           [speed]           [heading]
+ *   [altitude]           [slope]           [v_z]
+ *     altitude            slope             v_z
+ *   heights: GPS · geoid · WGS84 · baro · QNH (one line, placeholders)
+ *   calibration row (b shown here, and only here)
+ *   fix chain · GNSS · airplane toggle
+ *
+ * The first three values use large type and inline units (km, km/h, °) so
+ * they read as a unit and need no labels. The second row uses slightly
+ * smaller type and one-word labels, because "+2.1%" and "+1.23 m/s" are
+ * ambiguous without them.
+ *
+ * QNH shows "(needs 3D fix)" when the barometer is enabled and working but
+ * the altitude filter has not yet seeded — that happens when the device is
+ * stationary indoors or otherwise has only a 2D fix. The filter requires a
+ * GPS altitude measurement to initialize; a barometer-only seed is not
+ * possible because the weather bias is unknown until GPS pins the
+ * absolute reference.
+ *
+ * "heading" is Location.getBearing(): course over ground, the direction
+ * the device is actually moving. Goes null at rest (hasBearing is false
+ * when stationary), which is why the column used to disappear — the fix
+ * is to keep it visible and show "--" while still. Not bearing-to-a-
+ * target; this app has no routing.
+ *
+ * Airplane-mode interaction:
+ *   - KF altitude still works (GPS-only smoothing).
+ *   - slope label flips to "gradient".
+ *   - bias b and QNH disappear: they describe a barometric measurement
+ *     that is no longer in the pipeline. Calibration row is hidden.
+ *   - the baro reading is labelled "cabin" and never stored.
+ *
+ * No-barometer interaction (hardware without a pressure sensor):
+ *   - calibration row is hidden
+ *   - debug line shows "baro (no sensor)" instead of a numeric placeholder
+ *   - QNH is omitted entirely (there is no pressure from which to compute it)
+ *   - KF still works from GPS alone
+ */
 @Composable
-private fun TrackRow(
-    track: TrackSummary,
-    isActive: Boolean,
+private fun LiveCard(
+    isRecording: Boolean,
     isPaused: Boolean,
-    isSelected: Boolean,
-    selectionMode: Boolean,
     livePointCount: Int,
     pendingPoints: Int,
     lastProvidedFix: TrackPointEntity?,
     lastAcceptedFix: TrackPointEntity?,
+    lastEnqueuedFix: TrackPointEntity?,
+    liveDistanceM: Float?,
+    currentBaroAltitudeM: Float?,
+    kalmanAltitudeM: Float?,
+    currentQnhHpa: Float?,
+    verticalSpeedMps: Float?,
+    slopePercent: Float?,
+    kalmanBiasM: Float?,
+    baroEnabled: Boolean,
+    hasBarometer: Boolean,
+    airplaneMode: Boolean,
     gnssInfo: GnssInfo,
+    onShareGeo: () -> Unit,
+    onCalibrateBaro: (Float) -> Unit,
+    onSetAirplaneMode: (Boolean) -> Unit,
+) {
+    var showCalibrateDialog by remember { mutableStateOf(false) }
+
+    val containerColor = when {
+        isRecording -> MaterialTheme.colorScheme.primaryContainer
+        isPaused    -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.7f)
+        else        -> MaterialTheme.colorScheme.surfaceVariant
+    }
+    val contentColor = when {
+        isRecording -> MaterialTheme.colorScheme.onPrimaryContainer
+        isPaused    -> MaterialTheme.colorScheme.onSecondaryContainer
+        else        -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val slopeLabel = if (airplaneMode) "gradient" else "slope"
+
+    val speedKmh: Float? = lastProvidedFix?.speedMs?.let { it * 3.6f }
+    // Location.getBearing() is course over ground (direction of travel),
+    // i.e. heading, not bearing-to-a-target. There is no target here.
+    // Goes null at rest — the UI must show "--" rather than hiding.
+    val heading: Float? = lastProvidedFix?.bearing
+
+    // Row 1 — values with units inline, no labels.
+    val distanceText: String = liveDistanceM?.let {
+        if (it >= 1000f) "%.2f km".format(it / 1000f) else "%.0f m".format(it)
+    } ?: "--"
+    val speedText: String = speedKmh?.let { "%.1f km/h".format(it) } ?: "--"
+    val headingText: String = heading?.let { "${cardinal(it)} ${it.toInt()}°" } ?: "--"
+
+    // Row 2 — smaller; values with units inline, tiny label below.
+    val kfAltitudeText: String = kalmanAltitudeM?.let { "%.1f m".format(it) } ?: "--"
+    val slopeText: String = "%+.1f%%".format(slopePercent ?: 0f)
+    val vzText: String = verticalSpeedMps?.let { "%+.2f m/s".format(it) } ?: "--"
+
+    // Debug line. Every height representation the pipeline carries, plus QNH.
+    // Each part is present with a "--" placeholder when the value is not yet
+    // available, so the line never changes shape as state arrives. QNH is
+    // gated only on config (baro on, not airplane mode), never on live state.
+    val eleM: Float? = lastProvidedFix?.ele
+    val geoidM: Float? = lastProvidedFix?.undulation
+    val wgs84M: Float? = if (eleM != null && geoidM != null) eleM + geoidM else null
+    val baroRawM: Float? = currentBaroAltitudeM
+    val debugParts = buildList {
+        add("GPS " + (eleM?.let { "%.1f".format(it) } ?: "--"))
+        add("geoid " + (geoidM?.let { "%.1f".format(it) } ?: "--"))
+        add("WGS84 " + (wgs84M?.let { "%.1f".format(it) } ?: "--"))
+        if (baroEnabled) {
+            when {
+                !hasBarometer -> add("baro (no sensor)")
+                else -> {
+                    val baroLabel = if (airplaneMode) "cabin " else "baro "
+                    add(baroLabel + (baroRawM?.let { "%.1f".format(it) } ?: "--"))
+                    if (!airplaneMode) {
+                        // QNH requires a 3D fix: the filter cannot seed from
+                        // baro alone, because the weather bias is unknown
+                        // until GPS pins the absolute reference.
+                        val qnhText = when {
+                            currentQnhHpa != null   -> "%.0f".format(currentQnhHpa)
+                            kalmanAltitudeM == null -> "(needs 3D fix)"
+                            else                    -> "--"
+                        }
+                        add("QNH " + qnhText)
+                    }
+                }
+            }
+        }
+    }
+
+    val gnssText: String = gnssInfo.format().ifEmpty { "--" }
+
+    Card(
+        colors   = CardDefaults.cardColors(containerColor = containerColor),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            // Status row.
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(
+                    when {
+                        isRecording -> Icons.Default.LocationOn
+                        isPaused    -> Icons.Default.Pause
+                        else        -> Icons.Default.MyLocation
+                    },
+                    null,
+                    modifier = Modifier.size(18.dp),
+                    tint = contentColor,
+                )
+                Text(
+                    when {
+                        isRecording -> "Recording"
+                        isPaused    -> "Paused"
+                        else        -> "Locating…"
+                    },
+                    style = MaterialTheme.typography.titleSmall,
+                    color = contentColor,
+                )
+                Spacer(Modifier.weight(1f))
+                if (isRecording) {
+                    val ptsLabel = if (pendingPoints > 0)
+                        "$livePointCount pts ($pendingPoints buffered)"
+                        else "$livePointCount pts"
+                    Text(ptsLabel, style = MaterialTheme.typography.labelSmall, color = contentColor.copy(alpha = 0.7f))
+                }
+            }
+
+            // Row 1: distance · speed · heading, inline units, no labels.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    distanceText,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = contentColor,
+                    textAlign = TextAlign.Start,
+                )
+                Text(
+                    speedText,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = contentColor,
+                    textAlign = TextAlign.Center,
+                )
+                Text(
+                    headingText,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = contentColor,
+                    textAlign = TextAlign.End,
+                )
+            }
+
+            // Row 2: altitude · slope · v_z — one step down in prominence.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                StatColumn(
+                    value = kfAltitudeText,
+                    // label = "altitude",
+                    modifier = Modifier.weight(1f),
+                    color = contentColor,
+                    valueStyle = MaterialTheme.typography.titleLarge,
+                    textAlign = TextAlign.Start,
+                )
+                StatColumn(
+                    value = slopeText,
+                    // label = slopeLabel,
+                    modifier = Modifier.weight(1f),
+                    color = contentColor,
+                    valueStyle = MaterialTheme.typography.titleLarge,
+                    textAlign = TextAlign.Center,
+                )
+                StatColumn(
+                    value = vzText,
+                    // label = "v_z",
+                    modifier = Modifier.weight(1f),
+                    color = contentColor,
+                    valueStyle = MaterialTheme.typography.titleMedium,
+                    textAlign = TextAlign.End,
+                )
+            }
+
+            // Debug line: single row, all heights + QNH, "--" placeholders.
+            Text(
+                debugParts.joinToString(" · "),
+                style = MaterialTheme.typography.labelSmall,
+                color = contentColor.copy(alpha = 0.6f),
+            )
+
+            // Calibration row. b lives here, and only here. Config-gated
+            // (baro on, not airplane mode) AND hardware-gated (sensor present)
+            // — no flicker with live state, no dead calibration button on
+            // phones without a barometer.
+            if (baroEnabled && !airplaneMode && hasBarometer) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (kalmanBiasM == null) "uncalibrated (converging)"
+                        else "b = %+.1f m".format(kalmanBiasM),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (kalmanBiasM == null) MaterialTheme.colorScheme.error else contentColor.copy(alpha = 0.7f),
+                    )
+                    Spacer(Modifier.weight(1f))
+                    TextButton(
+                        onClick = { showCalibrateDialog = true },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                        modifier = Modifier.height(24.dp),
+                    ) {
+                        Text(
+                            if (kalmanBiasM == null) "initial calibration" else "recalibrate",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = contentColor,
+                        )
+                    }
+                }
+            }
+
+            HorizontalDivider(color = contentColor.copy(alpha = 0.2f))
+
+            FixChain(
+                providedFix = lastProvidedFix,
+                acceptedFix = lastAcceptedFix,
+                enqueuedFix = lastEnqueuedFix,
+                contentColor = contentColor,
+                onShareGeo = onShareGeo,
+            )
+
+            // GNSS: always shown. "--" before first satellite status arrives.
+            Text(
+                gnssText,
+                style = MaterialTheme.typography.labelSmall,
+                color = contentColor.copy(alpha = 0.7f),
+            )
+
+            HorizontalDivider(color = contentColor.copy(alpha = 0.2f))
+
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Airplane mode",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = contentColor,
+                    )
+                    Text(
+                        "Cabin pressure is regulated and excluded from altitude fusion",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = contentColor.copy(alpha = 0.7f),
+                    )
+                }
+                Switch(checked = airplaneMode, onCheckedChange = onSetAirplaneMode)
+            }
+        }
+    }
+
+    if (showCalibrateDialog) {
+        BaroCalibrationDialog(
+            currentBaro = currentBaroAltitudeM ?: 0f,
+            gpsOrthoAlt = lastProvidedFix?.ele,
+            kfAlt       = kalmanAltitudeM,
+            onCalibrate = { ref ->
+                onCalibrateBaro(ref)
+                showCalibrateDialog = false
+            },
+            onDismiss   = { showCalibrateDialog = false },
+        )
+    }
+}
+
+@Composable
+private fun StatColumn(
+    value: String,
+    // label: String,
+    modifier: Modifier = Modifier,
+    color: Color,
+    valueStyle: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.titleMedium,
+    textAlign: TextAlign = TextAlign.Start,
+) {
+    Column(modifier = modifier) {
+        Text(
+            value,
+            style = valueStyle,
+            fontWeight = FontWeight.SemiBold,
+            color = color,
+            textAlign = textAlign,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        // Text(
+        //     label,
+        //     style = MaterialTheme.typography.labelSmall,
+        //     color = color.copy(alpha = 0.7f),
+        //     textAlign = textAlign,
+        //     modifier = Modifier.fillMaxWidth(),
+        // )
+    }
+}
+
+@Composable
+private fun FixChain(
+    providedFix: TrackPointEntity?,
+    acceptedFix: TrackPointEntity?,
+    enqueuedFix: TrackPointEntity?,
+    contentColor: Color,
+    onShareGeo: () -> Unit,
+) {
+    // Each line appears once and stays for the session — monotone progression
+    // through the pipeline. "waiting for fixes…" is the only state where all
+    // three are absent, and it is replaced the moment the first fix arrives.
+    // Not flicker: state advances, it does not oscillate.
+    if (providedFix != null) {
+        val parts = mutableListOf("provided ${formatLocal(providedFix.time)}")
+        if (providedFix.accuracyM != null) parts += "±%.0fm".format(providedFix.accuracyM)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(parts.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = contentColor.copy(alpha = 0.7f), modifier = Modifier.weight(1f))
+            IconButton(onClick = onShareGeo, modifier = Modifier.size(24.dp)) {
+                Icon(Icons.Default.MyLocation, "Share location", tint = contentColor, modifier = Modifier.size(14.dp))
+            }
+        }
+    }
+
+    if (acceptedFix != null) {
+        val parts = mutableListOf("accepted ${formatLocal(acceptedFix.time)}")
+        if (acceptedFix.accuracyM != null) parts += "±%.0fm".format(acceptedFix.accuracyM)
+        Text(parts.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = contentColor.copy(alpha = 0.7f))
+    }
+
+    if (enqueuedFix != null) {
+        val parts = mutableListOf("enqueued ${formatLocal(enqueuedFix.time)}")
+        if (enqueuedFix.accuracyM != null) parts += "±%.0fm".format(enqueuedFix.accuracyM)
+        Text(parts.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = contentColor.copy(alpha = 0.7f))
+    }
+
+    if (providedFix == null && acceptedFix == null && enqueuedFix == null) {
+        Text("waiting for fixes…", style = MaterialTheme.typography.labelSmall, color = contentColor.copy(alpha = 0.7f))
+    }
+}
+
+@Composable
+private fun BaroCalibrationDialog(
+    currentBaro: Float,
+    gpsOrthoAlt: Float?,
+    kfAlt: Float?,
+    onCalibrate: (Float) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var manualInput by remember { mutableStateOf("") }
+    val manualValue = manualInput.toFloatOrNull()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Initial barometric calibration") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Raw ISA baro: %.1f m".format(currentBaro))
+                if (kfAlt != null) {
+                    Text("KF altitude: %.1f m".format(kfAlt),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text(
+                    "This seeds the Kalman filter once so it converges immediately " +
+                        "instead of over several minutes. It does not store a persistent " +
+                        "offset — the filter's bias state absorbs any remaining weather drift.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (gpsOrthoAlt != null) {
+                    OutlinedButton(
+                        onClick = { onCalibrate(gpsOrthoAlt) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Use GPS height (%.1f m)".format(gpsOrthoAlt))
+                    }
+                }
+                OutlinedTextField(
+                    value = manualInput,
+                    onValueChange = { manualInput = it.filter { c -> c.isDigit() || c == '.' || c == '-' } },
+                    label = { Text("Manual altitude (m)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { manualValue?.let(onCalibrate) },
+                enabled = manualValue != null,
+            ) { Text("Seed") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun TrackRow(
+    track: TrackSummary,
+    isSelected: Boolean,
+    selectionMode: Boolean,
     onToggleSelection: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit,
-    onDeleteActive: (restart: Boolean) -> Unit,
-    onShareGeo: () -> Unit,
     onRename: (String) -> Unit,
     onEnsureStats: () -> Unit,
 ) {
     var confirmDelete by remember { mutableStateOf(false) }
-    var confirmDeleteActive by remember { mutableStateOf(false) }
     var editingName by remember { mutableStateOf(false) }
     var nameInput by remember(track.name) { mutableStateOf(track.name) }
 
-    LaunchedEffect(track.id, track.stats) {
-        if (track.stats == null && !isActive) onEnsureStats()
+    LaunchedEffect(track.id, track.pointCount, track.stats?.pointCount) {
+        if (track.stats?.pointCount != track.pointCount) {
+            onEnsureStats()
+        }
     }
 
-    val containerColor = when {
-        isSelected -> MaterialTheme.colorScheme.secondaryContainer
-        isActive   -> MaterialTheme.colorScheme.primaryContainer
-        isPaused   -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
-        else       -> MaterialTheme.colorScheme.surfaceVariant
-    }
+    val containerColor = if (isSelected) MaterialTheme.colorScheme.secondaryContainer
+                         else MaterialTheme.colorScheme.surfaceVariant
 
     Card(
         colors   = CardDefaults.cardColors(containerColor = containerColor),
         modifier = Modifier
             .fillMaxWidth()
-            .animateContentSize()
             .combinedClickable(
                 onClick     = { if (selectionMode) onToggleSelection() },
                 onLongClick = onToggleSelection,
@@ -489,20 +986,7 @@ private fun TrackRow(
                 if (selectionMode) {
                     Checkbox(checked = isSelected, onCheckedChange = { onToggleSelection() })
                 }
-                Icon(
-                    when {
-                        isActive -> Icons.Default.LocationOn
-                        isPaused -> Icons.Default.Pause
-                        else     -> Icons.Default.Route
-                    },
-                    null,
-                    modifier = Modifier.size(20.dp),
-                    tint = when {
-                        isActive -> MaterialTheme.colorScheme.onPrimaryContainer
-                        isPaused -> MaterialTheme.colorScheme.secondary
-                        else     -> MaterialTheme.colorScheme.primary
-                    },
-                )
+                Icon(Icons.Default.Route, null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
                 Column(Modifier.weight(1f)) {
                     if (editingName) {
                         OutlinedTextField(
@@ -532,19 +1016,16 @@ private fun TrackRow(
                             }
                         }
                     }
-                    val pointsLabel = if (isActive && pendingPoints > 0)
-                        "$livePointCount pts ($pendingPoints buffered)" else "$livePointCount pts"
-                    Text("${track.date} · $pointsLabel",
+                    Text("${track.date} · ${track.pointCount} pts",
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (isActive) MaterialTheme.colorScheme.onPrimaryContainer
-                                else MaterialTheme.colorScheme.onSurfaceVariant)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 if (!selectionMode && !editingName) {
                     IconButton(onClick = onShare, modifier = Modifier.size(40.dp)) {
                         Icon(Icons.Default.Share, "Share track", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                     }
                     IconButton(
-                        onClick  = { if (isActive || isPaused) confirmDeleteActive = true else confirmDelete = true },
+                        onClick  = { confirmDelete = true },
                         modifier = Modifier.size(40.dp),
                     ) {
                         Icon(Icons.Default.Delete, "Delete track", tint = MaterialTheme.colorScheme.outline, modifier = Modifier.size(18.dp))
@@ -552,16 +1033,7 @@ private fun TrackRow(
                 }
             }
 
-            TrackStatsRow(stats = track.stats, isActive = isActive)
-
-            if ((isActive || isPaused) && !selectionMode) {
-                ActiveTrackInfo(
-                    providedFix = lastProvidedFix,
-                    acceptedFix = lastAcceptedFix,
-                    gnssInfo    = gnssInfo,
-                    onShareGeo  = onShareGeo,
-                )
-            }
+            TrackStatsRow(stats = track.stats)
         }
     }
 
@@ -574,30 +1046,10 @@ private fun TrackRow(
             dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
         )
     }
-
-    if (confirmDeleteActive) {
-        AlertDialog(
-            onDismissRequest = { confirmDeleteActive = false },
-            title = { Text(if (isActive) "Stop recording and delete?" else "Delete paused track?") },
-            text  = { Text("\"${track.name}\" will be permanently deleted.") },
-            confirmButton = {
-                Column {
-                    if (isActive) {
-                        TextButton(onClick = { onDeleteActive(true);  confirmDeleteActive = false }) { Text("Delete & restart") }
-                        TextButton(onClick = { onDeleteActive(false); confirmDeleteActive = false }) { Text("Delete & stop") }
-                    } else {
-                        TextButton(onClick = { onDelete(); confirmDeleteActive = false }) { Text("Delete") }
-                    }
-                }
-            },
-            dismissButton = { TextButton(onClick = { confirmDeleteActive = false }) { Text("Cancel") } },
-        )
-    }
 }
 
 @Composable
-private fun TrackStatsRow(stats: TrackStatsEntity?, isActive: Boolean) {
-    if (isActive) return
+private fun TrackStatsRow(stats: TrackStatsEntity?) {
     val color = MaterialTheme.colorScheme.onSurfaceVariant
     val style = MaterialTheme.typography.labelSmall
     if (stats == null) {
@@ -607,66 +1059,28 @@ private fun TrackStatsRow(stats: TrackStatsEntity?, isActive: Boolean) {
     val parts = buildList {
         add(if (stats.distanceM >= 1000f) "%.1f km".format(stats.distanceM / 1000f)
             else "%.0f m".format(stats.distanceM))
-        add(formatSpan(stats.durationMs))
-        if (stats.recordingLengthMs < stats.durationMs * 9 / 10)
-            add("rec ${formatSpan(stats.recordingLengthMs)}")
-        if (stats.timeMovingMs > 0)
+        if (stats.recordingLengthMs > 0) add(formatSpan(stats.recordingLengthMs))
+        if (stats.durationMs - stats.recordingLengthMs > stats.durationMs / 20) {
+            add("elapsed ${formatSpan(stats.durationMs)}")
+        }
+        if (stats.timeMovingMs > 0 && stats.timeMovingMs < stats.recordingLengthMs * 95 / 100) {
             add("moving ${formatSpan(stats.timeMovingMs)}")
+        }
     }
     Text(parts.joinToString(" · "), style = style, color = color)
 }
 
 @Composable
-private fun ActiveTrackInfo(
-    providedFix: TrackPointEntity?,
-    acceptedFix: TrackPointEntity?,
-    gnssInfo: GnssInfo,
-    onShareGeo: () -> Unit,
+private fun RecordingModeSelector(
+    currentMode: String,
+    showDeprecated: Boolean,
+    onModeSelected: (String) -> Unit,
 ) {
-    val contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-
-    if (acceptedFix != null) {
-        val parts = mutableListOf("accepted ${formatLocal(acceptedFix.time)}")
-        if (acceptedFix.accuracyM != null) parts += "±%.0fm".format(acceptedFix.accuracyM)
-        Text(parts.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = contentColor)
-    } else {
-        Text("no accepted fix", style = MaterialTheme.typography.labelSmall, color = contentColor)
+    val visibleModes = RecordingMode.ALL.filter { mode ->
+        mode == currentMode || mode !in RecordingMode.DEPRECATED || showDeprecated
     }
-
-    if (providedFix != null) {
-        val firstLine = mutableListOf("provided ${formatLocal(providedFix.time)}")
-        if (providedFix.accuracyM != null) firstLine += "±%.0fm".format(providedFix.accuracyM)
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(firstLine.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = contentColor, modifier = Modifier.weight(1f))
-            IconButton(onClick = onShareGeo, modifier = Modifier.size(40.dp)) {
-                Icon(Icons.Default.MyLocation, "Share location", tint = contentColor, modifier = Modifier.size(14.dp))
-            }
-        }
-        val secondLine = buildList {
-            if (providedFix.ele        != null) add("ortho: %.1fm".format(providedFix.ele))
-            if (providedFix.undulation != null) add("geoid: %.1fm".format(providedFix.undulation))
-            // if (providedFix.ele != null && providedFix.undulation != null)
-            //     add("wgs84: %.1fm".format(providedFix.ele+providedFix.undulation))
-            if (providedFix.bearing    != null) add("%.0f°".format(providedFix.bearing))
-            if (providedFix.speedMs    != null) add("%.1f km/h".format(providedFix.speedMs * 3.6f))
-        }
-        if (secondLine.isNotEmpty()) {
-            Text(secondLine.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = contentColor)
-        }
-    } else {
-        Text("no provided fix", style = MaterialTheme.typography.labelSmall, color = contentColor)
-    }
-
-    val gnssText = gnssInfo.format()
-    if (gnssText.isNotEmpty()) {
-        Text(gnssText, style = MaterialTheme.typography.labelSmall, color = contentColor)
-    }
-}
-
-@Composable
-private fun RecordingModeSelector(currentMode: String, onModeSelected: (String) -> Unit) {
     FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        RecordingMode.ALL.forEach { mode ->
+        visibleModes.forEach { mode ->
             FilterChip(selected = currentMode == mode, onClick = { onModeSelected(mode) }, label = { Text(formatModeLabel(mode)) })
         }
     }
@@ -780,3 +1194,18 @@ private fun formatLocal(timeMs: Long): String =
     Instant.ofEpochMilli(timeMs)
         .atZone(java.time.ZoneId.systemDefault())
         .format(LOCAL_FORMAT)
+
+private fun cardinal(deg: Float): String {
+    val d = ((deg % 360f) + 360f) % 360f
+    return when {
+        d < 22.5f || d >= 337.5f -> "N"
+        d < 67.5f  -> "NE"
+        d < 112.5f -> "E"
+        d < 157.5f -> "SE"
+        d < 202.5f -> "S"
+        d < 247.5f -> "SW"
+        d < 292.5f -> "W"
+        d < 337.5f -> "NW"
+        else       -> "N"
+    }
+}

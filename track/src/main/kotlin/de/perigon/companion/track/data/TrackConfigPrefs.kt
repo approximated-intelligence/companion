@@ -24,10 +24,13 @@ private val Context.trackConfigDataStore: DataStore<Preferences> by preferencesD
 private object Keys {
     val MODE                    = stringPreferencesKey("mode")
     val INTERVAL_MS             = longPreferencesKey("interval_ms")
+    val HARDWARE_INTERVAL_MS    = longPreferencesKey("hardware_interval_ms")
     val FIX_TIMEOUT_MS          = longPreferencesKey("fix_timeout_ms")
     val MAX_INACCURACY_M        = floatPreferencesKey("max_inaccuracy_m")
     val KEEP_EPHEMERIS_WARM     = booleanPreferencesKey("keep_ephemeris_warm")
     val HOLD_WAKE_LOCK          = booleanPreferencesKey("hold_wake_lock")
+    val RECORD_BARO_ALTITUDE    = booleanPreferencesKey("record_baro_altitude")
+    val AIRPLANE_MODE           = booleanPreferencesKey("airplane_mode")
     val AUTO_SCHEDULE_ENABLED   = booleanPreferencesKey("auto_schedule_enabled")
     val AUTO_START_SECONDS      = longPreferencesKey("auto_start_seconds")
     val AUTO_STOP_SECONDS       = longPreferencesKey("auto_stop_seconds")
@@ -38,10 +41,13 @@ private object Keys {
 private fun Preferences.toTrackConfig() = TrackConfigEntity(
     mode                   = this[Keys.MODE]                    ?: TrackConfigEntity.DEFAULT.mode,
     intervalMs             = this[Keys.INTERVAL_MS]             ?: TrackConfigEntity.DEFAULT.intervalMs,
+    hardwareIntervalMs     = this[Keys.HARDWARE_INTERVAL_MS]    ?: TrackConfigEntity.DEFAULT.hardwareIntervalMs,
     fixTimeoutMs           = this[Keys.FIX_TIMEOUT_MS]          ?: TrackConfigEntity.DEFAULT.fixTimeoutMs,
     maxInaccuracyM         = this[Keys.MAX_INACCURACY_M]        ?: TrackConfigEntity.DEFAULT.maxInaccuracyM,
     keepEphemerisWarm      = this[Keys.KEEP_EPHEMERIS_WARM]     ?: TrackConfigEntity.DEFAULT.keepEphemerisWarm,
     holdWakeLock           = this[Keys.HOLD_WAKE_LOCK]          ?: TrackConfigEntity.DEFAULT.holdWakeLock,
+    recordBaroAltitude     = this[Keys.RECORD_BARO_ALTITUDE]    ?: TrackConfigEntity.DEFAULT.recordBaroAltitude,
+    airplaneMode           = this[Keys.AIRPLANE_MODE]           ?: TrackConfigEntity.DEFAULT.airplaneMode,
     autoScheduleEnabled    = this[Keys.AUTO_SCHEDULE_ENABLED]   ?: TrackConfigEntity.DEFAULT.autoScheduleEnabled,
     autoStartSeconds       = this[Keys.AUTO_START_SECONDS]      ?: TrackConfigEntity.DEFAULT.autoStartSeconds,
     autoStopSeconds        = this[Keys.AUTO_STOP_SECONDS]       ?: TrackConfigEntity.DEFAULT.autoStopSeconds,
@@ -93,10 +99,13 @@ class TrackConfigPrefs @Inject constructor(
         edit {
             set(Keys.MODE,                    updated.mode)
             set(Keys.INTERVAL_MS,             updated.intervalMs)
+            set(Keys.HARDWARE_INTERVAL_MS,    updated.hardwareIntervalMs)
             set(Keys.FIX_TIMEOUT_MS,          updated.fixTimeoutMs)
             set(Keys.MAX_INACCURACY_M,        updated.maxInaccuracyM)
             set(Keys.KEEP_EPHEMERIS_WARM,     updated.keepEphemerisWarm)
             set(Keys.HOLD_WAKE_LOCK,          updated.holdWakeLock)
+            set(Keys.RECORD_BARO_ALTITUDE,    updated.recordBaroAltitude)
+            set(Keys.AIRPLANE_MODE,           updated.airplaneMode)
             set(Keys.AUTO_SCHEDULE_ENABLED,   updated.autoScheduleEnabled)
             set(Keys.AUTO_START_SECONDS,      updated.autoStartSeconds)
             set(Keys.AUTO_STOP_SECONDS,       updated.autoStopSeconds)

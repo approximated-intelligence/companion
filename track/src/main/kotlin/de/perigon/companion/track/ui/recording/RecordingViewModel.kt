@@ -11,11 +11,14 @@ import androidx.work.ExistingWorkPolicy
 import de.perigon.companion.track.data.TrackPrefs
 import de.perigon.companion.core.ui.SnackbarChannel
 import de.perigon.companion.track.data.CurrentTrackState
+import de.perigon.companion.track.data.RecordingMode
 import de.perigon.companion.track.data.TrackConfigEntity
 import de.perigon.companion.track.data.TrackConfigPrefs
 import de.perigon.companion.track.data.TrackPointEntity
 import de.perigon.companion.track.data.TrackRepository
 import de.perigon.companion.track.data.TrackSummary
+import de.perigon.companion.track.data.isValidLoggingRate
+import de.perigon.companion.track.data.smallestValidLoggingRate
 import de.perigon.companion.track.domain.GpxExporter
 import de.perigon.companion.track.service.AutoScheduler
 import de.perigon.companion.track.service.GnssInfo
@@ -25,9 +28,11 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -42,21 +47,31 @@ enum class StopPromptChoice { STOP_FOR_TODAY, STOP_AND_DISABLE, CANCEL }
 
 @Immutable
 data class RecordingUiState(
-    val isRecording:          Boolean            = false,
-    val isPaused:             Boolean            = false,
-    val currentTrackId:       Long?              = null,
-    val config:               TrackConfigEntity  = TrackConfigEntity.DEFAULT,
-    val recentTracks:         List<TrackSummary> = emptyList(),
-    val todayDate:            String             = LocalDate.now().toString(),
-    val lastProvidedFix:      TrackPointEntity?  = null,
-    val lastAcceptedFix:      TrackPointEntity?  = null,
-    val pendingPoints:        Int                = 0,
-    val gnssInfo:             GnssInfo           = GnssInfo.EMPTY,
-    val gpxExportFolderUri:   String?            = null,
-    val gpxExportFolderLabel: String?            = null,
-    val showStartNowPrompt:   Boolean            = false,
-    val showStopPrompt:       Boolean            = false,
-    val selectedTrackIds:     Set<Long>          = emptySet(),
+    val isRecording:           Boolean            = false,
+    val isPaused:              Boolean            = false,
+    val previewActive:         Boolean            = false,
+    val currentTrackId:        Long?              = null,
+    val config:                TrackConfigEntity  = TrackConfigEntity.DEFAULT,
+    val recentTracks:          List<TrackSummary> = emptyList(),
+    val todayDate:             String             = LocalDate.now().toString(),
+    val lastProvidedFix:       TrackPointEntity?  = null,
+    val lastAcceptedFix:       TrackPointEntity?  = null,
+    val lastEnqueuedFix:       TrackPointEntity?  = null,
+    val liveDistanceM:         Float?             = null,
+    val hasBarometer:          Boolean            = false,
+    val currentBaroAltitudeM:  Float?             = null,
+    val kalmanAltitudeM:       Float?             = null,
+    val currentQnhHpa:         Float?             = null,
+    val verticalSpeedMps:      Float?             = null,
+    val slopePercent:          Float?             = null,
+    val kalmanBiasM:           Float?             = null,
+    val pendingPoints:         Int                = 0,
+    val gnssInfo:              GnssInfo           = GnssInfo.EMPTY,
+    val gpxExportFolderUri:    String?            = null,
+    val gpxExportFolderLabel:  String?            = null,
+    val showStartNowPrompt:    Boolean            = false,
+    val showStopPrompt:        Boolean            = false,
+    val selectedTrackIds:      Set<Long>          = emptySet(),
 )
 
 @HiltViewModel
@@ -72,6 +87,9 @@ class RecordingViewModel @Inject constructor(
         gpxExportFolderLabel = appPrefs.gpxExportFolderLabel(),
     ))
     val state: StateFlow<RecordingUiState> = _state.asStateFlow()
+
+    val showDeprecatedModes: StateFlow<Boolean> = appPrefs.observeShowDeprecatedModes()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, appPrefs.isShowDeprecatedModesEnabled())
 
     val snackbar = SnackbarChannel()
 
@@ -100,9 +118,19 @@ class RecordingViewModel @Inject constructor(
                 RecordingUiState(
                     isRecording          = status.isRecording,
                     isPaused             = !status.isRecording && currentTrack?.state == CurrentTrackState.PAUSED,
+                    previewActive        = status.previewActive,
                     currentTrackId       = currentTrack?.trackId,
                     lastProvidedFix      = status.lastProvidedFix,
                     lastAcceptedFix      = status.lastAcceptedFix,
+                    lastEnqueuedFix      = status.lastEnqueuedFix,
+                    liveDistanceM        = status.liveDistanceM,
+                    hasBarometer         = status.hasBarometer,
+                    currentBaroAltitudeM = status.currentBaroAltitudeM,
+                    kalmanAltitudeM      = status.kalmanAltitudeM,
+                    currentQnhHpa        = status.currentQnhHpa,
+                    verticalSpeedMps     = status.verticalSpeedMps,
+                    slopePercent         = status.slopePercent,
+                    kalmanBiasM          = status.kalmanBiasM,
                     pendingPoints        = status.pendingPoints,
                     gnssInfo             = status.gnssInfo,
                     config               = config,
@@ -117,6 +145,20 @@ class RecordingViewModel @Inject constructor(
                 )
             }.collect { _state.value = it }
         }
+    }
+
+    // ---- Screen lifecycle ----
+
+    fun onScreenEnter() {
+        ctx.startForegroundService(Intent(ctx, BackgroundService::class.java).apply {
+            action = BackgroundService.ACTION_PREVIEW_START
+        })
+    }
+
+    fun onScreenExit() {
+        ctx.startService(Intent(ctx, BackgroundService::class.java).apply {
+            action = BackgroundService.ACTION_PREVIEW_STOP
+        })
     }
 
     // ---- Recording control ----
@@ -197,16 +239,75 @@ class RecordingViewModel @Inject constructor(
         viewModelScope.launch { trackRepository.renameTrack(trackId, name.trim()) }
     }
 
+    // ---- Baro calibration ----
+
+    /**
+     * One-shot KF seeding. Sends the reference altitude to the service,
+     * which snaps h and b. No offset is stored — the KF absorbs residual
+     * bias on its own.
+     */
+    fun calibrateBaro(referenceAltM: Float) {
+        if (_state.value.config.airplaneMode) {
+            snackbar.send("Calibration is disabled in airplane mode")
+            return
+        }
+        if (!_state.value.hasBarometer) {
+            snackbar.send("No barometer on this device")
+            return
+        }
+        ctx.startService(Intent(ctx, BackgroundService::class.java).apply {
+            action = BackgroundService.ACTION_CALIBRATE
+            putExtra(BackgroundService.EXTRA_CALIB_REF_ALT, referenceAltM)
+        })
+    }
+
     // ---- Config ----
 
-    fun setMode(mode: String)                    { viewModelScope.launch { configPrefs.update { it.copy(mode = mode) } } }
-    fun setInterval(ms: Long)                    { viewModelScope.launch { configPrefs.update { it.copy(intervalMs = ms) } } }
+    /**
+     * Interval must stay valid against the current hardware rate when the
+     * user switches to CONTINUOUS: the interval chips in SINGLE_FIX/ALARM
+     * are unfiltered, so an interval that was fine there can be invalid
+     * against hardwareIntervalMs on the way back. Snap rather than refuse.
+     */
+    fun setMode(mode: String) {
+        viewModelScope.launch {
+            configPrefs.update { cfg ->
+                if (mode == RecordingMode.CONTINUOUS && !isValidLoggingRate(cfg.intervalMs, cfg.hardwareIntervalMs)) {
+                    cfg.copy(mode = mode, intervalMs = smallestValidLoggingRate(cfg.hardwareIntervalMs, TrackConfigEntity.INTERVAL_OPTIONS_MS))
+                } else {
+                    cfg.copy(mode = mode)
+                }
+            }
+        }
+    }
+
     fun setFixTimeout(ms: Long)                  { viewModelScope.launch { configPrefs.update { it.copy(fixTimeoutMs = ms) } } }
     fun setMaxInaccuracy(m: Float)               { viewModelScope.launch { configPrefs.update { it.copy(maxInaccuracyM = m) } } }
     fun setKeepEphemerisWarm(v: Boolean)         { viewModelScope.launch { configPrefs.update { it.copy(keepEphemerisWarm = v) } } }
     fun setHoldWakeLock(v: Boolean)              { viewModelScope.launch { configPrefs.update { it.copy(holdWakeLock = v) } } }
+    fun setRecordBaroAltitude(v: Boolean)        { viewModelScope.launch { configPrefs.update { it.copy(recordBaroAltitude = v) } } }
+    fun setAirplaneMode(v: Boolean)              { viewModelScope.launch { configPrefs.update { it.copy(airplaneMode = v) } } }
     fun setAutoSplitOnDayRollover(v: Boolean)    { viewModelScope.launch { configPrefs.update { it.copy(autoSplitOnDayRollover = v) } } }
     fun setAutoSegmentGapMs(ms: Long)            { viewModelScope.launch { configPrefs.update { it.copy(autoSegmentGapMs = ms) } } }
+
+    fun setHardwareInterval(ms: Long) {
+        viewModelScope.launch {
+            configPrefs.update { cfg ->
+                val newLogging = if (isValidLoggingRate(cfg.intervalMs, ms)) cfg.intervalMs
+                    else smallestValidLoggingRate(ms, TrackConfigEntity.INTERVAL_OPTIONS_MS)
+                cfg.copy(hardwareIntervalMs = ms, intervalMs = newLogging)
+            }
+        }
+    }
+
+    fun setInterval(ms: Long) {
+        viewModelScope.launch {
+            configPrefs.update { cfg ->
+                if (!isValidLoggingRate(ms, cfg.hardwareIntervalMs)) cfg
+                else cfg.copy(intervalMs = ms)
+            }
+        }
+    }
 
     fun setAutoScheduleEnabled(enabled: Boolean) {
         viewModelScope.launch {

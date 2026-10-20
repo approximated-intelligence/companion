@@ -4,7 +4,6 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.room.*
 import de.perigon.companion.track.domain.Background
-import de.perigon.companion.track.domain.ImportedTrack
 import kotlinx.coroutines.flow.Flow
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -55,6 +54,9 @@ data class TrackPointEntity(
     val lon: Float,
     val ele: Float? = null,
     val undulation: Float? = null,
+    // Barometric altitude from TYPE_PRESSURE via SensorManager.getAltitude
+    // (standard atmosphere). Null when the sensor is disabled or absent.
+    val baroAlt: Float? = null,
     val accuracyM: Float? = null,
     val speedMs: Float? = null,
     val bearing: Float? = null,
@@ -74,6 +76,11 @@ data class TrackPointEntity(
 )
 data class TrackStatsEntity(
     @PrimaryKey val trackId: Long,
+    // Point count the stats were computed from. Kept so callers can detect
+    // staleness: pause-triggered ensureStats used to freeze a partial value
+    // for the rest of the track's life. Compare against TrackSummary.pointCount.
+    // Default 0 also self-heals pre-migration rows on first read.
+    val pointCount: Int = 0,
     val durationMs: Long,
     val recordingLengthMs: Long,
     val distanceM: Float,
@@ -104,7 +111,7 @@ data class CurrentTrackEntity(
 
 @DatabaseView(
     viewName = "track_point_rows",
-    value = "SELECT t.id AS trackId, t.date AS trackDate, t.name AS trackName, s.id AS segmentId, s.startedAt AS segmentStartedAt, p.id AS pointId, p.lat, p.lon, p.ele, p.undulation, p.accuracyM, p.speedMs, p.bearing, p.time, p.provider FROM track_points p JOIN track_segments s ON s.id = p.segmentId JOIN tracks t ON t.id = s.trackId ORDER BY t.id ASC, s.id ASC, p.id ASC"
+    value = "SELECT t.id AS trackId, t.date AS trackDate, t.name AS trackName, s.id AS segmentId, s.startedAt AS segmentStartedAt, p.id AS pointId, p.lat, p.lon, p.ele, p.undulation, p.baroAlt, p.accuracyM, p.speedMs, p.bearing, p.time, p.provider FROM track_points p JOIN track_segments s ON s.id = p.segmentId JOIN tracks t ON t.id = s.trackId ORDER BY t.id ASC, s.id ASC, p.id ASC"
 )
 data class TrackPointRow(
     val trackId: Long,
@@ -117,6 +124,7 @@ data class TrackPointRow(
     val lon: Float,
     val ele: Float?,
     val undulation: Float?,
+    val baroAlt: Float?,
     val accuracyM: Float?,
     val speedMs: Float?,
     val bearing: Float?,
@@ -160,7 +168,10 @@ interface TrackDao {
     fun observeAllPointRows(): Flow<List<TrackPointRow>>
 
     // -- summaries --
-    @Query("SELECT t.id, t.date, t.name, t.createdAt, COALESCE(SUM(pc.cnt), 0) AS pointCount, ts.trackId AS stats_trackId, ts.durationMs AS stats_durationMs, ts.recordingLengthMs AS stats_recordingLengthMs, ts.distanceM AS stats_distanceM, ts.timeMovingMs AS stats_timeMovingMs FROM tracks t LEFT JOIN track_segments s ON s.trackId = t.id LEFT JOIN (SELECT segmentId, COUNT(*) AS cnt FROM track_points GROUP BY segmentId) pc ON pc.segmentId = s.id LEFT JOIN track_stats ts ON ts.trackId = t.id GROUP BY t.id ORDER BY t.createdAt DESC")
+    // The extra stats_pointCount column carries the point count at which the
+    // stored stats were computed, so callers can detect staleness (see
+    // ensureStats). TrackSummary.pointCount is the live count from the DB.
+    @Query("SELECT t.id, t.date, t.name, t.createdAt, COALESCE(SUM(pc.cnt), 0) AS pointCount, ts.trackId AS stats_trackId, ts.pointCount AS stats_pointCount, ts.durationMs AS stats_durationMs, ts.recordingLengthMs AS stats_recordingLengthMs, ts.distanceM AS stats_distanceM, ts.timeMovingMs AS stats_timeMovingMs FROM tracks t LEFT JOIN track_segments s ON s.trackId = t.id LEFT JOIN (SELECT segmentId, COUNT(*) AS cnt FROM track_points GROUP BY segmentId) pc ON pc.segmentId = s.id LEFT JOIN track_stats ts ON ts.trackId = t.id GROUP BY t.id ORDER BY t.createdAt DESC")
     fun observeSummaries(): Flow<List<TrackSummary>>
 
     @Query("SELECT * FROM tracks WHERE id = :id")
@@ -270,11 +281,25 @@ class TrackRepository(private val dao: TrackDao) {
         return trackId to segmentId
     }
 
+    /**
+     * Recomputes stats after the flush so the paused track shows the true
+     * total up to this point. Without this the stats froze at whatever value
+     * the UI's ensureStats happened to compute mid-track.
+     */
     suspend fun pauseRecording(trackId: Long) {
         dao.upsertCurrentTrack(CurrentTrackEntity(trackId = trackId, state = CurrentTrackState.PAUSED))
+        ensureStats(trackId, force = true)
     }
 
-    suspend fun stopRecording() = dao.clearCurrentTrack()
+    /**
+     * Same reasoning as [pauseRecording]: recompute before clearing
+     * current_track, so a reopened track row reflects the full ride, not the
+     * partial value from an earlier pause.
+     */
+    suspend fun stopRecording(trackId: Long) {
+        dao.clearCurrentTrack()
+        ensureStats(trackId, force = true)
+    }
 
     @Transaction
     suspend fun startNewSegment(trackId: Long): Long {
@@ -296,40 +321,31 @@ class TrackRepository(private val dao: TrackDao) {
 
     suspend fun upsertStats(stats: TrackStatsEntity) = dao.upsertStats(stats)
 
-    suspend fun ensureStats(trackId: Long) {
-        if (dao.getStats(trackId) != null) return
+    /**
+     * Recomputes stats for [trackId] if missing, stale, or [force].
+     *
+     * Staleness is detected by comparing the point count stored alongside the
+     * stats with the current DB count. Without this check the UI's
+     * LaunchedEffect (which only fires when stats == null) froze the value
+     * computed at the first pause, so a resumed-and-stopped track displayed
+     * a fraction of its real distance. The 0 default on the new column
+     * self-heals any pre-migration rows on their first read.
+     */
+    suspend fun ensureStats(trackId: Long, force: Boolean = false) {
+        // FK guard: deleteActiveTrack can race this call; a missing track
+        // means the stats row would fail the foreign key.
+        if (dao.getTrackById(trackId) == null) return
         val segments = getSegmentsWithPoints(trackId)
         if (segments.isEmpty()) return
+        val currentPointCount = segments.sumOf { it.size }
+        if (!force) {
+            val existing = dao.getStats(trackId)
+            if (existing != null && existing.pointCount == currentPointCount) return
+        }
         dao.upsertStats(computeTrackStats(trackId, segments))
     }
 
     suspend fun deleteTrack(id: Long) = dao.deleteTrack(id)
-
-    suspend fun importTrack(imported: ImportedTrack): Long {
-        val date = imported.segments
-            .flatMap { it.points }
-            .mapNotNull { it.time }
-            .minOrNull()
-            ?.let { LocalDate.ofEpochDay(it / 86_400_000).toString() }
-            ?: LocalDate.now().toString()
-        val trackId = dao.insertTrack(TrackEntity(date = date, name = imported.name))
-        for (seg in imported.segments) {
-            val startedAt = seg.points.mapNotNull { it.time }.minOrNull()
-                ?: System.currentTimeMillis()
-            val segId = dao.insertSegment(TrackSegmentEntity(trackId = trackId, startedAt = startedAt))
-            dao.insertPoints(seg.points.map { pt ->
-                TrackPointEntity(
-                    segmentId = segId,
-                    lat       = pt.lat,
-                    lon       = pt.lon,
-                    ele       = pt.ele,
-                    accuracyM = pt.accuracyM,
-                    time      = pt.time ?: System.currentTimeMillis(),
-                )
-            })
-        }
-        return trackId
-    }
 
     private suspend fun newTrack(date: String): Pair<Long, Long> {
         val trackId = dao.insertTrack(TrackEntity(date = date, name = LocalDateTime.now().format(RECORDING_NAME_FORMAT)))
@@ -342,20 +358,52 @@ class TrackRepository(private val dao: TrackDao) {
 // Stats
 // ---------------------------------------------------------------------------
 
+// Below this speed a within-segment step is considered stationary. 0.5 m/s
+// is ~1.8 km/h — slower than a walking cyclist, faster than GPS jitter.
+// Threshold on *speed*, not on derived distance/time, so sparse-fix tracks
+// (intervalMs 30 s and up) do not undercount moving time.
 private const val MOVING_THRESHOLD_MS = 0.5f
 
+/**
+ * All three time columns are gap-aware:
+ *
+ *  - [TrackStatsEntity.durationMs]: max(t) - min(t), wall clock across the
+ *    whole track. Uses min/max rather than first/last because DST jumps and
+ *    GPS clock rollbacks can make the last flattened point earlier than the
+ *    first, which would yield a negative duration.
+ *
+ *  - [TrackStatsEntity.recordingLengthMs]: sum over segments of
+ *    (last.time - first.time). Never spans the gap between two segments —
+ *    that is the whole reason segments exist. Single-point segments
+ *    contribute 0 (no interval was recorded).
+ *
+ *  - [TrackStatsEntity.timeMovingMs]: sum over segments of within-segment
+ *    intervals where the recorded speed meets the moving threshold.
+ */
 fun computeTrackStats(trackId: Long, segments: List<List<TrackPointEntity>>): TrackStatsEntity {
     val allPoints = segments.flatten()
-    if (allPoints.isEmpty()) return TrackStatsEntity(trackId, 0L, 0L, 0f, 0L)
+    if (allPoints.isEmpty()) {
+        return TrackStatsEntity(
+            trackId           = trackId,
+            pointCount        = 0,
+            durationMs        = 0L,
+            recordingLengthMs = 0L,
+            distanceM         = 0f,
+            timeMovingMs      = 0L,
+        )
+    }
 
-    val durationMs = allPoints.last().time - allPoints.first().time
+    val earliest = allPoints.minOf { it.time }
+    val latest   = allPoints.maxOf { it.time }
+    val durationMs = (latest - earliest).coerceAtLeast(0L)
+
     var recordingLengthMs = 0L
     var distanceM         = 0f
     var timeMovingMs      = 0L
 
     for (seg in segments) {
-        if (seg.isEmpty()) continue
-        recordingLengthMs += seg.last().time - seg.first().time
+        if (seg.size < 2) continue
+        recordingLengthMs += (seg.last().time - seg.first().time).coerceAtLeast(0L)
         for (i in 1 until seg.size) {
             val a = seg[i - 1]
             val b = seg[i]
@@ -366,6 +414,7 @@ fun computeTrackStats(trackId: Long, segments: List<List<TrackPointEntity>>): Tr
 
     return TrackStatsEntity(
         trackId           = trackId,
+        pointCount        = allPoints.size,
         durationMs        = durationMs,
         recordingLengthMs = recordingLengthMs,
         distanceM         = distanceM,
@@ -378,8 +427,8 @@ private fun movingMs(a: TrackPointEntity, b: TrackPointEntity): Long {
     if (intervalMs <= 0) return 0L
     val speed = b.speedMs ?: a.speedMs
     if (speed != null) return if (speed >= MOVING_THRESHOLD_MS) intervalMs else 0L
-    val derived = haversineM(a.lat, a.lon, b.lat, b.lon) / (intervalMs / 1000f)
-    return if (derived >= MOVING_THRESHOLD_MS) intervalMs else 0L
+    val distance = haversineM(a.lat, a.lon, b.lat, b.lon)
+    return if (distance >= 0.5f) intervalMs else 0L
 }
 
 private fun haversineM(lat1: Float, lon1: Float, lat2: Float, lon2: Float): Float {
@@ -405,15 +454,24 @@ class TrackPointBuffer(
     private val pending          = mutableListOf<TrackPointEntity>()
     private var lastFlushElapsed = SystemClock.elapsedRealtime()
     private var segmentId        = 0L
+    private var lastAcceptedMs   = 0L
 
     fun updateConfig(mode: String, intervalMs: Long) {
         this.mode       = mode
         this.intervalMs = intervalMs
     }
 
-    fun setSegmentId(id: Long) { segmentId = id }
+    fun setSegmentId(id: Long) {
+        segmentId = id
+        lastAcceptedMs = 0L
+    }
 
-    fun add(entity: TrackPointEntity) { pending.add(entity.copy(segmentId = segmentId)) }
+    fun add(entity: TrackPointEntity): Boolean {
+        if (mode == RecordingMode.CONTINUOUS && entity.time - lastAcceptedMs < intervalMs) return false
+        lastAcceptedMs = entity.time
+        pending.add(entity.copy(segmentId = segmentId))
+        return true
+    }
 
     fun shouldFlush(): Boolean = Background.shouldFlush(
         bufferSize         = pending.size,

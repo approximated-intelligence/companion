@@ -21,9 +21,9 @@ private val Context.trackPrefsDataStore: DataStore<Preferences> by preferencesDa
 )
 
 /**
- * Track settings outside the recorder config: background GPS switch, tile
- * sources, GPX export folder. Method names match the former TrackPrefs, so
- * call sites only changed type.
+ * Track settings outside the recorder config: background GPS switch,
+ * deprecated-mode visibility, tile sources, GPX export folder. Method names
+ * match the former TrackPrefs, so call sites only changed type.
  */
 @Singleton
 class TrackPrefs @Inject constructor(
@@ -39,6 +39,17 @@ class TrackPrefs @Inject constructor(
     suspend fun setBackgroundGpsEnabled(enabled: Boolean) = store.edit { set(Keys.BACKGROUND_GPS, enabled) }
     fun observeBackgroundGps(): Flow<Boolean> =
         store.data.map { it[Keys.BACKGROUND_GPS] ?: false }.distinctUntilChanged()
+
+    // ---- Deprecated recording modes ----
+    // SINGLE_FIX and ALARM are only shown in the mode selector when this is
+    // on; the currently selected mode is always shown so the user can switch
+    // away even after toggling off.
+    fun isShowDeprecatedModesEnabled(): Boolean =
+        store.snapshot()[Keys.SHOW_DEPRECATED_MODES] ?: false
+    suspend fun setShowDeprecatedModes(enabled: Boolean) =
+        store.edit { set(Keys.SHOW_DEPRECATED_MODES, enabled) }
+    fun observeShowDeprecatedModes(): Flow<Boolean> =
+        store.data.map { it[Keys.SHOW_DEPRECATED_MODES] ?: false }.distinctUntilChanged()
 
     // ---- Tile source ----
     fun tileSourceUri(): String? = str(Keys.TILE_URI)
@@ -98,12 +109,13 @@ class TrackPrefs @Inject constructor(
     }
 
     private object Keys {
-        val BACKGROUND_GPS   = booleanPreferencesKey("background_gps")
-        val TILE_URI         = stringPreferencesKey("tile_source_uri")
-        val TILE_LABEL       = stringPreferencesKey("tile_source_label")
-        val TILE_NETWORK_URL = stringPreferencesKey("tile_source_network_url")
-        val TILE_MODE        = stringPreferencesKey("tile_source_mode")
-        val GPX_EXPORT_URI   = stringPreferencesKey("gpx_export_folder_uri")
-        val GPX_EXPORT_LABEL = stringPreferencesKey("gpx_export_folder_label")
+        val BACKGROUND_GPS        = booleanPreferencesKey("background_gps")
+        val SHOW_DEPRECATED_MODES = booleanPreferencesKey("show_deprecated_modes")
+        val TILE_URI              = stringPreferencesKey("tile_source_uri")
+        val TILE_LABEL            = stringPreferencesKey("tile_source_label")
+        val TILE_NETWORK_URL      = stringPreferencesKey("tile_source_network_url")
+        val TILE_MODE             = stringPreferencesKey("tile_source_mode")
+        val GPX_EXPORT_URI        = stringPreferencesKey("gpx_export_folder_uri")
+        val GPX_EXPORT_LABEL      = stringPreferencesKey("gpx_export_folder_label")
     }
 }

@@ -5,10 +5,13 @@ import de.perigon.companion.track.data.RecordingMode
 data class BackgroundConfig(
     val mode: String,
     val intervalMs: Long,
+    val hardwareIntervalMs: Long,
     val fixTimeoutMs: Long,
     val maxInaccuracyM: Float,
     val keepEphemerisWarm: Boolean,
     val holdWakeLock: Boolean,
+    val recordBaroAltitude: Boolean,
+    val airplaneMode: Boolean,
     val autoSplitOnDayRollover: Boolean,
     val autoSegmentGapMs: Long,
 )
@@ -41,11 +44,6 @@ object Background {
         return lastFlushElapsedMs >= 120_000L
     }
 }
-
-val INTERVAL_OPTIONS_MS: List<Long> = listOf(
-    1_000L, 2_000L, 5_000L, 10_000L, 30_000L,
-    60_000L, 120_000L, 300_000L, 900_000L,
-)
 
 fun formatIntervalLabel(ms: Long): String = when {
     ms < 60_000L -> "${ms / 1000}s"
