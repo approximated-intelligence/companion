@@ -21,8 +21,8 @@ sealed interface KeyDecision {
 }
 
 /**
- * Backup key lifecycle. A key CHANGE is only allowed when the current bucket
- * holds no packs — otherwise existing backups would become undecryptable.
+ * Backup key lifecycle. A key CHANGE is only allowed when this device's
+ * prefix holds no packs — otherwise existing backups would become undecryptable.
  * Split into [decide] and [commit] so a bootstrap import can check every
  * part before applying any.
  */
@@ -34,20 +34,25 @@ class BackupKeys @Inject constructor(
     private val db: BackupDatabase,
     private val sodium: LazySodiumAndroid,
 ) {
-    suspend fun decide(hex: String): KeyDecision {
+    suspend fun decide(
+        hex: String,
+        b2Override: B2Config? = null,
+        appKeyOverride: String? = null,
+    ): KeyDecision {
         val stored = prefs.naclPkHex() ?: return KeyDecision.Accept
         if (stored == hex) return KeyDecision.Unchanged
 
-        val b2 = prefs.b2Config()
-        val appKey = secrets.b2RwAppKey()
+        val phonePrefix = prefs.phonePkHex() ?: return KeyDecision.Change
+
+        val b2 = b2Override ?: prefs.b2Config()
+        val appKey = appKeyOverride ?: secrets.b2RwAppKey()
         if (b2 == null || appKey == null) {
-            return KeyDecision.Refuse("B2 not configured, cannot verify bucket is empty")
+            return KeyDecision.Change
         }
         return try {
             val backend = s3Factory.create(b2.endpoint, b2.bucket, b2.keyId, appKey, b2.region)
-            val prefix = prefs.phonePkHex() ?: "packs"
-            if (backend.listObjects(prefix = "$prefix/", maxKeys = 1).isNotEmpty()) {
-                KeyDecision.Refuse("bucket has packs. Run backup_reset.py first.")
+            if (backend.listObjects(prefix = "$phonePrefix/", maxKeys = 1).isNotEmpty()) {
+                KeyDecision.Refuse("bucket has packs under this device's prefix. Run backup_reset.py first.")
             } else {
                 KeyDecision.Change
             }
