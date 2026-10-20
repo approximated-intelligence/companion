@@ -22,9 +22,8 @@ Multi-module Android app. Kotlin, Jetpack Compose, Hilt, Room, WorkManager, Medi
 app/         App shell: activity, nav graph, feature wiring
 core/        DI, preferences, SAF, networking, navigation, UI
 posts/       Post editor, media prep, Jekyll publishing, site assets
-media/       Transform queue, image/video editing, EXIF
+media/       Transform queue, image/video editing, EXIF, track rendering
 backup/      Pack-based backup to B2, restore, consolidation
-track/       Track rendering using local or remote tile sources
 scaffold/    `companion.library` convention plugin for feature modules
 ```
 
