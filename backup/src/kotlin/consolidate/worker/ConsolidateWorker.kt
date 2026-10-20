@@ -8,6 +8,8 @@ import androidx.hilt.work.HiltWorker
 import androidx.work.*
 import de.perigon.companion.backup.BackupChannels
 import de.perigon.companion.backup.BackupTargets
+import de.perigon.companion.backup.data.HashFailure
+import de.perigon.companion.backup.data.userMessage
 import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.data.UserNotifications
 import de.perigon.companion.core.feature.NotificationIds
@@ -48,6 +50,28 @@ private const val CAMERA_SUBFOLDER = "Camera"
 private const val NOTIF_ID = NotificationIds.BACKUP + 2
 private const val CONTENT_REQUEST_CODE = RequestCodes.BACKUP + 2
 private const val CALLER_TAG = "consolidate"
+
+// Sentinel size for files the SAF provider reported no size for. Matches
+// BackupSourceScanner.UNKNOWN_SIZE so userMessage() classification works.
+private const val UNKNOWN_SIZE = -1L
+
+/**
+ * A per-file consolidation failure — the transform or write step could not
+ * produce a copy in DCIM/Consolidated. [reason] is a short user-facing
+ * phrase; the full exception (where applicable) is in logcat from the
+ * recording site.
+ *
+ * Distinct from [HashFailure]: those are pre-transform skips (unreadable
+ * source, unknown size); these are post-scan, per-file write failures. Kept
+ * as separate types because the "what can the user do" answer differs — a
+ * HashFailure usually means "remove .nomedia" or "re-grant permission",
+ * a ConsolidationFailure means "this specific photo failed to re-encode,
+ * inspect it" (or "the job vanished, re-run").
+ */
+data class ConsolidationFailure(
+    val path: String,
+    val reason: String,
+)
 
 /**
  * Downscaled copies of DCIM/Camera in DCIM/Consolidated.
@@ -101,7 +125,24 @@ class ConsolidateWorker @AssistedInject constructor(
 
         setForeground(foregroundInfo("Scanning…"))
 
-        val scanned = scanAndPersistSourceFiles(treeUri, settings)
+        val (scanned, scanFailures) = scanAndPersistSourceFiles(treeUri, settings)
+
+        if (scanFailures.isNotEmpty()) {
+            // Same policy as backup: files the scan touched but could not
+            // include are surfaced, not swallowed — un-indexed media (a
+            // .nomedia folder, a not-yet-scanned file), a revoked
+            // ACCESS_MEDIA_LOCATION grant, or a size the SAF provider did
+            // not report.
+            val shown = scanFailures.take(10).joinToString("\n") { it.userMessage() }
+            val detail = if (scanFailures.size > 10) {
+                "$shown\n… and ${scanFailures.size - 10} more"
+            } else shown
+            UserNotifications.info(
+                notificationDao, CALLER_TAG,
+                "${scanFailures.size} file(s) skipped during consolidation scan",
+                detail,
+            )
+        }
 
         val pending = consolidateRepo.getPending()
         if (pending.isEmpty()) {
@@ -148,6 +189,13 @@ class ConsolidateWorker @AssistedInject constructor(
         var processed = 0
         var failed = 0
 
+        // Post-scan, per-file write/transform failures. Collected here and
+        // surfaced in the terminal notification body with paths and reasons
+        // (capped at 10, "… and N more"), so the user can inspect the
+        // specific photo that failed to re-encode rather than just seeing
+        // "2 failed" with no idea which. Every recording site also Log.ws.
+        val consolidationFailures = mutableListOf<ConsolidationFailure>()
+
         // Event-driven: each Room invalidation of transform_jobs delivers a
         // snapshot; process completions as they land, report the RUNNING job
         // as the current file, and return once all our jobs are settled.
@@ -155,7 +203,18 @@ class ConsolidateWorker @AssistedInject constructor(
             // jobs deleted out from under us (e.g. UI "clear finished") count as failed
             val visibleIds = allTransformJobs.map { it.id }.toSet()
             val vanished = pendingJobs.keys.filter { it !in visibleIds }
-            vanished.forEach { pendingJobs.remove(it); failed++; processed++ }
+            vanished.forEach { tjId ->
+                val entity = pendingJobs.remove(tjId)
+                Log.w(TAG, "transform job $tjId vanished; path=${entity?.path ?: "(unknown)"}")
+                if (entity != null) {
+                    consolidationFailures += ConsolidationFailure(
+                        path = entity.path,
+                        reason = "transform job vanished from the queue",
+                    )
+                }
+                failed++
+                processed++
+            }
 
             val ours = allTransformJobs.filter { it.id in pendingJobs }
 
@@ -182,9 +241,18 @@ class ConsolidateWorker @AssistedInject constructor(
                                 throw e
                             } catch (e: Exception) {
                                 Log.w(TAG, "placing ${tj.displayName} failed", e)
+                                consolidationFailures += ConsolidationFailure(
+                                    path = entity.path,
+                                    reason = "write failed: ${e.message ?: e.javaClass.simpleName}",
+                                )
                                 failed++
                             }
                         } else {
+                            Log.w(TAG, "${entity.path}: transform reported DONE with no output file")
+                            consolidationFailures += ConsolidationFailure(
+                                path = entity.path,
+                                reason = "transform produced no output file",
+                            )
                             failed++
                         }
                         processed++
@@ -192,7 +260,14 @@ class ConsolidateWorker @AssistedInject constructor(
                         setForeground(foregroundInfo("$processed / ${pending.size}"))
                     }
                     TransformJobStatus.FAILED -> {
-                        pendingJobs.remove(tj.id)
+                        val entity = pendingJobs.remove(tj.id)
+                        Log.w(TAG, "${entity?.path ?: "job ${tj.id}"}: transform failed: ${tj.error}")
+                        if (entity != null) {
+                            consolidationFailures += ConsolidationFailure(
+                                path = entity.path,
+                                reason = "transform failed: ${tj.error ?: "unknown"}",
+                            )
+                        }
                         failed++
                         processed++
                         emitProgress(pending.size, processed, failed, tj.displayName)
@@ -208,7 +283,13 @@ class ConsolidateWorker @AssistedInject constructor(
             if (failed > 0) ", $failed failed" else ""
 
         if (failed > 0) {
-            UserNotifications.error(notificationDao, CALLER_TAG, message)
+            val shown = consolidationFailures.take(10).joinToString("\n") {
+                "${it.path}: ${it.reason}"
+            }
+            val detail = if (consolidationFailures.size > 10) {
+                "$shown\n… and ${consolidationFailures.size - 10} more"
+            } else shown
+            UserNotifications.error(notificationDao, CALLER_TAG, message, detail)
         } else {
             UserNotifications.success(notificationDao, CALLER_TAG, message)
         }
@@ -222,29 +303,45 @@ class ConsolidateWorker @AssistedInject constructor(
      * misses only are read) so backup and consolidate share cached digests.
      * Hash progress (throttled) is surfaced via notification and progress data.
      *
-     * Skipped: files already consolidated, empty files (nothing to transform),
-     * files with unknown size, and files that can't be opened/hashed — the
-     * latter two are retried on the next scan.
+     * Returns the number of new rows inserted alongside the list of files the
+     * scanner could not include — callers surface those so un-indexed media
+     * (a .nomedia folder, a not-yet-scanned file), a revoked
+     * ACCESS_MEDIA_LOCATION grant, or a size the SAF provider did not report
+     * does not silently miss consolidation.
+     *
+     * Skipped without surfacing: files already consolidated (by design),
+     * empty files (size 0 — nothing to transform), and files whose target
+     * type [consolidateTarget] does not handle (non-media). These are
+     * intentional filters, not failures.
      */
     private suspend fun scanAndPersistSourceFiles(
         dcimTreeUri: Uri,
         settings: ConsolidationSettings,
-    ): Int {
+    ): Pair<Int, List<HashFailure>> {
         val consolidatedNames = collectFileNames(ctx, dcimTreeUri, CONSOLIDATED_SUBFOLDER)
         val cameraFiles = walkCameraSubfolder(dcimTreeUri, settings)
-        if (cameraFiles.isEmpty()) return 0
+        if (cameraFiles.isEmpty()) return 0 to emptyList()
 
+        // Pre-hash skips go straight into the failure list.
+        val preFailures = mutableListOf<HashFailure>()
         val byKey = LinkedHashMap<HashKey, ScannedFile>(cameraFiles.size)
         for (sf in cameraFiles) {
-            val size = sf.size ?: continue
+            val size = sf.size
+            if (size == null) {
+                preFailures += HashFailure(
+                    key = HashKey(sf.path, sf.mtime, UNKNOWN_SIZE),
+                    cause = IllegalStateException("size not reported by SAF provider"),
+                )
+                continue
+            }
             if (size == 0L) continue
             val target = consolidateTarget(sf.path.substringAfterLast('/'), settings) ?: continue
             if (target.name in consolidatedNames) continue
             byKey.putIfAbsent(HashKey(sf.path, sf.mtime, size), sf)
         }
-        if (byKey.isEmpty()) return 0
+        if (byKey.isEmpty()) return 0 to preFailures
 
-        val hashes = hasher.hashAllOrCached(
+        val batch = hasher.hashAllOrCached(
             byKey.keys.toList(),
             onProgress = { hashed, misses, key ->
                 val name = key.path.substringAfterLast('/')
@@ -259,12 +356,15 @@ class ConsolidateWorker @AssistedInject constructor(
                 ?: error("openInputStream returned null")
         }
 
-        val dropped = byKey.size - hashes.size
-        if (dropped > 0) Log.w(TAG, "dropped $dropped unreadable file(s) from consolidate scan")
+        val allFailures = preFailures + batch.failures
+        if (allFailures.isNotEmpty()) {
+            Log.w(TAG, "dropped ${allFailures.size} file(s) from consolidate scan " +
+                "(unreadable or unknown size)")
+        }
 
         val now = System.currentTimeMillis()
         val entities = byKey.mapNotNull { (key, sf) ->
-            hashes[key]?.let { sha ->
+            batch.hashes[key]?.let { sha ->
                 ConsolidateFileEntity(
                     path = sf.path, uri = sf.uri,
                     mtime = key.mtime, size = key.size,
@@ -274,7 +374,7 @@ class ConsolidateWorker @AssistedInject constructor(
         }
 
         if (entities.isNotEmpty()) consolidateRepo.insertScannedFiles(entities)
-        return entities.size
+        return entities.size to allFailures
     }
 
     private fun walkCameraSubfolder(

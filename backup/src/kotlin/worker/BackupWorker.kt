@@ -10,6 +10,8 @@ import de.perigon.companion.backup.R
 import de.perigon.companion.backup.data.BackupSourceScanner
 import de.perigon.companion.backup.data.BackupStateRepository
 import de.perigon.companion.backup.data.BackupSchedulePrefs
+import de.perigon.companion.backup.data.HashFailure
+import de.perigon.companion.backup.data.userMessage
 import de.perigon.companion.backup.domain.BackupFileSource
 import de.perigon.companion.backup.domain.BackupOrchestrator
 import de.perigon.companion.backup.data.FileHasher
@@ -89,6 +91,16 @@ class BackupWorker @AssistedInject constructor(
     private var trackedPackPercent   = 0
     private var trackedPartsTotal    = 0
 
+    /**
+     * Files the pipeline could not include this run — accumulated from both
+     * the scan phase (onFilesSkipped from run()) and the upload phase
+     * (onFilesSkipped from execute()), and surfaced as a single ledger entry
+     * before the terminal success/failure notification. Not cleared between
+     * calls on purpose: the accumulator IS the run-scoped state, and
+     * postSkipSummary() empties it.
+     */
+    private val skippedFiles = mutableListOf<HashFailure>()
+
     override suspend fun doWork(): Result {
         val b2Config     = appPrefs.b2Config()
         val b2RwAppKey   = credentialStore.b2RwAppKey()
@@ -122,6 +134,13 @@ class BackupWorker @AssistedInject constructor(
 
             orchestrator.run(buildProgressListener())
             emitProgress(packState = STATE_DONE)
+
+            // Surface accumulated skips BEFORE "Backup complete", so the user
+            // does not read "complete" and then discover a skip summary below.
+            // postSkipSummary catches its own non-cancellation exceptions so a
+            // notification DB failure cannot mask a successful run.
+            postSkipSummary()
+
             UserNotifications.success(notificationDao, "backup", "Backup complete")
             Result.success()
         } catch (e: CancellationException) {
@@ -131,6 +150,13 @@ class BackupWorker @AssistedInject constructor(
             throw e
         } catch (e: Exception) {
             android.util.Log.e("BackupWorker", "Backup failed", e)
+
+            // Surface what was skipped BEFORE the "Backup failed" notification
+            // — a failed run with 5 skips and a failed run with 0 skips are
+            // different stories to the user. postSkipSummary no-ops when the
+            // accumulator is empty.
+            postSkipSummary()
+
             fail(ERR_B2_ERROR, e.message ?: "Unknown error")
         }
     }
@@ -175,6 +201,14 @@ class BackupWorker @AssistedInject constructor(
             ))
         }
 
+        override suspend fun onFilesSkipped(failures: List<HashFailure>) {
+            // Accumulate only; surfaced once at the terminal transition.
+            // Called up to twice per run — once for scan skips, once for
+            // upload skips — so a single notification avoids drowning the user
+            // in near-identical entries.
+            skippedFiles += failures
+        }
+
         override suspend fun onFileProgress(packNumber: Int, file: String, fileIdx: Int, totalFiles: Int) {
             if (trackedPackPosition != packNumber) {
                 trackedPartNumber  = 0
@@ -205,6 +239,44 @@ class BackupWorker @AssistedInject constructor(
                 "Uploading $trackedFileIndex / $trackedFilesTotal",
                 "$partsLabel - $trackedPackPercent%",
             ))
+        }
+    }
+
+    /**
+     * One ledger entry summarising every file the run could not include —
+     * scan-phase skips (unknown size, unreadable, un-indexed) plus
+     * upload-phase skips (changed on disk, plan row gone, stream failure).
+     * Each line is presentation-ready via [userMessage]. Empties the
+     * accumulator so a second call is a no-op — the caller invokes this
+     * exactly once on the success path (before "Backup complete") and once
+     * on the failure path (before "Backup failed"), never both with content.
+     *
+     * Swallows non-cancellation exceptions: a notification DB failure must
+     * not turn a successful backup into a reported failure, and on the
+     * failure path it must not mask the original error. The per-file reasons
+     * are already in logcat from the call sites, so the console trail
+     * survives a notification miss.
+     */
+    private suspend fun postSkipSummary() {
+        if (skippedFiles.isEmpty()) return
+
+        val shown = skippedFiles.take(10).joinToString("\n") { it.userMessage() }
+        val detail = if (skippedFiles.size > 10) {
+            "$shown\n… and ${skippedFiles.size - 10} more"
+        } else shown
+
+        try {
+            UserNotifications.info(
+                notificationDao, "backup",
+                "${skippedFiles.size} file(s) skipped during backup",
+                detail,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            android.util.Log.w("BackupWorker", "failed to post skip summary", e)
+        } finally {
+            skippedFiles.clear()
         }
     }
 

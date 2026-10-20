@@ -25,6 +25,20 @@ data class BackupScannedFile(
 )
 
 /**
+ * A scan's output. [files] are the ones that hashed successfully; [failures]
+ * are files the scan touched but could not include, in walk order — some
+ * skipped before hashing (unknown size), others during it (unreadable /
+ * un-indexed). Failures are returned rather than logged-and-dropped so the
+ * caller can surface them: un-indexed media (a .nomedia folder, a
+ * not-yet-scanned file) would otherwise vanish from the backup without a
+ * trace.
+ */
+data class ScanResult(
+    val files: List<BackupScannedFile>,
+    val failures: List<HashFailure>,
+)
+
+/**
  * Scans backup source folders via SAF.
  * DCIM is the single default folder — PostMedia lives under DCIM/PostMedia/
  * so it's included automatically. Custom SAF folders can be added by the user.
@@ -33,10 +47,9 @@ data class BackupScannedFile(
  * scan, only misses (new/changed files) are read and hashed. [onProgress]
  * relays FileHasher's throttled per-miss progress to the caller.
  *
- * Empty files (size 0, e.g. .nomedia) are valid backup candidates. Files with
- * unknown size (provider reported none) are dropped — planning them could
- * record a wrong content length — and retried on the next scan, as are files
- * that cannot be opened/hashed.
+ * Empty files (size 0, e.g. .nomedia) are valid backup candidates. Files the
+ * SAF provider reports no size for are recorded as [HashFailure]s and retried
+ * on the next scan, as are files that cannot be opened/hashed.
  */
 @Singleton
 class BackupSourceScanner @Inject constructor(
@@ -49,11 +62,17 @@ class BackupSourceScanner @Inject constructor(
         val DEFAULT_FOLDERS = listOf(
             "DCIM" to "DCIM",
         )
+
+        // Sentinel size for files the SAF provider reported no size for. Not a
+        // real hash key — such files never enter [hashAllOrCached], they are
+        // recorded as failures before the batch starts. Distinct from 0 (a
+        // genuinely empty file, which IS a valid backup candidate).
+        private const val UNKNOWN_SIZE = -1L
     }
 
     suspend fun scan(
         onProgress: suspend (hashed: Int, misses: Int, current: HashKey) -> Unit = { _, _, _ -> },
-    ): List<BackupScannedFile> {
+    ): ScanResult {
         val enabled = backupFolderDao.getEnabled()
 
         val raw = enabled.flatMap { folder ->
@@ -64,35 +83,45 @@ class BackupSourceScanner @Inject constructor(
             }
         }
 
+        // Pre-hash skips go straight into the failure list; the hash batch
+        // only sees files whose size the provider actually reported.
+        val preFailures = mutableListOf<HashFailure>()
         // Deduplicate on the content-identity key; keep the first URI seen.
-        // Files without a known size never enter the key set.
-        var unknownSize = 0
         val byKey = LinkedHashMap<HashKey, ScannedFile>(raw.size)
         for (sf in raw) {
             val size = sf.size
             if (size == null) {
-                unknownSize++
+                preFailures += HashFailure(
+                    key = HashKey(sf.path, sf.mtime, UNKNOWN_SIZE),
+                    cause = IllegalStateException("size not reported by SAF provider"),
+                )
                 continue
             }
             byKey.putIfAbsent(HashKey(sf.path, sf.mtime, size), sf)
         }
-        if (unknownSize > 0) Log.w(TAG, "dropped $unknownSize file(s) with unknown size")
-        val hashes = hasher.hashAllOrCached(byKey.keys.toList(), onProgress) { key ->
+
+        val batch = hasher.hashAllOrCached(byKey.keys.toList(), onProgress) { key ->
             openInputStream(context, byKey.getValue(key).uri.toUri())
                 ?: error("openInputStream returned null")
         }
 
-        val dropped = byKey.size - hashes.size
-        if (dropped > 0) Log.w(TAG, "dropped $dropped unreadable file(s) from scan")
-
-        return byKey.mapNotNull { (key, sf) ->
-            hashes[key]?.let { sha ->
-                BackupScannedFile(
-                    path = sf.path, uri = sf.uri,
-                    mtime = key.mtime, size = key.size, sha256 = sha,
-                )
-            }
+        val allFailures = preFailures + batch.failures
+        if (allFailures.isNotEmpty()) {
+            Log.w(TAG, "dropped ${allFailures.size} file(s) from scan " +
+                "(unreadable or unknown size)")
         }
+
+        return ScanResult(
+            files = byKey.mapNotNull { (key, sf) ->
+                batch.hashes[key]?.let { sha ->
+                    BackupScannedFile(
+                        path = sf.path, uri = sf.uri,
+                        mtime = key.mtime, size = key.size, sha256 = sha,
+                    )
+                }
+            },
+            failures = allFailures,
+        )
     }
 
     private fun walkDcim(): List<ScannedFile> {

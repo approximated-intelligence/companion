@@ -441,31 +441,60 @@ fun findFile(
     return documentFileInTree(context, treeUri, child.documentId)
 }
 
+// getType returns null for file:// (no provider) and for any non-media MIME
+// — either way, redaction does not apply and the caller reads the bytes
+// directly.
 private fun isMediaUri(context: Context, uri: Uri): Boolean =
     context.contentResolver.getType(uri)?.substringBefore('/') in setOf("image", "video")
 
 /**
  * Resolve a SAF document URI to the URI that reads the file's ORIGINAL
- * bytes, including unredacted EXIF/XMP GPS. minSdk 34 > S (31) and Q (29):
- * for media this runs the full promote-then-require-original path.
+ * bytes — unredacted EXIF/XMP, GPS intact.
  *
- * Falls back to the input URI when promotion isn't possible (SD
- * card, non-media file) — those aren't affected by redaction anyway.
+ * Why the re-mint: since Android 10 the platform strips EXIF/GPS from
+ * image/video bytes read through a SAF document URI. The only recovery is
+ * to map the document URI to its MediaStore identity ([MediaStore.getMediaUri])
+ * and ask for the original variant ([MediaStore.setRequireOriginal]), gated
+ * on ACCESS_MEDIA_LOCATION. Without this, every photo imported from DCIM or
+ * a gallery comes in with its location stripped — which would silently gut
+ * geo-tagged posts and track renders. That is the point of this function;
+ * everything else is bookkeeping around it.
+ *
+ * The throws are the safety property, NOT error handling:
+ *  - ACCESS_MEDIA_LOCATION denied, OR the file is not in the MediaStore
+ *    index, OR setRequireOriginal fails → THROW.
+ * The only alternative is to return the redacted bytes, and a caller that
+ * asked for "original" must never receive a GPS-stripped file as if it
+ * were the original.
+ *
+ * DO NOT add a "fall back to [uri]" branch on those throw paths. It reads
+ * like graceful degradation; it is silent data loss.
+ *
+ * Non-media files return unchanged: redaction only applies to media, and
+ * there is no "original" variant to distinguish. file:// URIs also land
+ * here — getType has no provider for them — see PostMediaFileStore.openInputStream
+ * for the matching read-side branch.
  */
 fun resolveOriginalUri(context: Context, uri: Uri): Uri {
-    // Non-media: promotion doesn't apply. This is the correct path,
-    // not a fallback — there are no "original bytes" to distinguish.
+    // Non-media: nothing to promote, nothing to redact.
     if (!isMediaUri(context, uri)) return uri
 
     if (context.checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION)
         != PackageManager.PERMISSION_GRANTED) {
+        // Throw, not return [uri]: the caller asked for original bytes;
+        // handing back redacted ones would be a lie it cannot detect.
         throw SecurityException("ACCESS_MEDIA_LOCATION not granted for $uri")
     }
     val mediaUri = try {
         MediaStore.getMediaUri(context, uri)
     } catch (t: Throwable) {
         throw IllegalStateException("getMediaUri failed for $uri", t)
-    } ?: throw IllegalStateException("not a MediaStore URI: $uri")
+    } ?: throw IllegalStateException(
+        // Not in MediaStore — often a file the scanner has not indexed yet.
+        // Throwing preserves "original or nothing". A fallback here would
+        // back up / publish EXIF-stripped bytes as originals.
+        "not a MediaStore URI: $uri"
+    )
 
     return try {
         MediaStore.setRequireOriginal(mediaUri)

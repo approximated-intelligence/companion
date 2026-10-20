@@ -20,7 +20,9 @@ import de.perigon.companion.backup.consolidate.domain.consolidateTarget
 import de.perigon.companion.backup.consolidate.worker.ConsolidateWorker
 import de.perigon.companion.backup.data.BackupStateRepository
 import de.perigon.companion.backup.data.FileHasher
+import de.perigon.companion.backup.data.HashFailure
 import de.perigon.companion.backup.data.HashKey
+import de.perigon.companion.backup.data.userMessage
 import de.perigon.companion.backup.ui.BackupProgress
 import de.perigon.companion.backup.ui.currentInfo
 import de.perigon.companion.backup.ui.toBackupProgress
@@ -46,6 +48,10 @@ import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 private const val TAG = "ConsolidateViewModel"
+
+// Sentinel size for files the SAF provider reported no size for. Matches
+// BackupSourceScanner.UNKNOWN_SIZE so userMessage() classification works.
+private const val UNKNOWN_SIZE = -1L
 
 enum class SortField { NAME, MODIFIED, SIZE, TYPE }
 enum class SortDirection { ASC, DESC }
@@ -347,11 +353,18 @@ class ConsolidateViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                val count = withContext(Dispatchers.IO) { scanAndBackfill() }
+                val (count, failures) = withContext(Dispatchers.IO) { scanAndBackfill() }
                 snackbar.send(
                     if (count > 0) "Found $count previously consolidated file(s)"
                     else "No additional consolidated files found"
                 )
+                if (failures.isNotEmpty()) {
+                    // Backfill is a screen action; surface skips inline rather
+                    // than in the ledger so the user sees them immediately.
+                    val first = failures.first().userMessage()
+                    val suffix = if (failures.size > 1) " (+${failures.size - 1} more)" else ""
+                    snackbar.send("${failures.size} file(s) skipped — $first$suffix")
+                }
             } catch (e: Exception) {
                 snackbar.send("Backfill failed: ${e.message}")
             } finally {
@@ -366,14 +379,14 @@ class ConsolidateViewModel @Inject constructor(
         val key: HashKey,
     )
 
-    private suspend fun scanAndBackfill(): Int {
-        val treeUri = folderGrants.uri(FolderKeys.DCIM)?.toUri() ?: return 0
+    private suspend fun scanAndBackfill(): Pair<Int, List<HashFailure>> {
+        val treeUri = folderGrants.uri(FolderKeys.DCIM)?.toUri() ?: return 0 to emptyList()
         val settings = consolidationPrefs.get()
 
         val consolidatedNames = collectFileNames(ctx, treeUri, "Consolidated")
-        if (consolidatedNames.isEmpty()) return 0
+        if (consolidatedNames.isEmpty()) return 0 to emptyList()
 
-        val cameraFiles = listSubfolder(ctx, treeUri, "Camera") ?: return 0
+        val cameraFiles = listSubfolder(ctx, treeUri, "Camera") ?: return 0 to emptyList()
 
         // Forward mapping only — the same consolidateTarget the worker uses.
         // Because the name now carries the box, changing the box between runs
@@ -384,24 +397,39 @@ class ConsolidateViewModel @Inject constructor(
                 ?: return@mapNotNull null
             if (target.name in consolidatedNames) camera to target.name else null
         }
-        if (matched.isEmpty()) return 0
+        if (matched.isEmpty()) return 0 to emptyList()
 
+        // Pre-hash skips (unknown size) go into the failure list.
+        val preFailures = mutableListOf<HashFailure>()
         val byKey = LinkedHashMap<HashKey, ScannedFile>()
         val entries = matched.mapNotNull { (camera, consolidatedName) ->
-            val size = camera.size ?: return@mapNotNull null
+            val size = camera.size
+            if (size == null) {
+                preFailures += HashFailure(
+                    key = HashKey("DCIM/${camera.path}", camera.mtime, UNKNOWN_SIZE),
+                    cause = IllegalStateException("size not reported by SAF provider"),
+                )
+                return@mapNotNull null
+            }
             val key = HashKey("DCIM/${camera.path}", camera.mtime, size)
             byKey.putIfAbsent(key, camera)
             BackfillMatch(camera, consolidatedName, key)
         }
-        if (entries.isEmpty()) return 0
+        if (entries.isEmpty()) return 0 to preFailures
 
-        val hashes = hasher.hashAllOrCached(byKey.keys.toList()) { key ->
+        val batch = hasher.hashAllOrCached(byKey.keys.toList()) { key ->
             openInputStream(ctx, byKey.getValue(key).uri.toUri())
                 ?: error("openInputStream returned null")
         }
 
-        val hashed = entries.mapNotNull { m -> hashes[m.key]?.let { sha -> m to sha } }
-        if (hashed.isEmpty()) return 0
+        val allFailures = preFailures + batch.failures
+        if (allFailures.isNotEmpty()) {
+            Log.w(TAG, "dropped ${allFailures.size} file(s) from backfill " +
+                "(unreadable or unknown size)")
+        }
+
+        val hashed = entries.mapNotNull { m -> batch.hashes[m.key]?.let { sha -> m to sha } }
+        if (hashed.isEmpty()) return 0 to allFailures
 
         val now = System.currentTimeMillis()
         consolidateRepo.insertScannedFiles(hashed.map { (m, sha) ->
@@ -421,7 +449,7 @@ class ConsolidateViewModel @Inject constructor(
             consolidateRepo.markDone(entity.id, m.consolidatedName)
             count++
         }
-        return count
+        return count to allFailures
     }
 
     private fun cleanupStaleEntries() {

@@ -9,6 +9,8 @@ import de.perigon.companion.backup.data.BackupOpenPackEntity
 import de.perigon.companion.backup.data.BackupPartEntity
 import de.perigon.companion.backup.data.BackupSourceScanner
 import de.perigon.companion.backup.data.BackupStateRepository
+import de.perigon.companion.backup.data.HashFailure
+import de.perigon.companion.backup.data.HashKey
 import de.perigon.companion.backup.data.TAIL_PART_REF
 import de.perigon.companion.backup.data.TailPartInfo
 import de.perigon.companion.backup.data.FileHasher
@@ -172,6 +174,18 @@ class BackupOrchestrator(
     interface ProgressListener {
         suspend fun onPackStateChange(state: String, packNumber: Int)
         suspend fun onScanProgress(currentFile: String, hashed: Int, misses: Int)
+
+        /**
+         * Files the pipeline could not include in this run — unreadable,
+         * un-indexed, unknown size, changed on disk between scan and upload,
+         * plan row gone, or stream failure mid-read. Called up to twice per
+         * run: once with the scanner's failures (before planning), once with
+         * the upload-phase failures (before DONE). Listeners are expected to
+         * accumulate and surface once at DONE; the default no-op keeps
+         * existing listeners source-compatible.
+         */
+        suspend fun onFilesSkipped(failures: List<HashFailure>) {}
+
         suspend fun onFileProgress(packNumber: Int, file: String, fileIdx: Int, totalFiles: Int)
         suspend fun onPartUploaded(partsDone: Int, partsTotal: Int)
     }
@@ -193,9 +207,12 @@ class BackupOrchestrator(
         val scanned = scanner.scan(onProgress = { hashed, misses, key ->
             listener.onScanProgress(key.path, hashed, misses)
         })
-        if (scanned.isNotEmpty()) {
+        if (scanned.failures.isNotEmpty()) {
+            listener.onFilesSkipped(scanned.failures)
+        }
+        if (scanned.files.isNotEmpty()) {
             val now = System.currentTimeMillis()
-            stateRepo.insertScannedFiles(scanned.map { sf ->
+            stateRepo.insertScannedFiles(scanned.files.map { sf ->
                 BackupFileEntity(
                     path = sf.path, uri = sf.uri,
                     mtime = sf.mtime, size = sf.size, sha256 = sf.sha256,
@@ -269,6 +286,11 @@ class BackupOrchestrator(
         var filesDone = 0
         var currentFileName = ""
         val secureRandom = SecureRandom()
+
+        // Upload-phase skips: collected here and surfaced via the listener
+        // before DONE, so BackupWorker can post a single combined summary
+        // (scan + upload) without race against the completion notification.
+        val uploadSkips = mutableListOf<HashFailure>()
 
         val openPack = stateRepo.getOpenPack()
         if (openPack != null) {
@@ -346,6 +368,13 @@ class BackupOrchestrator(
 
                 val file = stateRepo.getFileById(chunk.backupFileId) ?: run {
                     writePadChunk(buffer, chunk, secureRandom)
+                    uploadSkips += HashFailure(
+                        // Synthetic key: the row itself is gone, so no path
+                        // / mtime / size to report. The classification in
+                        // userMessage() keys off the cause message.
+                        key = HashKey("(unknown file #${chunk.backupFileId})", 0L, 0L),
+                        cause = IllegalStateException("lost its backup plan mid-run"),
+                    )
                     Log.w(TAG, "file ${chunk.backupFileId} missing at upload; padded")
                     continue
                 }
@@ -364,6 +393,10 @@ class BackupOrchestrator(
                         rehashed.second == file.size
                     if (!ok) {
                         badFileIds += file.id
+                        uploadSkips += HashFailure(
+                            key = HashKey(file.path, file.mtime, file.size),
+                            cause = IllegalStateException("changed on disk after the scan"),
+                        )
                         Log.w(TAG, "${file.path}: content changed or unreadable at upload; padding")
                     }
                     verifiedFileIds += file.id
@@ -408,6 +441,16 @@ class BackupOrchestrator(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    // The archive entry is created above; padding completes
+                    // the reserved bytes. The file's bytes are incomplete, so
+                    // its sha256 will mismatch on restore — surface this now,
+                    // not at restore time.
+                    uploadSkips += HashFailure(
+                        key = HashKey(file.path, file.mtime, file.size),
+                        cause = IllegalStateException(
+                            "stream failed mid-read: ${e.message}", e,
+                        ),
+                    )
                     Log.w(TAG, "Error streaming ${file.path}: ${e.message}")
                 }
 
@@ -457,6 +500,12 @@ class BackupOrchestrator(
             completePack(currentPackNumber, currentUploadId, listener)
         }
 
+        // Surface upload-phase skips BEFORE DONE so the worker can post a
+        // single combined summary (scan + upload) without racing the
+        // completion state. Scan skips were already sent from run().
+        if (uploadSkips.isNotEmpty()) {
+            listener.onFilesSkipped(uploadSkips)
+        }
         listener.onPackStateChange("DONE", currentPackNumber)
     }
 

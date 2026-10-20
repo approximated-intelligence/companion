@@ -51,6 +51,76 @@ data class HashKey(
     val size: Long,
 )
 
+/**
+ * A file the pipeline could not include in this run. Carried out of
+ * [FileHasher] (and, for pre-hash skips, constructed by the scanner) and out
+ * of [de.perigon.companion.backup.domain.BackupOrchestrator] (for upload-time
+ * skips), so callers can surface them — the failure is usually
+ * user-actionable (a .nomedia folder keeping a media file out of the
+ * MediaStore index, a revoked ACCESS_MEDIA_LOCATION grant, a file whose size
+ * the SAF provider did not report, a file that changed on disk between scan
+ * and upload) and silently omitting it from a backup would look like a
+ * success.
+ *
+ * [key] may carry a synthetic path (e.g. "(unknown file #123)") when the
+ * file row itself disappeared mid-run; the classification in [userMessage]
+ * keys off [cause]'s message, not the path.
+ */
+data class HashFailure(
+    val key: HashKey,
+    val cause: Exception,
+)
+
+/**
+ * Result of [FileHasher.hashAllOrCached]. [hashes] holds digests for every
+ * key that could be read (cache hit or freshly hashed); [failures] lists the
+ * ones that could not, in scan order.
+ */
+data class HashBatchResult(
+    val hashes: Map<HashKey, String>,
+    val failures: List<HashFailure>,
+)
+
+/**
+ * Presentation-ready reason for a skip, for a notification body or snackbar.
+ * The classified cases are the ones that actually happen on a device:
+ *  - missing ACCESS_MEDIA_LOCATION grant,
+ *  - media absent from the MediaStore index (typically a folder carrying
+ *    .nomedia, or a file the system has not scanned yet),
+ *  - a size the SAF provider did not report (rare, legitimate skip),
+ *  - a file whose content changed on disk between scan and upload (rehash
+ *    mismatch — the reserved bytes get pad-filled so alignment is preserved,
+ *    but the file is NOT in the archive),
+ *  - a plan row that vanished mid-run (DB reset, interrupted resume) — the
+ *    chunk is padded but the file has no descriptor to write,
+ *  - a stream that failed partway through (the file's entry is in the
+ *    archive, but its content is incomplete; restore will detect the
+ *    sha256 mismatch and fail for that one file).
+ *
+ * Everything else falls through with the exception's own message.
+ */
+fun HashFailure.userMessage(): String = when {
+    cause is SecurityException ->
+        "$key.path: ACCESS_MEDIA_LOCATION missing — grant it in Settings"
+    cause is IllegalStateException &&
+        cause.message?.contains("not a MediaStore URI") == true ->
+        "$key.path: not indexed by MediaStore — folder may contain .nomedia, or the file is not yet scanned"
+    cause is IllegalStateException &&
+        cause.message?.contains("size not reported") == true ->
+        "$key.path: size not reported by SAF provider — could not be backed up"
+    cause is IllegalStateException &&
+        cause.message?.contains("changed on disk") == true ->
+        "$key.path: changed on disk after the scan — re-run backup to include it"
+    cause is IllegalStateException &&
+        cause.message?.contains("lost its backup plan") == true ->
+        "$key.path: lost its backup plan mid-run — re-run backup to rebuild"
+    cause is IllegalStateException &&
+        cause.message?.contains("stream failed mid-read") == true ->
+        "$key.path: read failed mid-backup — restore will fail for this file"
+    else ->
+        "${key.path}: ${cause.message ?: cause.javaClass.simpleName}"
+}
+
 @Dao
 interface FileContentHashDao {
     @Query("SELECT sha256 FROM file_content_hashes WHERE path = :path AND mtime = :mtime AND size = :size LIMIT 1")
@@ -72,7 +142,9 @@ interface FileContentHashDao {
 /**
  * Streams an input source and produces a sha256 hex digest, consulting a
  * persistent cache keyed by (path, mtime, size). On miss, hashes and stores.
- * On read failure, returns null; caller drops the file.
+ * On read failure (singular [hashOrCached]), returns null; caller drops the
+ * file. (Batch [hashAllOrCached] instead returns the failures alongside the
+ * successes — see its doc.)
  *
  * Batch entry points ([lookupAll], [hashAllOrCached]) exist so scanners do a
  * constant number of DB round-trips per scan instead of one per file.
@@ -125,8 +197,15 @@ class FileHasher @Inject constructor(
     /**
      * Batched [hashOrCached]: one lookup pass, hashing only misses, one
      * batched upsert of freshly computed digests. [open] is invoked lazily
-     * per miss. Keys whose source fails to open/read are absent from the
-     * result — callers drop those files and retry next scan.
+     * per miss.
+     *
+     * Failures do NOT abort the batch. Every key whose source fails to
+     * open/read is recorded as a [HashFailure] and returned alongside the
+     * successes, so callers can surface them to the user (see
+     * [userMessage]) instead of silently omitting those files from the
+     * backup. The dominant case is un-indexed media: resolveOriginalUri
+     * refuses to hand back a redacted copy as if it were the original, and
+     * the user fixes it by removing .nomedia or re-granting a permission.
      *
      * [onProgress] fires on the hashing thread as each miss is read (1-based:
      * "n of m" means the n-th miss is being hashed), at most every 2 seconds
@@ -139,12 +218,13 @@ class FileHasher @Inject constructor(
         keys: List<HashKey>,
         onProgress: suspend (hashed: Int, misses: Int, current: HashKey) -> Unit = { _, _, _ -> },
         open: (HashKey) -> InputStream,
-    ): Map<HashKey, String> {
-        if (keys.isEmpty()) return emptyMap()
+    ): HashBatchResult {
+        if (keys.isEmpty()) return HashBatchResult(emptyMap(), emptyList())
         val result = lookupAll(keys).toMutableMap()
 
         val missKeys = keys.filter { it !in result }
         val fresh = mutableListOf<FileContentHashEntity>()
+        val failures = mutableListOf<HashFailure>()
         val now = System.currentTimeMillis()
         var lastEmit = 0L
 
@@ -159,6 +239,7 @@ class FileHasher @Inject constructor(
                 open(key).use { stream -> sha256Hex(stream) }
             } catch (e: Exception) {
                 Log.w("FileHasher", "hash failed for ${key.path} (${e.javaClass.simpleName}): ${e.message}")
+                failures += HashFailure(key, e)
                 continue
             }
             result[key] = digest
@@ -174,7 +255,7 @@ class FileHasher @Inject constructor(
         for (batch in distinctFresh.chunked(SQL_CHUNK)) {
             dao.upsertAll(batch)
         }
-        return result
+        return HashBatchResult(result, failures)
     }
 
     /**
