@@ -61,7 +61,7 @@ android {
         compose = true
     }
 
-    sourceSets.getByName("main").kotlin.directories.addAll(listOf("kt"))
+    sourceSets.getByName("main").kotlin.directories.addAll(listOf("src/kotlin"))
 }
 
 dependencies {
