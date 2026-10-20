@@ -19,6 +19,11 @@ import de.perigon.companion.core.saf.openInputStream
 import de.perigon.companion.core.ui.WorkNotifier
 import de.perigon.companion.backup.consolidate.data.ConsolidateFileEntity
 import de.perigon.companion.backup.consolidate.data.ConsolidateRepository
+import de.perigon.companion.backup.consolidate.data.ConsolidationPrefs
+import de.perigon.companion.backup.consolidate.domain.ConsolidationKind
+import de.perigon.companion.backup.consolidate.domain.ConsolidationQuality
+import de.perigon.companion.backup.consolidate.domain.ConsolidationSettings
+import de.perigon.companion.media.data.TransformJobEntity
 import de.perigon.companion.media.data.TransformJobStatus
 import de.perigon.companion.media.data.TransformQueue
 import de.perigon.companion.backup.consolidate.domain.consolidateTarget
@@ -48,8 +53,10 @@ private const val CALLER_TAG = "consolidate"
  * Downscaled copies of DCIM/Camera in DCIM/Consolidated.
  *
  * Images go through the app's one decoder (upright pixels, HEIC/HEIF/AVIF
- * included) and come out as JPEG carrying the source's whitelisted EXIF with
- * Orientation NORMAL. Names come from [consolidateTarget] only.
+ * included) and come out in the mode's still format. Videos use the mode's
+ * video codec. Output names come from [consolidateTarget] and encode the
+ * box that produced them: `<stem>_bb<box><srcext>`, with the target
+ * extension appended when the format differs.
  */
 @HiltWorker
 class ConsolidateWorker @AssistedInject constructor(
@@ -60,6 +67,7 @@ class ConsolidateWorker @AssistedInject constructor(
     private val notificationDao: UserNotificationDao,
     private val folderGrants: FolderGrants,
     private val hasher: FileHasher,
+    private val prefs: ConsolidationPrefs,
 ) : CoroutineWorker(ctx, params) {
 
     companion object {
@@ -89,10 +97,11 @@ class ConsolidateWorker @AssistedInject constructor(
             return Result.failure()
         }
         val treeUri = dcimUri.toUri()
+        val settings = prefs.get()
 
         setForeground(foregroundInfo("Scanning…"))
 
-        val scanned = scanAndPersistSourceFiles(treeUri)
+        val scanned = scanAndPersistSourceFiles(treeUri, settings)
 
         val pending = consolidateRepo.getPending()
         if (pending.isEmpty()) {
@@ -113,7 +122,7 @@ class ConsolidateWorker @AssistedInject constructor(
 
         for (entity in pending) {
             val sourceUri = entity.uri.toUri()
-            val target = consolidateTarget(entity.path.substringAfterLast('/'))
+            val target = consolidateTarget(entity.path.substringAfterLast('/'), settings)
             // Unknown type, or the source is gone (getType resolves nothing
             // for a deleted document): drop the row rather than fail it on
             // every run.
@@ -122,13 +131,16 @@ class ConsolidateWorker @AssistedInject constructor(
                 continue
             }
 
+            val format = settings.formatFor(target.kind)
+            val box    = settings.boxFor(target.kind)
             val transformId = transformQueue.submitIfAbsent(
-                sourceUri = sourceUri,
-                displayName = target.name,
-                mediaType = if (target.isVideo) "VIDEO" else "IMAGE",
-                boxPx = if (target.isVideo) TransformQueue.DEFAULT_VIDEO_BOX_PX
-                        else TransformQueue.DEFAULT_BOX_PX,
-                callerTag = CALLER_TAG,
+                sourceUri    = sourceUri,
+                displayName  = target.name,
+                mediaType    = if (target.kind == ConsolidationKind.VIDEO) "VIDEO" else "IMAGE",
+                boxPx        = box,
+                quality      = ConsolidationQuality.qualityFor(format),
+                callerTag    = CALLER_TAG,
+                outputFormat = format.name,
             )
             pendingJobs[transformId] = entity
         }
@@ -160,8 +172,7 @@ class ConsolidateWorker @AssistedInject constructor(
                             try {
                                 placeInConsolidated(
                                     dcimTreeUri = treeUri,
-                                    displayName = tj.displayName,
-                                    mediaType = tj.mediaType,
+                                    tj = tj,
                                     tempFile = File(outputPath),
                                     sourceUri = entity.uri.toUri(),
                                     sourceMtime = entity.mtime,
@@ -215,17 +226,19 @@ class ConsolidateWorker @AssistedInject constructor(
      * files with unknown size, and files that can't be opened/hashed — the
      * latter two are retried on the next scan.
      */
-    private suspend fun scanAndPersistSourceFiles(dcimTreeUri: Uri): Int {
+    private suspend fun scanAndPersistSourceFiles(
+        dcimTreeUri: Uri,
+        settings: ConsolidationSettings,
+    ): Int {
         val consolidatedNames = collectFileNames(ctx, dcimTreeUri, CONSOLIDATED_SUBFOLDER)
-
-        val cameraFiles = walkCameraSubfolder(dcimTreeUri)
+        val cameraFiles = walkCameraSubfolder(dcimTreeUri, settings)
         if (cameraFiles.isEmpty()) return 0
 
         val byKey = LinkedHashMap<HashKey, ScannedFile>(cameraFiles.size)
         for (sf in cameraFiles) {
             val size = sf.size ?: continue
             if (size == 0L) continue
-            val target = consolidateTarget(sf.path.substringAfterLast('/')) ?: continue
+            val target = consolidateTarget(sf.path.substringAfterLast('/'), settings) ?: continue
             if (target.name in consolidatedNames) continue
             byKey.putIfAbsent(HashKey(sf.path, sf.mtime, size), sf)
         }
@@ -264,27 +277,28 @@ class ConsolidateWorker @AssistedInject constructor(
         return entities.size
     }
 
-    private fun walkCameraSubfolder(dcimTreeUri: Uri): List<ScannedFile> =
+    private fun walkCameraSubfolder(
+        dcimTreeUri: Uri,
+        settings: ConsolidationSettings,
+    ): List<ScannedFile> =
         listSubfolder(ctx, dcimTreeUri, CAMERA_SUBFOLDER)
-            ?.filter { sf -> consolidateTarget(sf.path.substringAfterLast('/')) != null }
+            ?.filter { sf -> consolidateTarget(sf.path.substringAfterLast('/'), settings) != null }
             ?.map { sf -> sf.copy(path = "DCIM/${sf.path}") }
             ?: emptyList()
 
     private fun placeInConsolidated(
         dcimTreeUri: Uri,
-        displayName: String,
-        mediaType: String,
+        tj: TransformJobEntity,
         tempFile: File,
         sourceUri: Uri,
         sourceMtime: Long,
     ) {
         try {
-            if (mediaType != "VIDEO") copyExif(sourceUri, tempFile)
+            if (tj.mediaType != "VIDEO") copyExif(sourceUri, tempFile)
             val folder = navigateOrCreate(ctx, dcimTreeUri, listOf(CONSOLIDATED_SUBFOLDER))
-            folder.findFile(displayName)?.delete()
-            val mimeType = if (mediaType == "VIDEO") "video/mp4" else "image/jpeg"
-            val doc = folder.createFile(mimeType, displayName)
-                ?: error("Cannot create $displayName in Consolidated")
+            folder.findFile(tj.displayName)?.delete()
+            val doc = folder.createFile(tj.outputMimeType, tj.displayName)
+                ?: error("Cannot create ${tj.displayName} in Consolidated")
             ctx.contentResolver.openOutputStream(doc.uri)?.use { out ->
                 tempFile.inputStream().use { it.copyTo(out) }
             } ?: error("Cannot open output stream for ${doc.uri}")

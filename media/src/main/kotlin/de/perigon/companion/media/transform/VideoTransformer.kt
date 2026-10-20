@@ -6,19 +6,44 @@ import android.os.Handler
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.effect.Crop
-import androidx.media3.effect.Presentation
+import androidx.media3.effect.LanczosResample
 import androidx.media3.effect.ScaleAndRotateTransformation
 import androidx.media3.transformer.Composition
+import androidx.media3.transformer.DefaultEncoderFactory
 import androidx.media3.transformer.EditedMediaItem
 import androidx.media3.transformer.Effects
 import androidx.media3.transformer.ExportException
 import androidx.media3.transformer.ExportResult
 import androidx.media3.transformer.Transformer
+import androidx.media3.transformer.VideoEncoderSettings
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.File
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlin.math.max
+
+/**
+ * Video output codec. FORMAT fixes the encoder: H264 → platform H.264
+ * encoder (default), AV1 → AV1 encoder with the AV1 bitrate ladder.
+ * Bitrate is content-adaptive-sized by output long-side; matches the
+ * python-tools -crf 20 (H.264) / -crf 30 (AV1) starting points.
+ */
+enum class VideoCodec {
+    H264, AV1;
+
+    fun bitrateFor(longSidePx: Int): Int = when (this) {
+        H264 -> when {
+            longSidePx <= 480 ->   800_000
+            longSidePx <= 720 -> 1_500_000
+            else              -> 2_500_000
+        }
+        AV1 -> when {
+            longSidePx <= 480 ->   400_000
+            longSidePx <= 720 ->   800_000
+            else              -> 1_500_000
+        }
+    }
+}
 
 /**
  * Video transform pipeline: trim → orientation → fine rotation → crop → scale → encode.
@@ -41,6 +66,7 @@ data class VideoTransformParams(
     /** Source dimensions — used to compute scale so the longer side is capped at boxPx. */
     val sourceWidth: Int = 0,
     val sourceHeight: Int = 0,
+    val videoCodec: VideoCodec = VideoCodec.H264,
 ) {
     val hasCrop: Boolean
         get() = cropLeft != 0f || cropTop != 0f || cropRight != 1f || cropBottom != 1f
@@ -86,9 +112,8 @@ object VideoTransformer {
 
         suspendCancellableCoroutine { cont ->
             handler.post {
-                val transformer = Transformer.Builder(context)
+                val builder = Transformer.Builder(context)
                     .setLooper(handler.looper)
-                    .setVideoMimeType(MimeTypes.VIDEO_H264)
                     .setAudioMimeType(MimeTypes.AUDIO_AAC)
                     .addListener(object : Transformer.Listener {
                         override fun onCompleted(composition: Composition, result: ExportResult) =
@@ -99,7 +124,28 @@ object VideoTransformer {
                             e: ExportException,
                         ) = cont.resumeWithException(e)
                     })
-                    .build()
+
+                when (params.videoCodec) {
+                    VideoCodec.H264 -> {
+                        builder.setVideoMimeType(MimeTypes.VIDEO_H264)
+                    }
+                    VideoCodec.AV1 -> {
+                        // MIME type goes on the Transformer, not on the
+                        // encoder settings; DefaultEncoderFactory picks the
+                        // encoder that matches this format.
+                        builder.setVideoMimeType(MimeTypes.VIDEO_AV1)
+                        val longSide = max(params.sourceWidth, params.sourceHeight).coerceAtLeast(1)
+                        val settings = VideoEncoderSettings.Builder()
+                            .setBitrate(params.videoCodec.bitrateFor(longSide))
+                            .build()
+                        val factory = DefaultEncoderFactory.Builder(context)
+                            .setRequestedVideoEncoderSettings(settings)
+                            .build()
+                        builder.setEncoderFactory(factory)
+                    }
+                }
+
+                val transformer = builder.build()
                 transformer.start(editedItem, outFile.absolutePath)
                 cont.invokeOnCancellation { handler.post { transformer.cancel() } }
             }
@@ -163,9 +209,13 @@ object VideoTransformer {
                 // Ensure even dimensions required by H.264
                 val outW = (w * scale).toInt().let { if (it % 2 != 0) it + 1 else it }.coerceAtLeast(2)
                 val outH = (h * scale).toInt().let { if (it % 2 != 0) it + 1 else it }.coerceAtLeast(2)
-                effects += Presentation.createForWidthAndHeight(
-                    outW, outH, Presentation.LAYOUT_SCALE_TO_FIT
-                )
+                // Lanczos-windowed sinc: same kernel family python-tools uses
+                // via ffmpeg scale=lanczos. Presentation's default is bilinear,
+                // which aliases on sharp edges at large downscale ratios.
+                // effects += Presentation.createForWidthAndHeight(
+                //    outW, outH, Presentation.LAYOUT_SCALE_TO_FIT
+                // )
+                effects += LanczosResample.scaleToFit(outW, outH)
             }
         }
 

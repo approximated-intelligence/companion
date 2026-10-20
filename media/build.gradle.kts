@@ -14,4 +14,5 @@ dependencies {
     implementation(libs.media3.transformer)
     implementation(libs.media3.effect)
     implementation(libs.exifinterface)
+    implementation("androidx.heifwriter:heifwriter:1.1.0")
 }

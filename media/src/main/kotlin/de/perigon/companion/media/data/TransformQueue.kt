@@ -8,8 +8,10 @@ import android.util.Log
 import androidx.core.net.toUri
 import androidx.room.withTransaction
 import de.perigon.companion.media.domain.decodeUpright
+import de.perigon.companion.media.transform.ImageOutputFormat
 import de.perigon.companion.media.transform.ImageTransformParams
 import de.perigon.companion.media.transform.ImageTransformer
+import de.perigon.companion.media.transform.VideoCodec
 import de.perigon.companion.media.transform.VideoProbe
 import de.perigon.companion.media.transform.VideoTransformParams
 import de.perigon.companion.media.transform.VideoTransformer
@@ -83,6 +85,7 @@ class TransformQueue @Inject constructor(
         flipHorizontal: Boolean = false,
         fineRotationDegrees: Float = 0f,
         callerTag: String = "",
+        outputFormat: String = "JPEG",
     ): Long {
         val entity = TransformJobEntity(
             sourceUri           = sourceUri.toString(),
@@ -101,6 +104,7 @@ class TransformQueue @Inject constructor(
             flipHorizontal      = flipHorizontal,
             fineRotationDegrees = fineRotationDegrees,
             callerTag           = callerTag,
+            outputFormat        = outputFormat,
         )
         val id = dao.insert(entity)
         wakeSignal.trySend(Unit)
@@ -120,6 +124,7 @@ class TransformQueue @Inject constructor(
         boxPx: Int = DEFAULT_BOX_PX,
         quality: Int = DEFAULT_QUALITY,
         callerTag: String,
+        outputFormat: String = "JPEG",
     ): Long {
         val id = db.withTransaction {
             val existing = dao.findActiveByTag(callerTag)
@@ -132,6 +137,7 @@ class TransformQueue @Inject constructor(
                 boxPx       = boxPx,
                 quality     = quality,
                 callerTag   = callerTag,
+                outputFormat = outputFormat,
             ))
         }
         wakeSignal.trySend(Unit)
@@ -221,7 +227,7 @@ class TransformQueue @Inject constructor(
      */
     private suspend fun processJob(job: TransformJobEntity) {
         val sourceUri = job.sourceUri.toUri()
-        val ext       = if (job.mediaType == "VIDEO") "mp4" else "jpg"
+        val ext       = job.outputExtension
         val stem      = job.displayName.substringBeforeLast('.')
         val tempFile  = File(context.cacheDir, "tq_${job.id}_$stem.$ext")
 
@@ -293,6 +299,11 @@ private fun TransformJobEntity.toImageParams() = ImageTransformParams(
     cropBottom          = cropBottom,
     boxPx               = boxPx,
     quality             = quality,
+    outputFormat        = when (outputFormat) {
+        "PNG"  -> ImageOutputFormat.PNG
+        "AVIF" -> ImageOutputFormat.AVIF
+        else   -> ImageOutputFormat.JPEG
+    },
 )
 
 private fun TransformJobEntity.toVideoParams(
@@ -311,4 +322,5 @@ private fun TransformJobEntity.toVideoParams(
     boxPx               = boxPx,
     sourceWidth         = sourceWidth,
     sourceHeight        = sourceHeight,
+    videoCodec          = if (outputFormat == "AV1") VideoCodec.AV1 else VideoCodec.H264,
 )

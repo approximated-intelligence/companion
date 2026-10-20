@@ -20,7 +20,9 @@ object MediaModule {
 
     @Provides @Singleton
     fun provideMediaDatabase(@ApplicationContext ctx: Context): MediaDatabase =
-        Room.databaseBuilder(ctx, MediaDatabase::class.java, "media.db").build()
+        Room.databaseBuilder(ctx, MediaDatabase::class.java, "media.db")
+            .addMigrations(MediaDatabase.MIGRATION_1_2)
+            .build()
 
     @Provides
     fun provideTransformJobDao(db: MediaDatabase): TransformJobDao = db.transformJobDao()

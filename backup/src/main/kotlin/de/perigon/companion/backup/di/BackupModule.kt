@@ -35,6 +35,7 @@ import de.perigon.companion.backup.data.BackupSchedulePrefsImpl
 import de.perigon.companion.backup.data.FileContentHashDao
 import de.perigon.companion.backup.data.RestoreSelectionDao
 import de.perigon.companion.backup.settings.BackupSettingsSection
+import de.perigon.companion.backup.settings.ConsolidationSettingsSection
 import de.perigon.companion.core.feature.AppInitializer
 import de.perigon.companion.core.feature.ChannelSpec
 import de.perigon.companion.core.feature.FeatureEntry
@@ -75,6 +76,7 @@ object BackupModule {
 
     @Provides @IntoSet fun provideFeature(feature: BackupFeature): FeatureEntry = feature
     @Provides @IntoSet fun provideSettings(section: BackupSettingsSection): SettingsSection = section
+    @Provides @IntoSet fun provideConsolidationSettings(section: ConsolidationSettingsSection): SettingsSection = section
     @Provides @IntoSet fun provideScheduleInit(init: BackupScheduleInitializer): AppInitializer = init
 
     @Provides @ElementsIntoSet

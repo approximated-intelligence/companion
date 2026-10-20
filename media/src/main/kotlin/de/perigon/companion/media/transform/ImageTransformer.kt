@@ -2,13 +2,28 @@ package de.perigon.companion.media.transform
 
 import android.graphics.Bitmap
 import android.graphics.Matrix
+import android.os.ParcelFileDescriptor
+import android.util.Log
+import androidx.heifwriter.AvifWriter
 import de.perigon.companion.media.transform.scaleToFit
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.util.concurrent.TimeoutException
 import kotlin.math.ceil
+
+private const val TAG = "ImageTransformer"
+
+/**
+ * Still output formats. FORMAT fixes the encoder: JPEG → Bitmap.compress
+ * (JPEG), PNG → Bitmap.compress (PNG), AVIF → AvifWriter. This is the
+ * media-side twin of the user-facing OutputFormat in backup/; it exists
+ * so media has no dependency on backup.
+ */
+enum class ImageOutputFormat { JPEG, PNG, AVIF }
 
 /**
  * Image transform pipeline over UPRIGHT pixels:
- * orientation → fine rotation → crop → scale → JPEG.
+ * orientation → fine rotation → crop → scale → encode.
  *
  * No decoding here. Every caller decodes through media.domain.decodeUpright
  * or decodeBounded (ImageDecoder, EXIF already applied), so this pipeline has
@@ -24,6 +39,7 @@ data class ImageTransformParams(
     val cropBottom: Float = 1f,
     val boxPx: Int = 960,
     val quality: Int = 85,
+    val outputFormat: ImageOutputFormat = ImageOutputFormat.JPEG,
 ) {
     val hasCrop: Boolean
         get() = cropLeft != 0f || cropTop != 0f || cropRight != 1f || cropBottom != 1f
@@ -59,7 +75,7 @@ fun ImageTransformParams.decodeLongSide(): Int {
 
 object ImageTransformer {
 
-    /** Transform, scale into the box, encode JPEG. Consumes [source]. */
+    /** Transform, scale into the box, encode in [ImageTransformParams.outputFormat]. Consumes [source]. */
     fun render(source: Bitmap, params: ImageTransformParams): ByteArray =
         encode(applyPipeline(source, params), params)
 
@@ -99,18 +115,78 @@ object ImageTransformer {
         return bmp
     }
 
-    /** Scale into params.boxPx and encode JPEG. Consumes [bitmap]. */
+    /** Scale into params.boxPx and encode. Consumes [bitmap]. */
     fun encode(bitmap: Bitmap, params: ImageTransformParams): ByteArray {
         val scaled = scaleToFit(bitmap, params.boxPx)
         try {
-            val out = ByteArrayOutputStream()
-            check(scaled.compress(Bitmap.CompressFormat.JPEG, params.quality, out)) {
-                "JPEG encode failed"
+            return when (params.outputFormat) {
+                ImageOutputFormat.JPEG -> {
+                    val out = ByteArrayOutputStream()
+                    check(scaled.compress(Bitmap.CompressFormat.JPEG, params.quality, out)) {
+                        "JPEG encode failed"
+                    }
+                    out.toByteArray()
+                }
+                ImageOutputFormat.PNG -> {
+                    val out = ByteArrayOutputStream()
+                    check(scaled.compress(Bitmap.CompressFormat.PNG, 100, out)) {
+                        "PNG encode failed"
+                    }
+                    out.toByteArray()
+                }
+                ImageOutputFormat.AVIF -> encodeAvif(scaled, params.quality)
             }
-            return out.toByteArray()
         } finally {
             if (scaled !== bitmap) scaled.recycle()
             bitmap.recycle()
+        }
+    }
+
+    /**
+     * heifwriter 1.1.0 exposes only the FileDescriptor constructor of
+     * AvifWriter.Builder; the String-path constructor arrives in 1.2.0.
+     * Open a ParcelFileDescriptor on a temp file and pass its fd.
+     *
+     * stop() takes a timeout in MICROSECONDS (despite being named
+     * timeoutMs in some docs) and may throw TimeoutException when the
+     * writer did not finish; the docs warn the output may not be valid
+     * in that case, so the temp file is deleted on any failure.
+     */
+    private fun encodeAvif(bitmap: Bitmap, quality: Int): ByteArray {
+        val tempFile = File.createTempFile("avif_", ".avif")
+        var writer: AvifWriter? = null
+        try {
+            val pfd = ParcelFileDescriptor.open(
+                tempFile,
+                ParcelFileDescriptor.MODE_READ_WRITE or
+                    ParcelFileDescriptor.MODE_CREATE or
+                    ParcelFileDescriptor.MODE_TRUNCATE,
+            )
+            try {
+                writer = AvifWriter.Builder(
+                    pfd.fileDescriptor,
+                    bitmap.width,
+                    bitmap.height,
+                    AvifWriter.INPUT_MODE_BITMAP,
+                )
+                    .setQuality(quality.coerceIn(0, 100))
+                    .build()
+
+                writer.start()
+                writer.addBitmap(bitmap)
+                writer.stop(10_000_000L) // 10 seconds, in microseconds
+            } finally {
+                // close() on a writer that just failed stop() may also throw;
+                // the temp file is deleted unconditionally below.
+                try { writer?.close() } catch (_: Exception) {}
+                try { pfd.close() } catch (_: Exception) {}
+            }
+            return tempFile.readBytes()
+        } catch (e: TimeoutException) {
+            Log.w(TAG, "AVIF encode timed out after 10 s", e)
+            throw e
+        } finally {
+            tempFile.delete()
         }
     }
 
@@ -120,7 +196,6 @@ object ImageTransformer {
     }
 }
 
-/** Apply [step]; recycle the receiver if it was replaced. */
 private inline fun Bitmap.replacedBy(step: (Bitmap) -> Bitmap): Bitmap {
     val next = step(this)
     if (next !== this) recycle()

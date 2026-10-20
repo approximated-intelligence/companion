@@ -27,6 +27,10 @@ data class TransformJobEntity(
     val flipHorizontal: Boolean = false,
     val fineRotationDegrees: Float = 0f,
     val callerTag: String = "",
+    // "JPEG" | "PNG" | "AVIF" | "H264" | "AV1". One value space: the still
+    // entries are used on IMAGE rows, the video entries on VIDEO rows; each
+    // is ignored on the other. Defaults match the prior JPEG/H.264 behavior.
+    val outputFormat: String = "JPEG",
     val createdAt: Long = System.currentTimeMillis(),
 ) {
     val hasCrop: Boolean
@@ -41,6 +45,24 @@ data class TransformJobEntity(
     val hasAnyTransform: Boolean
         get() = hasCrop || hasOrientation || hasFineRotation ||
                 trimStartMs > 0L || trimEndMs != Long.MAX_VALUE
+
+    /** Extension the output file will carry. AV1-in-MP4 is still .mp4. */
+    val outputExtension: String
+        get() = when (outputFormat) {
+            "PNG"          -> "png"
+            "AVIF"         -> "avif"
+            "H264", "AV1"  -> "mp4"
+            else           -> "jpg"
+        }
+
+    /** MIME type the output file will carry. */
+    val outputMimeType: String
+        get() = when (outputFormat) {
+            "PNG"  -> "image/png"
+            "AVIF" -> "image/avif"
+            "H264", "AV1" -> "video/mp4"
+            else   -> "image/jpeg"
+        }
 }
 
 @Dao
@@ -87,4 +109,3 @@ interface TransformJobDao {
     @Query("SELECT * FROM transform_jobs WHERE callerTag = :tag ORDER BY createdAt DESC")
     fun observeByTag(tag: String): Flow<List<TransformJobEntity>>
 }
-

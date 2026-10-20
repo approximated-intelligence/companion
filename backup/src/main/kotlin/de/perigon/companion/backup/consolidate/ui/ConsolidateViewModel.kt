@@ -14,6 +14,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.backup.consolidate.data.ConsolidateFileEntity
 import de.perigon.companion.backup.consolidate.data.ConsolidateRepository
+import de.perigon.companion.backup.consolidate.data.ConsolidationPrefs
 import de.perigon.companion.backup.consolidate.data.SafeToDeleteView
 import de.perigon.companion.backup.consolidate.domain.consolidateTarget
 import de.perigon.companion.backup.consolidate.worker.ConsolidateWorker
@@ -34,7 +35,6 @@ import de.perigon.companion.core.saf.ScannedFile
 import de.perigon.companion.core.saf.collectFileNames
 import de.perigon.companion.core.saf.isReadable
 import de.perigon.companion.core.saf.listSubfolder
-import de.perigon.companion.core.saf.openFileDescriptor
 import de.perigon.companion.core.saf.openInputStream
 import de.perigon.companion.core.ui.SnackbarChannel
 import kotlinx.coroutines.CoroutineScope
@@ -108,6 +108,7 @@ class ConsolidateViewModel @Inject constructor(
     private val folderGrants: FolderGrants,
     private val hasher: FileHasher,
     @param:ApplicationScope private val appScope: CoroutineScope,
+    private val consolidationPrefs: ConsolidationPrefs,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ConsolidateUiState())
@@ -367,6 +368,7 @@ class ConsolidateViewModel @Inject constructor(
 
     private suspend fun scanAndBackfill(): Int {
         val treeUri = folderGrants.uri(FolderKeys.DCIM)?.toUri() ?: return 0
+        val settings = consolidationPrefs.get()
 
         val consolidatedNames = collectFileNames(ctx, treeUri, "Consolidated")
         if (consolidatedNames.isEmpty()) return 0
@@ -374,8 +376,11 @@ class ConsolidateViewModel @Inject constructor(
         val cameraFiles = listSubfolder(ctx, treeUri, "Camera") ?: return 0
 
         // Forward mapping only — the same consolidateTarget the worker uses.
+        // Because the name now carries the box, changing the box between runs
+        // means old output is not found here and gets re-consolidated at the
+        // new box; the previous run's output remains in Consolidated/.
         val matched = cameraFiles.mapNotNull { camera ->
-            val target = consolidateTarget(camera.path.substringAfterLast('/'))
+            val target = consolidateTarget(camera.path.substringAfterLast('/'), settings)
                 ?: return@mapNotNull null
             if (target.name in consolidatedNames) camera to target.name else null
         }
