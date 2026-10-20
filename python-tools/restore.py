@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "boto3",
+#   "argon2-cffi",
+#   "cryptography",
+# ]
+# ///
 """
 restore.py — restore from B2 NaCl backup.
 
@@ -10,6 +18,9 @@ Handles B2 versioned buckets: when decryption fails on the latest version,
 tries older versions of the same key.
 
 Downloads are cached locally per bucket under ~/.cache/backup_decrypt/<bucket>/
+
+Requires system libsodium (libsodium.so / libsodium.dylib) for the
+ctypes decryption path.
 
 Usage:
     uv run restore.py --list
@@ -36,7 +47,7 @@ from typing import Generator, Iterator
 
 import boto3
 
-from passphrase_utils import validate_passphrase
+from backup_passphrase_utils import validate_passphrase
 
 log = logging.getLogger(__name__)
 
@@ -967,10 +978,20 @@ def main() -> None:
         print("ERROR: nacl_public_key_hex not in config.", file=sys.stderr)
         sys.exit(1)
 
+    salt_hex = cfg.get("kdf_salt_hex")
+    if not salt_hex:
+        print("ERROR: kdf_salt_hex not in config.", file=sys.stderr)
+        sys.exit(1)
+    try:
+        salt = bytes.fromhex(salt_hex)
+    except ValueError:
+        print("ERROR: kdf_salt_hex in config is not valid hex.", file=sys.stderr)
+        sys.exit(1)
+
     phrase = getpass("Backup passphrase: ")
     print("Deriving key (Argon2id)\u2026", end=" ", flush=True)
     try:
-        server_sk, server_pk = validate_passphrase(phrase, expected_pub)
+        server_sk, server_pk = validate_passphrase(phrase, expected_pub, salt)
     except ValueError as e:
         print(f"\nERROR: {e}", file=sys.stderr)
         sys.exit(1)
