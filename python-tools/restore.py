@@ -19,6 +19,11 @@ tries older versions of the same key.
 
 Downloads are cached locally per bucket under ~/.cache/backup_decrypt/<bucket>/
 
+--local DIR reads packs from a local directory instead of B2 — e.g. the
+CompanionBackup/ folder of a thumb drive the Android app wrote to. The directory
+layout is the same as the bucket's (<prefix>/0000000000, 0000000001, …); B2 is
+never contacted when --local is set, and no B2 credentials are needed.
+
 Requires system libsodium (libsodium.so / libsodium.dylib) for the
 ctypes decryption path.
 
@@ -29,6 +34,7 @@ Usage:
     uv run restore.py --restore --output ~/restored/ --no-cache
     uv run restore.py --restore --output ~/restored/ --offline
     uv run restore.py --restore --output ~/restored/ --prefix <phone_pk_hex>
+    uv run restore.py --local /media/thumb/CompanionBackup --restore --output ~/restored/
 """
 
 import argparse
@@ -41,6 +47,7 @@ import os
 import sys
 import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from getpass import getpass
 from pathlib import Path
 from typing import Generator, Iterator
@@ -771,6 +778,41 @@ def b2_list_pack_versions(s3, bucket: str, prefix: str) -> dict[str, list[dict]]
     return versions_by_key
 
 
+def local_list_pack_versions(root: Path, prefix: str) -> dict[str, list[dict]]:
+    """List packs present in a local directory (a thumb drive written by the
+    Android app). Returns the same shape as b2_list_pack_versions so the rest
+    of the pipeline is unchanged.
+
+    Layout (matches ThumbDriveBackend in the app):
+        <root>/<prefix>/0000000000
+        <root>/<prefix>/0000000001
+        ...
+    Files ending in `.partial` are skipped — they are half-written packs and
+    not restorable. Each real pack is represented as one "version" tagged with
+    `_local_path`, which `_fetch_any_version` reads directly instead of
+    contacting B2."""
+    result: dict[str, list[dict]] = {}
+    prefix_dir = root / prefix
+    if not prefix_dir.is_dir():
+        log.warning("Local pack dir missing: %s", prefix_dir)
+        return result
+    for f in sorted(prefix_dir.iterdir()):
+        if not f.is_file() or f.name.endswith(".partial"):
+            continue
+        key = f"{prefix}/{f.name}"
+        st = f.stat()
+        result[key] = [
+            {
+                "Key": key,
+                "Size": st.st_size,
+                "VersionId": "local",
+                "LastModified": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc),
+                "_local_path": str(f),
+            }
+        ]
+    return result
+
+
 def b2_get_cached(
     s3,
     bucket: str,
@@ -808,6 +850,15 @@ def b2_get_cached(
 
 def _fetch_any_version(s3, bucket, key, versions, use_cache, offline) -> bytes | None:
     for vi, ver in enumerate(versions):
+        # Local packs (thumb drive): read directly, no B2, no cache.
+        local_path = ver.get("_local_path")
+        if local_path:
+            try:
+                return Path(local_path).read_bytes()
+            except Exception as e:
+                log.warning("  %s LOCAL READ FAILED: %s", key, e)
+                continue
+
         vid = ver["VersionId"]
         size = ver.get("Size", 0)
 
@@ -848,6 +899,14 @@ def discover_prefixes(s3, bucket: str) -> list[str]:
     return sorted(prefixes)
 
 
+def local_discover_prefixes(root: Path) -> list[str]:
+    """Distinct subdirectory names under a local pack root — same set as
+    `discover_prefixes` returns for a B2 bucket."""
+    if not root.is_dir():
+        return []
+    return sorted(p.name for p in root.iterdir() if p.is_dir())
+
+
 def classify_prefix(prefix: str) -> str:
     """Return 'legacy' for packs/ or 'box' for phone public key prefixes."""
     if prefix == _LEGACY_PREFIX:
@@ -867,11 +926,20 @@ def sender_pk_from_prefix(prefix: str) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-def cmd_list(s3, bucket: str, prefix: str | None) -> None:
+def cmd_list(
+    s3,
+    bucket: str,
+    prefix: str | None,
+    local_root: Path | None = None,
+) -> None:
     if prefix is None:
-        prefixes = discover_prefixes(s3, bucket)
+        prefixes = (
+            local_discover_prefixes(local_root)
+            if local_root
+            else discover_prefixes(s3, bucket)
+        )
         if not prefixes:
-            print("No data found in bucket.")
+            print("No data found.")
             return
         print(f"Found {len(prefixes)} prefix(es):")
         for p in prefixes:
@@ -881,12 +949,16 @@ def cmd_list(s3, bucket: str, prefix: str | None) -> None:
         print("\nUse --prefix to list packs for a specific device.")
         return
 
-    packs = []
-    for page in s3.get_paginator("list_objects_v2").paginate(
-        Bucket=bucket,
-        Prefix=f"{prefix}/",
-    ):
-        packs.extend(page.get("Contents", []))
+    if local_root:
+        versions_by_key = local_list_pack_versions(local_root, prefix)
+        packs = [v[0] for v in versions_by_key.values()]
+    else:
+        packs = []
+        for page in s3.get_paginator("list_objects_v2").paginate(
+            Bucket=bucket,
+            Prefix=f"{prefix}/",
+        ):
+            packs.extend(page.get("Contents", []))
     packs.sort(key=lambda o: o["Key"])
 
     total = sum(o.get("Size", 0) for o in packs)
@@ -926,6 +998,13 @@ def main() -> None:
     p.add_argument("--offline", action="store_true", help="Only use cached packs")
     p.add_argument("--fresh", action="store_true", help="Ignore saved restore state")
     p.add_argument(
+        "--local",
+        metavar="DIR",
+        help="Read packs from a local directory instead of B2 — e.g. the "
+        "CompanionBackup/ folder of a thumb drive the Android app wrote to. "
+        "Skips B2 entirely; no B2 credentials are needed.",
+    )
+    p.add_argument(
         "--dump-pax", metavar="DIR", help="Write decrypted plaintext per pack"
     )
     p.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging")
@@ -937,14 +1016,28 @@ def main() -> None:
     )
 
     cfg = load_config(args.config)
-    s3 = b2_client(cfg)
-    bucket = cfg["b2_bucket"]
+
+    local_root: Path | None = None
+    if args.local:
+        local_root = Path(args.local).expanduser().resolve()
+        if not local_root.is_dir():
+            print(
+                f"ERROR: --local {local_root} is not a directory",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        s3 = None
+        bucket = local_root.name  # cosmetic, only appears in log lines
+    else:
+        s3 = b2_client(cfg)
+        bucket = cfg["b2_bucket"]
+
     output = Path(args.output).expanduser().resolve()
     use_cache = not args.no_cache
     dump_pax = Path(args.dump_pax).expanduser().resolve() if args.dump_pax else None
 
     if args.list:
-        cmd_list(s3, bucket, args.prefix)
+        cmd_list(s3, bucket, args.prefix, local_root=local_root)
         return
 
     if not args.restore:
@@ -954,10 +1047,14 @@ def main() -> None:
     # Discover or validate prefix
     prefix = args.prefix
     if prefix is None:
-        prefixes = discover_prefixes(s3, bucket)
+        prefixes = (
+            local_discover_prefixes(local_root)
+            if local_root
+            else discover_prefixes(s3, bucket)
+        )
         restorable = [p for p in prefixes if classify_prefix(p) != "unknown"]
         if not restorable:
-            print("ERROR: No restorable prefixes found in bucket.", file=sys.stderr)
+            print("ERROR: No restorable prefixes found.", file=sys.stderr)
             sys.exit(1)
         if len(restorable) == 1:
             prefix = restorable[0]
@@ -1021,8 +1118,13 @@ def main() -> None:
                 state.inflight.real_size,
             )
 
-    print("Listing pack versions\u2026")
-    versions_by_key = b2_list_pack_versions(s3, bucket, prefix)
+    if local_root:
+        print(f"Reading packs from {local_root}\u2026")
+        versions_by_key = local_list_pack_versions(local_root, prefix)
+    else:
+        print("Listing pack versions\u2026")
+        versions_by_key = b2_list_pack_versions(s3, bucket, prefix)
+
     all_keys = sorted(versions_by_key.keys())
     skip_count = sum(1 for k in all_keys if k in state.completed_packs)
     remaining = len(all_keys) - skip_count
@@ -1030,7 +1132,7 @@ def main() -> None:
     print(f"Found {len(all_keys)} keys, {total_versions} total versions")
     if skip_count > 0:
         print(f"Skipping {skip_count} already completed, {remaining} remaining")
-    if use_cache:
+    if use_cache and not local_root:
         print(f"Cache: {_cache_dir(bucket)}")
     print(f"\nRestoring into {output}\u2026\n")
 
