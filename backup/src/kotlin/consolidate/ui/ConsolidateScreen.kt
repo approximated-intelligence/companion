@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -34,6 +35,7 @@ import de.perigon.companion.backup.ui.backupErrorLabel
 import de.perigon.companion.backup.ui.backupStateLabel
 import de.perigon.companion.backup.worker.BackupWorker
 import de.perigon.companion.core.ui.AppTopBar
+import de.perigon.companion.core.ui.NotificationLogDialog
 import de.perigon.companion.core.ui.NotificationObserver
 import de.perigon.companion.core.ui.formatBytes
 import de.perigon.companion.core.ui.formatDateTime
@@ -47,6 +49,10 @@ fun ConsolidateScreen(
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
 
+    // Consolidation writes with source "consolidate" (CALLER_TAG in
+    // ConsolidateWorker); the history dialog reads exactly that stream.
+    var showLog by remember { mutableStateOf(false) }
+
     LaunchedEffect(Unit) {
         NotificationObserver.observe(this, vm.notifications, snackbar)
     }
@@ -59,6 +65,15 @@ fun ConsolidateScreen(
         vm.previewIntents.collect { intent ->
             context.startActivity(intent)
         }
+    }
+
+    if (showLog) {
+        NotificationLogDialog(
+            title = "Consolidation log",
+            source = "consolidate",
+            dao = vm.notifications,
+            onDismiss = { showLog = false },
+        )
     }
 
     if (state.confirmDeleteCount != null) {
@@ -131,6 +146,7 @@ fun ConsolidateScreen(
                     padding              = PaddingValues(),
                     state                = state,
                     snackbarHost         = snackbar,
+                    onOpenLog            = { showLog = true },
                     onStartConsolidate   = vm::startConsolidate,
                     onStartBackup        = vm::startBackup,
                     onStartBoth          = vm::startConsolidateAndBackup,
@@ -147,6 +163,7 @@ fun ConsolidateScreen(
                     padding              = PaddingValues(),
                     state                = state,
                     snackbarHost         = snackbar,
+                    onOpenLog            = { showLog = true },
                     onStartConsolidate   = vm::startConsolidate,
                     onStartBackup        = vm::startBackup,
                     onStartBoth          = vm::startConsolidateAndBackup,
@@ -196,6 +213,7 @@ private fun ListContent(
     padding: PaddingValues,
     state: ConsolidateUiState,
     snackbarHost: SnackbarHostState,
+    onOpenLog: () -> Unit,
     onStartConsolidate: () -> Unit,
     onStartBackup: () -> Unit,
     onStartBoth: () -> Unit,
@@ -226,12 +244,13 @@ private fun ListContent(
             item { BackupErrorCard(state) }
         }
 
-        item { StatusCard(state) }
+        item { StatusCard(state, onOpenLog) }
 
         item {
             BackupDestinationSection(
                 snackbarHost = snackbarHost,
                 enabled      = !state.backup.isRunning && !state.consolidateRunning && !state.isDeleting,
+                currentDestination = state.backup.currentDestination,
             )
         }
 
@@ -267,6 +286,7 @@ private fun GridContent(
     padding: PaddingValues,
     state: ConsolidateUiState,
     snackbarHost: SnackbarHostState,
+    onOpenLog: () -> Unit,
     onStartConsolidate: () -> Unit,
     onStartBackup: () -> Unit,
     onStartBoth: () -> Unit,
@@ -305,12 +325,13 @@ private fun GridContent(
             item(span = fullSpan) { BackupErrorCard(state) }
         }
 
-        item(span = fullSpan) { StatusCard(state) }
+        item(span = fullSpan) { StatusCard(state, onOpenLog) }
 
         item(span = fullSpan) {
             BackupDestinationSection(
                 snackbarHost = snackbarHost,
                 enabled      = !state.backup.isRunning && !state.consolidateRunning && !state.isDeleting,
+                currentDestination = state.backup.currentDestination,
             )
         }
 
@@ -407,12 +428,23 @@ private fun BackupErrorCard(state: ConsolidateUiState) {
 }
 
 @Composable
-private fun StatusCard(state: ConsolidateUiState) {
+private fun StatusCard(state: ConsolidateUiState, onOpenLog: () -> Unit) {
     Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Status", style = MaterialTheme.typography.titleSmall)
-            Text("${state.consolidatedCount} files consolidated")
-            Text("${state.confirmedCount} files confirmed in B2")
+        Row(
+            Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Status", style = MaterialTheme.typography.titleSmall)
+                Text("${state.consolidatedCount} files consolidated")
+                Text("${state.confirmedCount} files confirmed in B2")
+            }
+            TextButton(onClick = onOpenLog) {
+                Icon(Icons.AutoMirrored.Filled.List, null, Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Log")
+            }
         }
     }
 }

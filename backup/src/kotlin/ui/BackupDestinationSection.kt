@@ -7,6 +7,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -37,8 +38,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import de.perigon.companion.core.saf.driveUuidOf
 import de.perigon.companion.core.saf.isExternalVolume
+import de.perigon.companion.core.ui.DriveEjectButton
 import de.perigon.companion.core.ui.rememberConnectedDrives
+import de.perigon.companion.core.ui.rememberEjectingUuids
 import kotlinx.coroutines.launch
 
 /**
@@ -50,12 +54,19 @@ import kotlinx.coroutines.launch
  * The section owns its own grant launcher — that is what makes granting
  * orthogonal: any screen that embeds this composable can grant drives,
  * no separate wiring required.
+ *
+ * [currentDestination] is the worker's active destination string. Only the
+ * drive whose treeUri matches it is disabled for eject; every other drive is
+ * idle and can be ejected even while B2 is still uploading. [ejectingUuids]
+ * comes from the process-wide eject bus so a drive the system is already
+ * unmounting shows "Ejecting…" and cannot be re-selected.
  */
 @Composable
 fun BackupDestinationSection(
     snackbarHost: SnackbarHostState,
     enabled: Boolean,
     modifier: Modifier = Modifier,
+    currentDestination: String = "",
     vm: BackupDestinationViewModel = hiltViewModel(),
 ) {
     val ctx = LocalContext.current
@@ -67,6 +78,7 @@ fun BackupDestinationSection(
     var refreshKey by remember { mutableIntStateOf(0) }
 
     val drives = rememberConnectedDrives(refreshKey = refreshKey)
+    val ejectingUuids = rememberEjectingUuids(vm.ejectBus)
     val writeToB2 by vm.writeToB2.collectAsStateWithLifecycle()
     val writeToDriveUris by vm.writeToDriveUris.collectAsStateWithLifecycle()
 
@@ -98,7 +110,8 @@ fun BackupDestinationSection(
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Destinations for this run", style = MaterialTheme.typography.titleSmall)
         Text(
-            "Pick every destination you want written. Runs are sequential, B2 first. " +
+            "Thumb drives are written first, B2 second. That means you can eject " +
+                "each drive as soon as it says Done, even while B2 is still uploading. " +
                 "B2 is authoritative; a thumb drive is a best-effort copy.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -121,13 +134,26 @@ fun BackupDestinationSection(
             )
         } else {
             drives.forEach { drive ->
+                val driveUri = drive.treeUri.toString()
+                val dest = "THUMBDRIVE:$driveUri"
+                val uuid = driveUuidOf(drive.treeUri)
+                val isWriting = currentDestination == dest
+                val isEjecting = uuid != null && uuid in ejectingUuids
                 DestinationRow(
                     icon = Icons.Default.Usb,
                     title = drive.label,
-                    subtitle = drive.uuid,
-                    checked = drive.treeUri.toString() in writeToDriveUris,
-                    enabled = enabled,
-                    onToggle = { vm.toggleDrive(drive.treeUri.toString()) },
+                    subtitle = if (isEjecting) "${drive.uuid} — ejecting" else drive.uuid,
+                    checked = driveUri in writeToDriveUris,
+                    enabled = enabled && !isEjecting,
+                    onToggle = { vm.toggleDrive(driveUri) },
+                    trailingContent = {
+                        DriveEjectButton(
+                            driveLabel = drive.label,
+                            writing = isWriting,
+                            ejecting = isEjecting,
+                            volumeUuid = uuid,
+                        )
+                    },
                 )
             }
         }
@@ -152,6 +178,7 @@ private fun DestinationRow(
     checked: Boolean,
     enabled: Boolean,
     onToggle: () -> Unit,
+    trailingContent: @Composable RowScope.() -> Unit = {},
 ) {
     Card(Modifier.fillMaxWidth()) {
         Row(
@@ -167,6 +194,7 @@ private fun DestinationRow(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            trailingContent()
         }
     }
 }

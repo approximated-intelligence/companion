@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -26,6 +27,7 @@ import de.perigon.companion.backup.data.BackupSchedulePrefs
 import de.perigon.companion.backup.worker.BackupWorker
 import de.perigon.companion.core.saf.folderLabel
 import de.perigon.companion.core.ui.AppTopBar
+import de.perigon.companion.core.ui.NotificationLogDialog
 import de.perigon.companion.core.ui.NotificationObserver
 import de.perigon.companion.core.ui.formatDateTime
 
@@ -38,6 +40,11 @@ fun BackupScreen(
     val state   by vm.state.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val context  = LocalContext.current
+
+    // Full-history dialog. Same `user_notifications` source the worker writes
+    // with, so every "Backup failed …" / "Backup complete …" / skip summary
+    // is in here and survives process restarts.
+    var showLog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         NotificationObserver.observe(this, vm.notifications, snackbar)
@@ -57,6 +64,15 @@ fun BackupScreen(
         vm.addFolder(uri, display)
     }
 
+    if (showLog) {
+        NotificationLogDialog(
+            title = "Backup log",
+            source = "backup",
+            dao = vm.notifications,
+            onDismiss = { showLog = false },
+        )
+    }
+
     // No DcimGate here: AppAccessGate wraps the whole nav graph, so reaching
     // this screen already implies a writable DCIM grant.
     Scaffold(
@@ -67,6 +83,7 @@ fun BackupScreen(
             BackupContent(
                 state            = state,
                 snackbarHost     = snackbar,
+                onOpenLog        = { showLog = true },
                 onCancelBackup   = vm::cancelBackup,
                 onStartBackup    = vm::startBackup,
                 onSetAutoEnabled = vm::setAutoEnabled,
@@ -84,6 +101,7 @@ fun BackupScreen(
 private fun BackupContent(
     state: BackupUiState,
     snackbarHost: SnackbarHostState,
+    onOpenLog: () -> Unit,
     onCancelBackup: () -> Unit,
     onStartBackup: () -> Unit,
     onSetAutoEnabled: (Boolean) -> Unit,
@@ -100,15 +118,26 @@ private fun BackupContent(
     ) {
         item {
             Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Storage", style = MaterialTheme.typography.titleSmall)
-                    Text("${state.confirmedCount} files confirmed in B2")
-                    state.lastConfirmedAt?.let { ts ->
-                        Text(
-                            "Last confirmed: ${formatDateTime(ts, "MMM d, HH:mm")}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                Row(
+                    Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("Storage", style = MaterialTheme.typography.titleSmall)
+                        Text("${state.confirmedCount} files confirmed in B2")
+                        state.lastConfirmedAt?.let { ts ->
+                            Text(
+                                "Last confirmed: ${formatDateTime(ts, "MMM d, HH:mm")}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    TextButton(onClick = onOpenLog) {
+                        Icon(Icons.AutoMirrored.Filled.List, null, Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Log")
                     }
                 }
             }
@@ -118,6 +147,7 @@ private fun BackupContent(
             BackupDestinationSection(
                 snackbarHost = snackbarHost,
                 enabled      = !state.progress.isRunning,
+                currentDestination = state.progress.currentDestination,
             )
         }
 
