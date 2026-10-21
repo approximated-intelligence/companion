@@ -15,6 +15,7 @@ import de.perigon.companion.backup.mirror.domain.TMP_SUFFIX
 import de.perigon.companion.backup.mirror.domain.fileName
 import de.perigon.companion.backup.mirror.domain.guessMime
 import de.perigon.companion.backup.mirror.domain.parentDirs
+import de.perigon.companion.core.saf.ChildDoc
 import de.perigon.companion.core.saf.ScannedFile
 import de.perigon.companion.core.saf.documentUriInTree
 import de.perigon.companion.core.saf.findChildByName
@@ -30,27 +31,41 @@ import javax.inject.Singleton
 
 private const val TAG = "MirrorRepository"
 
-// Accepted SUMS file names, in increasing "write order":
-//   - \d{6}            — legacy "guess next number" format
-//   - \d{6} (\d+)      — legacy collision suffix (the "(n)" clutter)
-//   - T\d{13}          — current format: T + epoch millis
-private val LEGACY_SHORT_NAME = Regex("^\\d{6}$")
-private val LEGACY_SUFFIXED_NAME = Regex("^\\d{6} \\(\\d+\\)$")
-private val NEW_SUMS_NAME = Regex("^T\\d{13}$")
-private val ANY_SUMS_NAME = Regex("^(?:T\\d{13}|\\d{6}|\\d{6} \\(\\d+\\))$")
+// Name patterns. Real providers mutate the name in two ways: they append a
+// MIME-derived extension when the display name has none (text/plain ->
+// ".txt"), and they silently add " (N)" on a name collision. Both mutations
+// are handled below, so files this code has ever written — with or without
+// an extension, with or without a collision suffix — are recognized.
+//
+//   000001               000001.txt
+//   000001 (1)           000001 (1).txt
+//   T0001234567890       T0001234567890.txt
+private val LEGACY_SHORT_NAME    = Regex("^\\d{6}(?:\\.[A-Za-z0-9]+)?$")
+private val LEGACY_SUFFIXED_NAME = Regex("^\\d{6} \\(\\d+\\)(?:\\.[A-Za-z0-9]+)?$")
+private val NEW_SUMS_NAME        = Regex("^T\\d{13}(?:\\.[A-Za-z0-9]+)?$")
 
-private fun isSumsFileName(name: String): Boolean = ANY_SUMS_NAME.matches(name)
+private fun isNewSumsName(name: String): Boolean = NEW_SUMS_NAME.matches(name)
+
+private fun isLegacySumsName(name: String): Boolean =
+    LEGACY_SHORT_NAME.matches(name) || LEGACY_SUFFIXED_NAME.matches(name)
 
 /**
- * Sort key so that "later write wins" survives both old and new formats:
- * legacy short < legacy suffixed (same base) < new timestamped.
+ * Ordering key for SUMS files. Legacy files always sort before timestamped
+ * files; within legacy, (base, suffix) is the write order.
+ *
+ * Legacy: base < 1_000_000, suffix < 10_000 → key < 10^10.
+ * T-file: 13-digit epoch ms → key > 10^12.
+ * So T-files always sort after every legacy file, and "later write wins"
+ * holds across the format migration.
  */
-private fun sumsSortKey(name: String): Long =
+private fun sumsSortKey(name: String): Long {
     if (name.startsWith("T")) {
-        name.substring(1).toLongOrNull() ?: Long.MAX_VALUE
-    } else {
-        name.takeWhile { it.isDigit() }.toLongOrNull() ?: 0L
+        return name.substring(1).takeWhile { it.isDigit() }.toLongOrNull() ?: Long.MAX_VALUE
     }
+    val base = name.takeWhile { it.isDigit() }.take(6).toLongOrNull() ?: 0L
+    val suffix = Regex("\\((\\d+)\\)").find(name)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+    return base * 10_000L + suffix
+}
 
 @Singleton
 class MirrorRepository @Inject constructor(
@@ -58,10 +73,9 @@ class MirrorRepository @Inject constructor(
 ) {
 
     /**
-     * In-process monotonic bump for SUMS file names. Two writes in the same
-     * millisecond get distinct timestamps without a directory scan. Reset per
-     * process; on restart the wall clock is enough to avoid collisions with
-     * everything written before.
+     * In-process monotonic bump so two writes in the same millisecond get
+     * distinct SUMS names. Cross-process collisions are also handled by
+     * [pickSumsName], which checks the directory.
      */
     @Volatile private var lastSumsTimestamp: Long = 0L
 
@@ -113,29 +127,29 @@ class MirrorRepository @Inject constructor(
         }
     }
 
-    // ── SUMS ─────────────────────────────────────────────────────────────
+    // ── SUMS read ────────────────────────────────────────────────────────
 
     fun readAllSums(driveRoot: Uri, mirrorDocId: String): Map<String, String> {
         val result = mutableMapOf<String, String>()
 
-        // Legacy SHA256SUM / SHA256SUM (n) files kept at the Mirror/ root.
-        val legacy = queryChildren(ctx, driveRoot, mirrorDocId)
+        // Legacy SHA256SUM files at the Mirror/ root (pre-SUMS-folder era).
+        val legacyRootFiles = queryChildren(ctx, driveRoot, mirrorDocId)
             .filter { !it.isDirectory }
             .filter {
                 it.name == LEGACY_SUMS_FILE ||
                     it.name.startsWith("$LEGACY_SUMS_FILE ")
             }
             .sortedBy { it.name }
-        for (f in legacy) {
+        for (f in legacyRootFiles) {
             readSumsInto(driveRoot, f.documentId, result)
         }
 
-        // Everything under SUMS/, across all accepted name formats, ordered
-        // legacy-then-newest so later entries win per path.
+        // SUMS/ folder: read every recognized file in write order.
         val sumsFolder = findChildByName(ctx, driveRoot, mirrorDocId, SUMS_FOLDER)
         if (sumsFolder != null && sumsFolder.isDirectory) {
             val sumsFiles = queryChildren(ctx, driveRoot, sumsFolder.documentId)
-                .filter { !it.isDirectory && isSumsFileName(it.name) }
+                .filter { !it.isDirectory }
+                .filter { isNewSumsName(it.name) || isLegacySumsName(it.name) }
                 .sortedWith(compareBy({ sumsSortKey(it.name) }, { it.name }))
             for (f in sumsFiles) {
                 readSumsInto(driveRoot, f.documentId, result)
@@ -145,6 +159,24 @@ class MirrorRepository @Inject constructor(
         return result
     }
 
+    // ── SUMS write ───────────────────────────────────────────────────────
+
+    /**
+     * Write one new SUMS file for [entries], consolidating every legacy file
+     * found in the SUMS folder into the same write.
+     *
+     *   1. Read every existing legacy file (short / suffixed, with or without
+     *      provider-appended extension) and merge into a single map. Current
+     *      entries override historical values for the same path.
+     *   2. Create a new `T<epochms>.txt` file with the merged content.
+     *   3. Only after a successful write, delete the legacy files that were
+     *      merged in. If the write fails, nothing is deleted.
+     *
+     * This runs on the first write after this code ships — your existing
+     * `000001.txt`, `000001 (1).txt`, … set is folded into one T-file and
+     * removed, leaving exactly one new file behind. Subsequent writes create
+     * new T-files with only the fresh entries.
+     */
     fun writeSums(
         driveRoot: Uri,
         mirrorDocId: String,
@@ -156,13 +188,23 @@ class MirrorRepository @Inject constructor(
 
         val sumsDocId = ensureFolder(driveRoot, mirrorDocId, SUMS_FOLDER)
 
-        // Consolidate any legacy "(n)" clutter before writing the new file.
-        // Content is merged into the new T-file, and only then are the old
-        // files deleted.
-        consolidateLegacySums(driveRoot, sumsDocId)
+        // Merge: legacy files first, current entries last (they win).
+        val merged = mutableMapOf<String, String>()
+        val legacyDocs = mutableListOf<ChildDoc>()
+        val existing = queryChildren(ctx, driveRoot, sumsDocId)
+        for (child in existing) {
+            if (child.isDirectory) continue
+            if (isNewSumsName(child.name)) continue
+            if (!isLegacySumsName(child.name)) continue
+            legacyDocs += child
+            readSumsInto(driveRoot, child.documentId, merged)
+        }
+        for ((path, hash) in entries) {
+            merged[path] = hash
+        }
 
-        val name = nextSumsName()
-        val payload = buildPayload(entries)
+        val name = pickSumsName(driveRoot, sumsDocId)
+        val payload = buildPayload(merged.toList())
 
         val docUri = DocumentsContract.createDocument(
             ctx.contentResolver,
@@ -175,23 +217,77 @@ class MirrorRepository @Inject constructor(
             return null
         }
 
-        try {
+        val wroteOk: Boolean = try {
             val out = ctx.contentResolver.openOutputStream(docUri)
             if (out == null) {
                 Log.w(TAG, "cannot open output for SUMS/$name")
-                return null
-            }
-            out.use { stream ->
-                stream.write(payload)
-                stream.flush()
+                false
+            } else {
+                out.use { stream ->
+                    stream.write(payload)
+                    stream.flush()
+                }
+                true
             }
         } catch (e: Exception) {
             Log.w(TAG, "write failed for SUMS/$name", e)
+            false
+        }
+
+        if (!wroteOk) {
+            // Partial file is unreadable garbage; drop it. Legacy originals
+            // stay untouched so nothing is lost.
+            try {
+                DocumentsContract.deleteDocument(ctx.contentResolver, docUri)
+            } catch (_: Exception) {
+            }
             return null
         }
 
-        Log.i(TAG, "wrote SUMS/$name with ${entries.size} entries")
+        Log.i(TAG, "wrote SUMS/$name with ${merged.size} entries " +
+            "(${legacyDocs.size} legacy file(s) merged)")
+
+        // Now that the merge file is on disk and flushed, the legacy files
+        // are redundant. Deleting them is safe; a failure is cosmetic.
+        for (doc in legacyDocs) {
+            try {
+                DocumentsContract.deleteDocument(
+                    ctx.contentResolver,
+                    documentUriInTree(driveRoot, doc.documentId),
+                )
+                Log.i(TAG, "removed legacy SUMS/${doc.name}")
+            } catch (e: Exception) {
+                Log.w(TAG, "cleanup delete failed for ${doc.name}", e)
+            }
+        }
+
         return name
+    }
+
+    /**
+     * Pick a SUMS filename that does not already exist. Uses epoch-ms as the
+     * base; bumps past any in-process previously used value and any file
+     * actually present on disk. The `.txt` suffix is explicit so providers
+     * that infer from text/plain do not append their own extension.
+     */
+    private fun pickSumsName(driveRoot: Uri, sumsDocId: String): String {
+        var ts = maxOf(System.currentTimeMillis(), lastSumsTimestamp + 1L)
+        while (true) {
+            val name = "T%013d.txt".format(ts)
+            if (findChildByName(ctx, driveRoot, sumsDocId, name) == null) {
+                lastSumsTimestamp = ts
+                return name
+            }
+            ts++
+        }
+    }
+
+    private fun buildPayload(entries: List<Pair<String, String>>): ByteArray {
+        val sb = StringBuilder()
+        for ((path, hash) in entries) {
+            sb.append(hash).append("  ").append(path).append('\n')
+        }
+        return sb.toString().toByteArray(Charsets.UTF_8)
     }
 
     private fun readSumsInto(
@@ -222,91 +318,6 @@ class MirrorRepository @Inject constructor(
         } catch (e: Exception) {
             Log.w(TAG, "read failed for SUMS doc $docId", e)
         }
-    }
-
-    /**
-     * Merge every legacy-suffixed file (`000001 (1)`, `000001 (2)`, …) into
-     * one new T-file, then delete the originals. Only runs when there is
-     * something to clean. Deletes happen only after the merge file has been
-     * written and flushed, so a failure to write leaves the source files
-     * intact.
-     */
-    private fun consolidateLegacySums(driveRoot: Uri, sumsDocId: String) {
-        val suffixed = queryChildren(ctx, driveRoot, sumsDocId)
-            .filter { !it.isDirectory && LEGACY_SUFFIXED_NAME.matches(it.name) }
-        if (suffixed.isEmpty()) {
-            return
-        }
-
-        Log.i(TAG, "consolidating ${suffixed.size} legacy suffixed SUMS file(s)")
-
-        val merged = mutableMapOf<String, String>()
-        for (f in suffixed) {
-            readSumsInto(driveRoot, f.documentId, merged)
-        }
-
-        if (merged.isNotEmpty()) {
-            val name = nextSumsName()
-            val payload = buildPayload(merged.toList())
-            val docUri = DocumentsContract.createDocument(
-                ctx.contentResolver,
-                documentUriInTree(driveRoot, sumsDocId),
-                "text/plain",
-                name,
-            )
-            if (docUri == null) {
-                Log.w(TAG, "cannot create consolidation SUMS/$name — leaving legacy files")
-                return
-            }
-            try {
-                val out = ctx.contentResolver.openOutputStream(docUri)
-                if (out == null) {
-                    Log.w(TAG, "cannot open consolidation stream — leaving legacy files")
-                    return
-                }
-                out.use { stream ->
-                    stream.write(payload)
-                    stream.flush()
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "consolidation write failed — leaving legacy files", e)
-                return
-            }
-        }
-
-        // Only reached on successful write (or when merged was empty).
-        for (f in suffixed) {
-            try {
-                DocumentsContract.deleteDocument(
-                    ctx.contentResolver,
-                    documentUriInTree(driveRoot, f.documentId),
-                )
-            } catch (e: Exception) {
-                Log.w(TAG, "cleanup delete failed for ${f.name}", e)
-            }
-        }
-    }
-
-    private fun buildPayload(entries: List<Pair<String, String>>): ByteArray {
-        val sb = StringBuilder()
-        for ((path, hash) in entries) {
-            sb.append(hash).append("  ").append(path).append('\n')
-        }
-        return sb.toString().toByteArray(Charsets.UTF_8)
-    }
-
-    /**
-     * New SUMS name. `T%013d` = "T" + 13-digit epoch millis. The `T` prefix
-     * sorts after any legacy all-digit name (ASCII 'T' > '9'), so the sort
-     * used by [readAllSums] preserves the "later write wins" invariant. The
-     * in-process bump guarantees two writes in the same millisecond still get
-     * distinct names, avoiding SAF's silent "(N)" suffix on collision.
-     */
-    private fun nextSumsName(): String {
-        val now = System.currentTimeMillis()
-        val ts = if (now > lastSumsTimestamp) now else lastSumsTimestamp + 1L
-        lastSumsTimestamp = ts
-        return "T%013d".format(ts)
     }
 
     private fun ensureFolder(
