@@ -84,14 +84,23 @@ fun SetupGate(
 }
 
 /**
- * Destination-level: [content] only when [requirements] hold, otherwise the
- * missing ones with grant actions. For optional grants a destination depends
- * on (e.g. the built-in picker's photo access).
+ * Destination-level gate: [content] only when [requirements] hold, otherwise
+ * the missing ones with grant actions. For optional grants a destination
+ * depends on (e.g. the built-in picker's photo access).
+ *
+ * [inline] = false (default): renders a full-screen centered gate. Use at
+ * navigation destinations that must not show anything at all until granted.
+ *
+ * [inline] = true: renders the AccessPanel in place, sized to its content.
+ * Use inside a LazyColumn item when the screen is browsable but the data on
+ * one card requires a permission (e.g. the WiFi or GSM tab). The caller
+ * provides the surrounding card title; this just adds the panel.
  */
 @Composable
 fun RequireAccess(
     requirements: List<AccessRequirement>,
     vm: AccessViewModel = hiltViewModel(),
+    inline: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
@@ -111,15 +120,34 @@ fun RequireAccess(
         return
     }
 
-    Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Text("Access needed", style = MaterialTheme.typography.titleLarge)
+    if (inline) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                "Permission required to display this data.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             AccessPanel(
                 requirements = missing,
                 showSatisfied = false,
                 onStatusChanged = { epoch++ },
                 vm = vm,
             )
+        }
+    } else {
+        Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text("Access needed", style = MaterialTheme.typography.titleLarge)
+                AccessPanel(
+                    requirements = missing,
+                    showSatisfied = false,
+                    onStatusChanged = { epoch++ },
+                    vm = vm,
+                )
+            }
         }
     }
 }
