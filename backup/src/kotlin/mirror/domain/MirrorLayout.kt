@@ -20,9 +20,6 @@ const val LEGACY_SUMS_FILE = "SHA256SUM"
 /** Transient suffix for atomic-write temp files. */
 const val TMP_SUFFIX = ".tmp"
 
-/** SUMS entries are 6-digit zero-padded: 000001, 000002, … */
-val SUMS_NAME_REGEX = Regex("^\\d{6}$")
-
 /** Standard `sha256sum` line: `<64 hex>  <path>`. */
 val SHA256_LINE = Regex("^([0-9a-fA-F]{64})  (.+)$")
 
