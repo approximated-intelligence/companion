@@ -45,3 +45,11 @@ fun formatSpan(ms: Long): String {
         else -> "${sec}s"
     }
 }
+
+private val CARDINALS_8 = arrayOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+
+/** Compass bearing in degrees → 8-direction cardinal ("N", "NE", ..., "NW"). */
+fun cardinal(deg: Float): String {
+    val n = ((deg % 360f) + 360f) % 360f
+    return CARDINALS_8[((n + 22.5f) / 45f).toInt() % 8]
+}
