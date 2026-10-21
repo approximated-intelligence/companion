@@ -10,6 +10,7 @@ import androidx.work.Operation
 import androidx.work.PeriodicWorkRequest
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import androidx.work.workDataOf
 import java.util.concurrent.TimeUnit
 
 /**
@@ -22,21 +23,38 @@ object BackupRequests {
     private val unmetered: Constraints =
         Constraints.Builder().setRequiredNetworkType(NetworkType.UNMETERED).build()
 
-    /** User-initiated ("Back up now"): runs on any network. */
-    fun manual(): OneTimeWorkRequest =
+    /**
+     * User-initiated ("Back up now"): runs on any network. [destinations] is
+     * the explicit list the user picked — "B2", "THUMBDRIVE:<treeUri>", or
+     * both. Sequential execution; no implicit selection.
+     */
+    fun manual(destinations: List<String>): OneTimeWorkRequest =
         OneTimeWorkRequestBuilder<BackupWorker>()
             .addTag(BackupWorker.WORK_NAME)
+            .setInputData(workDataOf(
+                BackupWorker.KEY_DESTINATIONS to destinations.toTypedArray(),
+            ))
             .build()
+
+    /** B2-only on any network, for callers that don't care. */
+    fun manual(): OneTimeWorkRequest = manual(listOf("B2"))
 
     /**
      * Enqueued by the periodic trigger. UNMETERED for the run's whole
      * lifetime: WorkManager stops it if WLAN drops and resumes it on WLAN,
      * instead of finishing a large upload over mobile data.
+     *
+     * Scheduled runs are B2-only by construction — the periodic worker has no
+     * way to know which drives are attached, and picking one behind the
+     * user's back would violate the explicit-selection contract.
      */
     fun scheduled(): OneTimeWorkRequest =
         OneTimeWorkRequestBuilder<BackupWorker>()
             .addTag(BackupWorker.WORK_NAME)
             .setConstraints(unmetered)
+            .setInputData(workDataOf(
+                BackupWorker.KEY_DESTINATIONS to arrayOf("B2"),
+            ))
             .build()
 
     /** The periodic trigger. Its constraint only gates when the trigger fires. */

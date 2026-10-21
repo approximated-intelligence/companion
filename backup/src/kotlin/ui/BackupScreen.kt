@@ -22,15 +22,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import de.perigon.companion.backup.R
 import de.perigon.companion.backup.data.BackupFolderEntity
+import de.perigon.companion.backup.data.BackupSchedulePrefs
+import de.perigon.companion.backup.worker.BackupWorker
+import de.perigon.companion.core.saf.folderLabel
 import de.perigon.companion.core.ui.AppTopBar
 import de.perigon.companion.core.ui.NotificationObserver
-import de.perigon.companion.core.saf.folderLabel
 import de.perigon.companion.core.ui.formatDateTime
-import de.perigon.companion.backup.worker.BackupWorker
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import de.perigon.companion.backup.data.BackupSchedulePrefs
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -69,6 +66,7 @@ fun BackupScreen(
         Column(Modifier.padding(padding).fillMaxSize()) {
             BackupContent(
                 state            = state,
+                snackbarHost     = snackbar,
                 onCancelBackup   = vm::cancelBackup,
                 onStartBackup    = vm::startBackup,
                 onSetAutoEnabled = vm::setAutoEnabled,
@@ -85,6 +83,7 @@ fun BackupScreen(
 @Composable
 private fun BackupContent(
     state: BackupUiState,
+    snackbarHost: SnackbarHostState,
     onCancelBackup: () -> Unit,
     onStartBackup: () -> Unit,
     onSetAutoEnabled: (Boolean) -> Unit,
@@ -113,6 +112,13 @@ private fun BackupContent(
                     }
                 }
             }
+        }
+
+        item {
+            BackupDestinationSection(
+                snackbarHost = snackbarHost,
+                enabled      = !state.progress.isRunning,
+            )
         }
 
         if (state.progress.isRunning || state.progress.packState != BackupWorker.STATE_DONE) {
@@ -204,7 +210,7 @@ private fun BackupContent(
                 verticalAlignment = Alignment.CenterVertically) {
                 Column {
                     Text("Auto-backup on Wi-Fi", style = MaterialTheme.typography.bodyMedium)
-                    Text(if (state.autoEnabled) "Enabled" else "Disabled",
+                    Text(if (state.autoEnabled) "Enabled (B2 only)" else "Disabled",
                         style = MaterialTheme.typography.bodySmall,
                         color = if (state.autoEnabled) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.onSurfaceVariant)
@@ -227,7 +233,7 @@ private fun BackupContent(
                     }
                 }
                 Spacer(Modifier.height(4.dp))
-                Text("Runs every ${state.intervalHours}h when on Wi-Fi.",
+                Text("Runs every ${state.intervalHours}h when on Wi-Fi, B2 only.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -269,7 +275,7 @@ private fun BackupContent(
         }
 
         val defaultFolders = state.folders.filter { it.isDefault }
-        val customFolders = state.folders.filter { !it.isDefault }
+        val customFolders  = state.folders.filter { !it.isDefault }
 
         if (defaultFolders.isNotEmpty()) {
             items(defaultFolders, key = { it.id }) { folder ->
@@ -349,5 +355,3 @@ private fun FolderRow(
         }
     }
 }
-
-

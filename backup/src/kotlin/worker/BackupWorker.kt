@@ -1,6 +1,5 @@
 package de.perigon.companion.backup.worker
 
-import android.content.ContentResolver
 import android.content.Context
 import androidx.core.net.toUri
 import androidx.hilt.work.HiltWorker
@@ -14,12 +13,15 @@ import de.perigon.companion.backup.data.HashFailure
 import de.perigon.companion.backup.data.userMessage
 import de.perigon.companion.backup.domain.BackupFileSource
 import de.perigon.companion.backup.domain.BackupOrchestrator
+import de.perigon.companion.backup.domain.ThumbDriveBackend
 import de.perigon.companion.backup.data.FileHasher
+import de.perigon.companion.core.network.S3Backend
 import de.perigon.companion.core.network.S3BackendFactory
 import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.data.UserNotifications
 import de.perigon.companion.backup.data.BackupPrefs
 import de.perigon.companion.backup.data.BackupSecrets
+import de.perigon.companion.core.saf.folderLabel
 import de.perigon.companion.core.saf.openInputStream
 import de.perigon.companion.core.util.fromHex
 import dagger.assisted.Assisted
@@ -55,6 +57,9 @@ class BackupWorker @AssistedInject constructor(
         // (not "backup") so CompanionApp can unconditionally evict the
         // pre-funnel periodic that used to live under "backup".
         const val WORK_NAME          = "backup_run"
+
+        /** Explicit destination list, e.g. ["B2", "THUMBDRIVE:content://..."]. */
+        const val KEY_DESTINATIONS   = "destinations"
 
         const val KEY_PACK_POSITION  = "pack_position"
         const val KEY_PACK_STATE     = "pack_state"
@@ -102,38 +107,72 @@ class BackupWorker @AssistedInject constructor(
     private val skippedFiles = mutableListOf<HashFailure>()
 
     override suspend fun doWork(): Result {
-        val b2Config     = appPrefs.b2Config()
-        val b2RwAppKey   = credentialStore.b2RwAppKey()
+        val destinations: List<String> = inputData.getNullableStringArray(KEY_DESTINATIONS)
+            ?.filterNotNull()
+            ?: listOf("B2")
+
         val serverPkHex  = appPrefs.naclPkHex()
         val phoneSkHex   = credentialStore.phoneSecretKey()
         val phonePkHex   = appPrefs.phonePkHex()
 
-        if (b2Config == null || b2RwAppKey == null || serverPkHex == null ||
-            phoneSkHex == null || phonePkHex == null) {
-            return fail(ERR_MISSING_CREDENTIALS, "B2 credentials or NaCl keys not configured")
+        // NaCl keys required for BOTH destinations (same pack format).
+        if (serverPkHex == null || phoneSkHex == null || phonePkHex == null) {
+            return fail(ERR_MISSING_CREDENTIALS, "NaCl keys not configured")
+        }
+        // B2 credentials required iff B2 is one of the destinations.
+        val b2Selected = destinations.any { it == "B2" }
+        val b2Config = if (b2Selected) appPrefs.b2Config() else null
+        val b2RwAppKey = if (b2Selected) credentialStore.b2RwAppKey() else null
+        if (b2Selected && (b2Config == null || b2RwAppKey == null)) {
+            return fail(ERR_MISSING_CREDENTIALS, "B2 credentials not configured")
         }
 
         setForeground(notifier.foregroundInfo("Starting backup…"))
-
         val numParts = schedulePrefs.numPartsPerPack()
 
         return try {
-            val b2 = s3Factory.create(b2Config.endpoint, b2Config.bucket, b2Config.keyId, b2RwAppKey, b2Config.region)
-            val orchestrator = BackupOrchestrator(
-                fileSource   = AndroidBackupFileSource(applicationContext),
-                serverPk     = serverPkHex.fromHex(),
-                phoneSk      = phoneSkHex.fromHex(),
-                sodium       = lazySodium,
-                scanner      = scanner,
-                stateRepo    = stateRepo,
-                hasher       = hasher,
-                b2           = b2,
-                partsPerPack = numParts,
-                packPrefix   = phonePkHex,
-            )
+            val results = mutableListOf<Pair<String, String>>()
 
-            orchestrator.run(buildProgressListener())
-            emitProgress(packState = STATE_DONE)
+            for (dest in destinations) {
+                val (backend, useDbState, label) = when {
+                    dest == "B2" -> Triple(
+                        s3Factory.create(b2Config!!.endpoint, b2Config.bucket, b2Config.keyId, b2RwAppKey!!, b2Config.region),
+                        true,
+                        "B2",
+                    )
+                    dest.startsWith("THUMBDRIVE:") -> {
+                        val treeUri = dest.removePrefix("THUMBDRIVE:").toUri()
+                        Triple(
+                            ThumbDriveBackend(applicationContext, treeUri) as S3Backend,
+                            false,
+                            folderLabel(treeUri),
+                        )
+                    }
+                    else -> continue
+                }
+
+                setForeground(notifier.foregroundInfo("Backing up to $label…"))
+
+                try {
+                    BackupOrchestrator(
+                        fileSource   = AndroidBackupFileSource(applicationContext),
+                        serverPk     = serverPkHex.fromHex(),
+                        phoneSk      = phoneSkHex.fromHex(),
+                        sodium       = lazySodium,
+                        scanner      = scanner,
+                        stateRepo    = stateRepo,
+                        hasher       = hasher,
+                        partsPerPack = numParts,
+                        packPrefix   = phonePkHex,
+                    ).run(backend, buildProgressListener(label), useDbState)
+                    results += label to "OK"
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    android.util.Log.w("BackupWorker", "destination '$label' failed", e)
+                    results += label to "FAILED: ${e.message ?: e.javaClass.simpleName}"
+                }
+            }
 
             // Surface accumulated skips BEFORE "Backup complete", so the user
             // does not read "complete" and then discover a skip summary below.
@@ -141,7 +180,13 @@ class BackupWorker @AssistedInject constructor(
             // notification DB failure cannot mask a successful run.
             postSkipSummary()
 
-            UserNotifications.success(notificationDao, "backup", "Backup complete")
+            val failed = results.filter { it.second != "OK" }
+            val summary = results.joinToString { "${it.first}: ${it.second}" }
+
+            if (results.isEmpty() || failed.size == results.size) {
+                return fail(ERR_B2_ERROR, "All destinations failed — $summary")
+            }
+            UserNotifications.success(notificationDao, "backup", "Backup complete — $summary")
             Result.success()
         } catch (e: CancellationException) {
             // Rethrow: swallowing CE recorded a user cancel as SUCCEEDED,
@@ -150,18 +195,16 @@ class BackupWorker @AssistedInject constructor(
             throw e
         } catch (e: Exception) {
             android.util.Log.e("BackupWorker", "Backup failed", e)
-
             // Surface what was skipped BEFORE the "Backup failed" notification
             // — a failed run with 5 skips and a failed run with 0 skips are
             // different stories to the user. postSkipSummary no-ops when the
             // accumulator is empty.
             postSkipSummary()
-
             fail(ERR_B2_ERROR, e.message ?: "Unknown error")
         }
     }
 
-    private fun buildProgressListener() = object : BackupOrchestrator.ProgressListener {
+    private fun buildProgressListener(label: String) = object : BackupOrchestrator.ProgressListener {
         override suspend fun onPackStateChange(state: String, packNumber: Int) {
             if (trackedPackPosition != packNumber) {
                 trackedPartNumber  = 0
@@ -177,14 +220,14 @@ class BackupWorker @AssistedInject constructor(
                 else         -> state
             }
             emitProgress()
-            val label = when (state) {
+            val statusLabel = when (state) {
                 "PLANNING"   -> "Scanning files…"
                 "RECOVERING" -> "Recovering…"
                 "COMPLETING" -> "Completing pack…"
                 "CONFIRMING" -> "Confirming pack…"
                 else         -> state
             }
-            setForeground(notifier.foregroundInfo(label))
+            setForeground(notifier.foregroundInfo("$label: $statusLabel"))
         }
 
         override suspend fun onScanProgress(currentFile: String, hashed: Int, misses: Int) {
@@ -196,7 +239,7 @@ class BackupWorker @AssistedInject constructor(
             trackedPackState  = STATE_PLANNING
             emitProgress()
             setForeground(notifier.foregroundInfo(
-                "Hashing $hashed / $misses",
+                "$label: Hashing $hashed / $misses",
                 currentFile.substringAfterLast('/'),
             ))
         }
@@ -221,7 +264,7 @@ class BackupWorker @AssistedInject constructor(
             trackedPackState    = STATE_UPLOADING
             emitProgress()
             setForeground(notifier.foregroundInfo(
-                "Uploading $fileIdx / $totalFiles",
+                "$label: Uploading $fileIdx / $totalFiles",
                 file.substringAfterLast('/'),
             ))
         }
@@ -236,7 +279,7 @@ class BackupWorker @AssistedInject constructor(
                 R.plurals.parts_finished, partsDone, partsDone,
             )
             setForeground(notifier.foregroundInfo(
-                "Uploading $trackedFileIndex / $trackedFilesTotal",
+                "$label: Uploading $trackedFileIndex / $trackedFilesTotal",
                 "$partsLabel - $trackedPackPercent%",
             ))
         }

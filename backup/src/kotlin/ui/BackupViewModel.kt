@@ -37,6 +37,7 @@ data class BackupUiState(
 /** DCIM access is owned by the setup gate; this screen never asks for it. */
 @HiltViewModel
 class BackupViewModel @Inject constructor(
+    private val destinationSelection: BackupDestinationSelection,
     private val workManager: WorkManager,
     private val stateRepo: BackupStateRepository,
     private val schedulePrefs: BackupSchedulePrefs,
@@ -86,22 +87,13 @@ class BackupViewModel @Inject constructor(
         }
     }
 
-    private suspend fun seedDefaultFolders() {
-        if (stateRepo.countDefaultFolders() > 0) return
-        val now = System.currentTimeMillis()
-        BackupSourceScanner.DEFAULT_FOLDERS.forEach { (uriPattern, displayName) ->
-            stateRepo.insertFolderIgnore(BackupFolderEntity(
-                uri = uriPattern,
-                displayName = displayName,
-                includeInBackup = true,
-                isDefault = true,
-                addedAt = now,
-            ))
-        }
-    }
-
     fun startBackup() {
-        workManager.enqueueBackup(BackupRequests.manual())
+        val destinations = destinationSelection.current()
+        if (destinations.isEmpty()) {
+            snackbar.send("Select at least one destination")
+            return
+        }
+        workManager.enqueueBackup(BackupRequests.manual(destinations))
     }
 
     fun cancelBackup() {
@@ -163,5 +155,19 @@ class BackupViewModel @Inject constructor(
 
     fun toggleFolder(id: Long, enabled: Boolean) {
         viewModelScope.launch { stateRepo.setFolderEnabled(id, enabled) }
+    }
+
+    private suspend fun seedDefaultFolders() {
+        if (stateRepo.countDefaultFolders() > 0) return
+        val now = System.currentTimeMillis()
+        BackupSourceScanner.DEFAULT_FOLDERS.forEach { (uriPattern, displayName) ->
+            stateRepo.insertFolderIgnore(BackupFolderEntity(
+                uri = uriPattern,
+                displayName = displayName,
+                includeInBackup = true,
+                isDefault = true,
+                addedAt = now,
+            ))
+        }
     }
 }

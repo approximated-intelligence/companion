@@ -28,17 +28,15 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import coil3.compose.AsyncImage
+import de.perigon.companion.backup.consolidate.data.SafeToDeleteView
+import de.perigon.companion.backup.ui.BackupDestinationSection
+import de.perigon.companion.backup.ui.backupErrorLabel
+import de.perigon.companion.backup.ui.backupStateLabel
 import de.perigon.companion.backup.worker.BackupWorker
 import de.perigon.companion.core.ui.AppTopBar
 import de.perigon.companion.core.ui.NotificationObserver
-import de.perigon.companion.backup.ui.backupErrorLabel
-import de.perigon.companion.backup.ui.backupStateLabel
 import de.perigon.companion.core.ui.formatBytes
 import de.perigon.companion.core.ui.formatDateTime
-import de.perigon.companion.backup.consolidate.data.SafeToDeleteView
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 @Composable
 fun ConsolidateScreen(
@@ -132,6 +130,7 @@ fun ConsolidateScreen(
                 ViewMode.LIST -> ListContent(
                     padding              = PaddingValues(),
                     state                = state,
+                    snackbarHost         = snackbar,
                     onStartConsolidate   = vm::startConsolidate,
                     onStartBackup        = vm::startBackup,
                     onStartBoth          = vm::startConsolidateAndBackup,
@@ -147,6 +146,7 @@ fun ConsolidateScreen(
                 ViewMode.GRID -> GridContent(
                     padding              = PaddingValues(),
                     state                = state,
+                    snackbarHost         = snackbar,
                     onStartConsolidate   = vm::startConsolidate,
                     onStartBackup        = vm::startBackup,
                     onStartBoth          = vm::startConsolidateAndBackup,
@@ -195,6 +195,7 @@ private fun SelectionTopBar(
 private fun ListContent(
     padding: PaddingValues,
     state: ConsolidateUiState,
+    snackbarHost: SnackbarHostState,
     onStartConsolidate: () -> Unit,
     onStartBackup: () -> Unit,
     onStartBoth: () -> Unit,
@@ -226,6 +227,14 @@ private fun ListContent(
         }
 
         item { StatusCard(state) }
+
+        item {
+            BackupDestinationSection(
+                snackbarHost = snackbarHost,
+                enabled      = !state.backup.isRunning && !state.consolidateRunning && !state.isDeleting,
+            )
+        }
+
         item { ActionButtons(state, onStartConsolidate, onStartBackup, onStartBoth) }
 
         if (state.sortedSafeToDelete.isNotEmpty()) {
@@ -257,6 +266,7 @@ private fun ListContent(
 private fun GridContent(
     padding: PaddingValues,
     state: ConsolidateUiState,
+    snackbarHost: SnackbarHostState,
     onStartConsolidate: () -> Unit,
     onStartBackup: () -> Unit,
     onStartBoth: () -> Unit,
@@ -296,6 +306,14 @@ private fun GridContent(
         }
 
         item(span = fullSpan) { StatusCard(state) }
+
+        item(span = fullSpan) {
+            BackupDestinationSection(
+                snackbarHost = snackbarHost,
+                enabled      = !state.backup.isRunning && !state.consolidateRunning && !state.isDeleting,
+            )
+        }
+
         item(span = fullSpan) { ActionButtons(state, onStartConsolidate, onStartBackup, onStartBoth) }
 
         if (state.sortedSafeToDelete.isNotEmpty()) {
@@ -508,5 +526,3 @@ private fun BackfillButton(state: ConsolidateUiState, onBackfillExisting: () -> 
         }
     }
 }
-
-

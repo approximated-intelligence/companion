@@ -23,6 +23,7 @@ import de.perigon.companion.backup.data.FileHasher
 import de.perigon.companion.backup.data.HashFailure
 import de.perigon.companion.backup.data.HashKey
 import de.perigon.companion.backup.data.userMessage
+import de.perigon.companion.backup.ui.BackupDestinationSelection
 import de.perigon.companion.backup.ui.BackupProgress
 import de.perigon.companion.backup.ui.currentInfo
 import de.perigon.companion.backup.ui.toBackupProgress
@@ -115,6 +116,7 @@ class ConsolidateViewModel @Inject constructor(
     private val hasher: FileHasher,
     @param:ApplicationScope private val appScope: CoroutineScope,
     private val consolidationPrefs: ConsolidationPrefs,
+    private val destinationSelection: BackupDestinationSelection,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ConsolidateUiState())
@@ -206,7 +208,12 @@ class ConsolidateViewModel @Inject constructor(
         )
 
     fun startBackup() {
-        workManager.enqueueBackup(BackupRequests.manual())
+        val destinations = destinationSelection.current()
+        if (destinations.isEmpty()) {
+            snackbar.send("Select at least one destination")
+            return
+        }
+        workManager.enqueueBackup(BackupRequests.manual(destinations))
     }
 
     /**
@@ -215,13 +222,18 @@ class ConsolidateViewModel @Inject constructor(
      * enqueue first keeps a PREVIOUS finished run from firing the backup early.
      */
     fun startConsolidateAndBackup() {
+        val destinations = destinationSelection.current()
+        if (destinations.isEmpty()) {
+            snackbar.send("Select at least one destination")
+            return
+        }
         val wm = workManager
         val enqueued = enqueueConsolidate()
         appScope.launch {
             enqueued.await()
             wm.getWorkInfosForUniqueWorkFlow(ConsolidateWorker.WORK_NAME)
                 .first { infos -> infos.isNotEmpty() && infos.all { it.state.isFinished } }
-            wm.enqueueBackup(BackupRequests.manual())
+            wm.enqueueBackup(BackupRequests.manual(destinations))
         }
     }
 

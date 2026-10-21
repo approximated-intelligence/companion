@@ -58,6 +58,9 @@ interface BackupPackDao {
     @Query("SELECT MAX(packNumber) FROM backup_packs")
     suspend fun maxPackNumber(): Int?
 
+    @Query("SELECT packNumber FROM backup_packs ORDER BY packNumber ASC")
+    suspend fun getAllPackNumbers(): List<Int>
+
     @Query("DELETE FROM backup_packs")
     suspend fun deleteAll()
 }
@@ -457,6 +460,8 @@ class BackupStateRepository @Inject constructor(
     suspend fun getTailPart(): TailPartInfo? = backupPartDao.getTailPart()
     suspend fun getEtagsForPack(packNumber: Int): List<PartEtag> = backupPartEtagDao.getEtagsForPack(packNumber)
     suspend fun getChunksForPart(packNumber: Int, partNumber: Int): List<BackupChunkEntity> = backupChunkDao.getForPart(packNumber, partNumber)
+    suspend fun getPartsForPack(packNumber: Int): List<BackupPartEntity> = backupPartDao.getForPack(packNumber)
+    suspend fun getAllPackNumbers(): List<Int> = backupPackDao.getAllPackNumbers()
     suspend fun getChunksForFileInPack(fileId: Long, packNumber: Int): List<Pair<BackupChunkEntity, Int>> {
         return backupChunkDao.getForFile(fileId)
             .filter { it.packNumber == packNumber }

@@ -166,7 +166,6 @@ class BackupOrchestrator(
     private val scanner: BackupSourceScanner,
     private val stateRepo: BackupStateRepository,
     private val hasher: FileHasher,
-    private val b2: S3Backend,
     private val partsPerPack: Int,
     private val packPrefix: String,
 ) {
@@ -202,8 +201,33 @@ class BackupOrchestrator(
 
     private fun packKey(number: Int) = "$packPrefix/%010d".format(number)
 
-    suspend fun run(listener: ProgressListener) {
+    /**
+     * Run against one [backend]. Scan+plan always runs first — it is a no-op
+     * on a later destination because `getUnplannedFiles()` returns nothing.
+     *
+     * [useDbState] selects the walk strategy:
+     *  - true  (B2):  per-part etags in backup_part_etags, pack sealed in
+     *                 backup_pack_sealed, resume from open_pack
+     *  - false (drive): walk backup_packs, skip packs where
+     *                 backend.objectExists(packKey), write the rest; no DB
+     *                 writes at all — the drive's file listing IS the state
+     */
+    suspend fun run(
+        backend: S3Backend,
+        listener: ProgressListener,
+        useDbState: Boolean,
+    ) {
         listener.onPackStateChange("PLANNING", 0)
+        scanAndPlan(listener)
+        if (useDbState) executeWithDbState(backend, listener)
+        else executeWithoutDbState(backend, listener)
+    }
+
+    // ------------------------------------------------------------------------
+    // Scan + plan
+    // ------------------------------------------------------------------------
+
+    private suspend fun scanAndPlan(listener: ProgressListener) {
         val scanned = scanner.scan(onProgress = { hashed, misses, key ->
             listener.onScanProgress(key.path, hashed, misses)
         })
@@ -227,13 +251,6 @@ class BackupOrchestrator(
         if (unplanned.isNotEmpty()) {
             createPlan(unplanned, planResumePoint())
         }
-
-        if (stateRepo.getFirstPendingPart() == null) {
-            listener.onPackStateChange("DONE", 0)
-            return
-        }
-
-        execute(listener)
     }
 
     /**
@@ -279,18 +296,20 @@ class BackupOrchestrator(
         stateRepo.insertPackPlan(plan.parts, plan.chunks, resume.tailPartId)
     }
 
-    private suspend fun execute(listener: ProgressListener) {
+    // ------------------------------------------------------------------------
+    // B2 path (uses DB state)
+    // ------------------------------------------------------------------------
+
+    private suspend fun executeWithDbState(backend: S3Backend, listener: ProgressListener) {
         var currentPackNumber = -1
         var currentUploadId: String? = null
         var partsDone = 0
         var filesDone = 0
-        var currentFileName = ""
-        val secureRandom = SecureRandom()
-
         // Upload-phase skips: collected here and surfaced via the listener
         // before DONE, so BackupWorker can post a single combined summary
         // (scan + upload) without race against the completion notification.
         val uploadSkips = mutableListOf<HashFailure>()
+        val secureRandom = SecureRandom()
 
         val openPack = stateRepo.getOpenPack()
         if (openPack != null) {
@@ -307,7 +326,7 @@ class BackupOrchestrator(
         }
 
         if (currentPackNumber >= 0 && firstPending.packNumber != currentPackNumber) {
-            completePack(currentPackNumber, currentUploadId!!, listener)
+            completePack(currentPackNumber, currentUploadId!!, backend, listener)
             currentPackNumber = -1
             currentUploadId = null
         }
@@ -332,7 +351,7 @@ class BackupOrchestrator(
 
             if (part.packNumber != currentPackNumber) {
                 if (currentPackNumber >= 0) {
-                    completePack(currentPackNumber, currentUploadId!!, listener)
+                    completePack(currentPackNumber, currentUploadId!!, backend, listener)
                 }
                 currentPackNumber = part.packNumber
                 listener.onPackStateChange("UPLOADING", currentPackNumber)
@@ -342,7 +361,7 @@ class BackupOrchestrator(
                 // and the DB never ahead of the remote. Never hold a Room
                 // transaction across a network call — it starves every other
                 // writer and freezes UI Flows.
-                val id = b2.createMultipart(packKey(currentPackNumber))
+                val id = backend.createMultipart(packKey(currentPackNumber))
                 currentUploadId = id
                 stateRepo.persistOpenPack(BackupOpenPackEntity(
                     packNumber = currentPackNumber,
@@ -352,144 +371,23 @@ class BackupOrchestrator(
                 ))
             }
 
-            val chunks = stateRepo.getChunksForPart(part.packNumber, part.partNumber)
-            val buffer = PartBuffer(PART_PAX_CAPACITY.toInt())
-
-            // Re-verify file content at upload time (first chunk only). On
-            // mismatch or read failure we still honour the plan: emit a pad
-            // entry for the reserved bytes so the part stays aligned.
-            // The hash-matched case uses the planned sha256 from the file
-            // record, never a newly-computed one.
-            val verifiedFileIds = mutableSetOf<Long>()
-            val badFileIds = mutableSetOf<Long>()
-
-            for (chunk in chunks) {
-                currentCoroutineContext().ensureActive()
-
-                val file = stateRepo.getFileById(chunk.backupFileId) ?: run {
-                    writePadChunk(buffer, chunk, secureRandom)
-                    uploadSkips += HashFailure(
-                        // Synthetic key: the row itself is gone, so no path
-                        // / mtime / size to report. The classification in
-                        // userMessage() keys off the cause message.
-                        key = HashKey("(unknown file #${chunk.backupFileId})", 0L, 0L),
-                        cause = IllegalStateException("lost its backup plan mid-run"),
-                    )
-                    Log.w(TAG, "file ${chunk.backupFileId} missing at upload; padded")
-                    continue
-                }
-                currentFileName = file.path
-
-                if (chunk.fileOffset == 0L) filesDone++
-                listener.onFileProgress(currentPackNumber, currentFileName, filesDone, totalFiles)
-
-                // Verify once per file at its first chunk
-                if (chunk.fileOffset == 0L && file.id !in verifiedFileIds) {
-                    val rehashed = hasher.rehash(file.path, file.mtime) {
-                        fileSource.open(file.uri)
-                    }
-                    val ok = rehashed != null &&
-                        rehashed.first == file.sha256 &&
-                        rehashed.second == file.size
-                    if (!ok) {
-                        badFileIds += file.id
-                        uploadSkips += HashFailure(
-                            key = HashKey(file.path, file.mtime, file.size),
-                            cause = IllegalStateException("changed on disk after the scan"),
-                        )
-                        Log.w(TAG, "${file.path}: content changed or unreadable at upload; padding")
-                    }
-                    verifiedFileIds += file.id
-                }
-
-                if (file.id in badFileIds) {
-                    writePadChunk(buffer, chunk, secureRandom)
-                    continue
-                }
-
-                buffer.appendExact(BackupPaxWriter.buildEntry(
-                    path = file.path,
-                    realSize = file.size,
-                    offset = chunk.fileOffset,
-                    mtime = file.mtime,
-                    sha256Hex = file.sha256,
-                ))
-
-                var bytesStreamed = 0L
-                try {
-                    fileSource.open(file.uri).use { stream ->
-                        if (chunk.fileOffset > 0) {
-                            var skipped = 0L
-                            while (skipped < chunk.fileOffset) {
-                                val s = stream.skip(chunk.fileOffset - skipped)
-                                if (s <= 0) break
-                                skipped += s
-                            }
-                        }
-                        var remaining = chunk.chunkBytes
-                        val ioBuf = ByteArray(IO_BUF)
-                        while (remaining > 0) {
-                            currentCoroutineContext().ensureActive()
-                            val want = minOf(IO_BUF.toLong(), remaining).toInt()
-                            val n = stream.read(ioBuf, 0, want)
-                            if (n <= 0) break
-                            buffer.appendExact(ioBuf, 0, n)
-                            bytesStreamed += n
-                            remaining -= n
-                        }
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    // The archive entry is created above; padding completes
-                    // the reserved bytes. The file's bytes are incomplete, so
-                    // its sha256 will mismatch on restore — surface this now,
-                    // not at restore time.
-                    uploadSkips += HashFailure(
-                        key = HashKey(file.path, file.mtime, file.size),
-                        cause = IllegalStateException(
-                            "stream failed mid-read: ${e.message}", e,
-                        ),
-                    )
-                    Log.w(TAG, "Error streaming ${file.path}: ${e.message}")
-                }
-
-                val shortfall = chunk.chunkBytes - bytesStreamed
-                if (shortfall > 0) buffer.appendExact(ByteArray(shortfall.toInt()))
-
-                val paddedSize = BackupPaxWriter.paddedDataSize(chunk.chunkBytes)
-                val padBytes = (paddedSize - chunk.chunkBytes).toInt()
-                if (padBytes > 0) buffer.appendExact(ByteArray(padBytes))
-            }
-
-            if (!buffer.isFull()) {
-                check(part === lastPart) { "Part buffer not full before upload: ${buffer.size()} of $PART_PAX_CAPACITY" }
-                if (buffer.remaining() >= BLOCK) {
-                    val padDataSize = (buffer.remaining() - BLOCK).toLong()
-                    buffer.appendExact(BackupPaxWriter.buildPadEntry(padDataSize))
-                    if (padDataSize > 0) {
-                        val pad = ByteArray(padDataSize.toInt())
-                        secureRandom.nextBytes(pad)
-                        buffer.appendExact(pad)
-                    }
-                }
-            }
-
-            val paxData = buffer.drain()
-            val plaintext = ByteArray(PLAINTEXT_SIZE.toInt())
-            paxData.copyInto(plaintext)
-            if (paxData.size < plaintext.size) {
-                val tailPad = ByteArray(plaintext.size - paxData.size)
-                secureRandom.nextBytes(tailPad)
-                tailPad.copyInto(plaintext, paxData.size)
-            }
-            val cipher = BackupPartEncryptor.seal(plaintext, serverPk, phoneSk, sodium)
+            val cipher = buildEncryptedPart(
+                packNumber = part.packNumber,
+                partNumber = part.partNumber,
+                isLastPart = part === lastPart,
+                filesDoneStart = filesDone,
+                totalFiles = totalFiles,
+                uploadSkips = uploadSkips,
+                secureRandom = secureRandom,
+                listener = listener,
+            )
+            filesDone = cipher.second
 
             // Network first, then a single-row upsert. A crash in between
             // leaves the part without an etag; it re-uploads next run and B2
             // overwrites the part number (documented semantics). The stored
             // etag therefore always matches the latest bytes on the remote.
-            val etag = uploadWithRetry(packKey(currentPackNumber), currentUploadId!!, part.partNumber, cipher)
+            val etag = uploadWithRetry(backend, packKey(currentPackNumber), currentUploadId!!, part.partNumber, cipher.first)
             stateRepo.confirmPart(part.packNumber, part.partNumber, part.id, etag)
 
             partsDone++
@@ -497,7 +395,7 @@ class BackupOrchestrator(
         }
 
         if (currentPackNumber >= 0 && currentUploadId != null) {
-            completePack(currentPackNumber, currentUploadId, listener)
+            completePack(currentPackNumber, currentUploadId, backend, listener)
         }
 
         // Surface upload-phase skips BEFORE DONE so the worker can post a
@@ -509,7 +407,12 @@ class BackupOrchestrator(
         listener.onPackStateChange("DONE", currentPackNumber)
     }
 
-    private suspend fun completePack(packNumber: Int, uploadId: String, listener: ProgressListener) {
+    private suspend fun completePack(
+        packNumber: Int,
+        uploadId: String,
+        backend: S3Backend,
+        listener: ProgressListener,
+    ) {
         listener.onPackStateChange("COMPLETING", packNumber)
         val etags = stateRepo.getEtagsForPack(packNumber)
         val b2Parts = etags.map { S3Backend.Part(it.partNumber, it.etag) }
@@ -519,7 +422,7 @@ class BackupOrchestrator(
         // completed the multipart but crashed before sealing, B2 answers
         // NoSuchUpload for the finalized upload: treat that as already done.
         try {
-            b2.completeMultipart(packKey(packNumber), uploadId, b2Parts)
+            backend.completeMultipart(packKey(packNumber), uploadId, b2Parts)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -530,6 +433,220 @@ class BackupOrchestrator(
             }
         }
         stateRepo.sealPack(packNumber)
+    }
+
+    // ------------------------------------------------------------------------
+    // Thumb-drive path (no DB state — objectExists is the completion record)
+    // ------------------------------------------------------------------------
+
+    private suspend fun executeWithoutDbState(backend: S3Backend, listener: ProgressListener) {
+        val missingPacks = stateRepo.getAllPackNumbers().filter { !backend.objectExists(packKey(it)) }
+        if (missingPacks.isEmpty()) {
+            listener.onPackStateChange("DONE", 0)
+            return
+        }
+
+        val totalFiles = missingPacks.flatMap { packNumber ->
+            stateRepo.getPartsForPack(packNumber).flatMap { part ->
+                stateRepo.getChunksForPart(part.packNumber, part.partNumber)
+            }
+        }.filter { it.fileOffset == 0L }.map { it.backupFileId }.distinct().size
+
+        val totalParts = missingPacks.sumOf { stateRepo.getPartsForPack(it).size }
+        var partsDone = 0
+        var filesDone = 0
+        val uploadSkips = mutableListOf<HashFailure>()
+        val secureRandom = SecureRandom()
+
+        for (packNumber in missingPacks) {
+            currentCoroutineContext().ensureActive()
+            listener.onPackStateChange("UPLOADING", packNumber)
+
+            val parts = stateRepo.getPartsForPack(packNumber)
+            if (parts.isEmpty()) continue
+
+            val lastPart = parts.last()
+            val uploadId = backend.createMultipart(packKey(packNumber))
+
+            for (part in parts) {
+                currentCoroutineContext().ensureActive()
+                val cipher = buildEncryptedPart(
+                    packNumber = part.packNumber,
+                    partNumber = part.partNumber,
+                    isLastPart = part === lastPart,
+                    filesDoneStart = filesDone,
+                    totalFiles = totalFiles,
+                    uploadSkips = uploadSkips,
+                    secureRandom = secureRandom,
+                    listener = listener,
+                )
+                filesDone = cipher.second
+                backend.uploadPart(packKey(packNumber), uploadId, part.partNumber, cipher.first)
+                partsDone++
+                listener.onPartUploaded(partsDone, totalParts)
+            }
+
+            // ThumbDriveBackend writes the whole pack in one shot and deletes
+            // its `.partial` on size mismatch — a truncated pack never
+            // appears complete on the drive.
+            backend.completeMultipart(
+                packKey(packNumber),
+                uploadId,
+                parts.map { S3Backend.Part(it.partNumber, "") },
+            )
+        }
+
+        if (uploadSkips.isNotEmpty()) listener.onFilesSkipped(uploadSkips)
+        listener.onPackStateChange("DONE", missingPacks.last())
+    }
+
+    // ------------------------------------------------------------------------
+    // Shared: build one encrypted part from a plan
+    // ------------------------------------------------------------------------
+
+    /**
+     * Build one encrypted part from `backup_chunks`/`backup_files` rows.
+     * Returns (ciphertext, filesDoneEnd); `uploadSkips` is mutated in place.
+     * `verifiedFileIds`/`badFileIds` are per-part, matching the pre-existing
+     * behaviour — a file's first chunk lives in exactly one part, so per-part
+     * reset is equivalent to run-scoped.
+     */
+    private suspend fun buildEncryptedPart(
+        packNumber: Int,
+        partNumber: Int,
+        isLastPart: Boolean,
+        filesDoneStart: Int,
+        totalFiles: Int,
+        uploadSkips: MutableList<HashFailure>,
+        secureRandom: SecureRandom,
+        listener: ProgressListener,
+    ): Pair<ByteArray, Int> {
+        val chunks = stateRepo.getChunksForPart(packNumber, partNumber)
+        val buffer = PartBuffer(PART_PAX_CAPACITY.toInt())
+        var filesDone = filesDoneStart
+        val verifiedFileIds = mutableSetOf<Long>()
+        val badFileIds = mutableSetOf<Long>()
+
+        for (chunk in chunks) {
+            currentCoroutineContext().ensureActive()
+
+            val file = stateRepo.getFileById(chunk.backupFileId) ?: run {
+                writePadChunk(buffer, chunk, secureRandom)
+                uploadSkips += HashFailure(
+                    // Synthetic key: the row itself is gone, so no path /
+                    // mtime / size to report. The classification in
+                    // userMessage() keys off the cause message.
+                    key = HashKey("(unknown file #${chunk.backupFileId})", 0L, 0L),
+                    cause = IllegalStateException("lost its backup plan mid-run"),
+                )
+                Log.w(TAG, "file ${chunk.backupFileId} missing at upload; padded")
+                continue
+            }
+
+            if (chunk.fileOffset == 0L) filesDone++
+            listener.onFileProgress(packNumber, file.path, filesDone, totalFiles)
+
+            // Verify once per file at its first chunk.
+            if (chunk.fileOffset == 0L && file.id !in verifiedFileIds) {
+                val rehashed = hasher.rehash(file.path, file.mtime) {
+                    fileSource.open(file.uri)
+                }
+                val ok = rehashed != null &&
+                    rehashed.first == file.sha256 &&
+                    rehashed.second == file.size
+                if (!ok) {
+                    badFileIds += file.id
+                    uploadSkips += HashFailure(
+                        key = HashKey(file.path, file.mtime, file.size),
+                        cause = IllegalStateException("changed on disk after the scan"),
+                    )
+                    Log.w(TAG, "${file.path}: content changed or unreadable at upload; padding")
+                }
+                verifiedFileIds += file.id
+            }
+
+            if (file.id in badFileIds) {
+                writePadChunk(buffer, chunk, secureRandom)
+                continue
+            }
+
+            buffer.appendExact(BackupPaxWriter.buildEntry(
+                path = file.path,
+                realSize = file.size,
+                offset = chunk.fileOffset,
+                mtime = file.mtime,
+                sha256Hex = file.sha256,
+            ))
+
+            var bytesStreamed = 0L
+            try {
+                fileSource.open(file.uri).use { stream ->
+                    if (chunk.fileOffset > 0) {
+                        var skipped = 0L
+                        while (skipped < chunk.fileOffset) {
+                            val s = stream.skip(chunk.fileOffset - skipped)
+                            if (s <= 0) break
+                            skipped += s
+                        }
+                    }
+                    var remaining = chunk.chunkBytes
+                    val ioBuf = ByteArray(IO_BUF)
+                    while (remaining > 0) {
+                        currentCoroutineContext().ensureActive()
+                        val want = minOf(IO_BUF.toLong(), remaining).toInt()
+                        val n = stream.read(ioBuf, 0, want)
+                        if (n <= 0) break
+                        buffer.appendExact(ioBuf, 0, n)
+                        bytesStreamed += n
+                        remaining -= n
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // The archive entry is created above; padding completes the
+                // reserved bytes. The file's bytes are incomplete, so its
+                // sha256 will mismatch on restore — surface this now, not at
+                // restore time.
+                uploadSkips += HashFailure(
+                    key = HashKey(file.path, file.mtime, file.size),
+                    cause = IllegalStateException(
+                        "stream failed mid-read: ${e.message}", e,
+                    ),
+                )
+                Log.w(TAG, "Error streaming ${file.path}: ${e.message}")
+            }
+
+            val shortfall = chunk.chunkBytes - bytesStreamed
+            if (shortfall > 0) buffer.appendExact(ByteArray(shortfall.toInt()))
+
+            val paddedSize = BackupPaxWriter.paddedDataSize(chunk.chunkBytes)
+            val padBytes = (paddedSize - chunk.chunkBytes).toInt()
+            if (padBytes > 0) buffer.appendExact(ByteArray(padBytes))
+        }
+
+        if (!buffer.isFull()) {
+            check(isLastPart) { "Part buffer not full before upload: ${buffer.size()} of $PART_PAX_CAPACITY" }
+            if (buffer.remaining() >= BLOCK) {
+                val padDataSize = (buffer.remaining() - BLOCK).toLong()
+                buffer.appendExact(BackupPaxWriter.buildPadEntry(padDataSize))
+                if (padDataSize > 0) {
+                    val pad = ByteArray(padDataSize.toInt())
+                    secureRandom.nextBytes(pad)
+                    buffer.appendExact(pad)
+                }
+            }
+        }
+
+        val paxData = buffer.drain()
+        val plaintext = ByteArray(PLAINTEXT_SIZE.toInt())
+        paxData.copyInto(plaintext)
+        if (paxData.size < plaintext.size) {
+            val tailPad = ByteArray(plaintext.size - paxData.size)
+            secureRandom.nextBytes(tailPad)
+            tailPad.copyInto(plaintext, paxData.size)
+        }
+        return BackupPartEncryptor.seal(plaintext, serverPk, phoneSk, sodium) to filesDone
     }
 
     /**
@@ -552,11 +669,17 @@ class BackupOrchestrator(
         }
     }
 
-    private suspend fun uploadWithRetry(key: String, uploadId: String, partNumber: Int, data: ByteArray): String {
+    private suspend fun uploadWithRetry(
+        backend: S3Backend,
+        key: String,
+        uploadId: String,
+        partNumber: Int,
+        data: ByteArray,
+    ): String {
         var lastError: Exception? = null
         repeat(3) { attempt ->
             try {
-                return b2.uploadPart(key, uploadId, partNumber, data)
+                return backend.uploadPart(key, uploadId, partNumber, data)
             } catch (e: CancellationException) {
                 throw e // cancellation is not a retryable failure
             } catch (e: Exception) {
