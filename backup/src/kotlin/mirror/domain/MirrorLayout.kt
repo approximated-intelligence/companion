@@ -24,15 +24,31 @@ const val TMP_SUFFIX = ".tmp"
 val SHA256_LINE = Regex("^([0-9a-fA-F]{64})  (.+)$")
 
 /**
- * True for files this pipeline writes itself (checksums, temp files). These
- * must be excluded from the "what is on the drive" diff, and from any user-
- * visible count.
+ * True for files this pipeline writes itself (checksums, temp files), or
+ * device/OS bookkeeping markers (`.nomedia`, `.DS_Store`, `.thumbnails`,
+ * `.trashed`), or anything inside a dot-prefixed folder.
+ *
+ * Applied on BOTH sides of every mirror diff (source and drive) so the two
+ * use one definition of "user data". In particular:
+ *  - the app's own checksum/atomic-write temp files never appear as "not
+ *    mirrored" or "mismatched";
+ *  - `.nomedia` — which Android accepts as a file in a media folder OR as a
+ *    directory name on some OEM builds — never lands in the "unverifiable"
+ *    bucket, because neither the source scan nor the drive walk surfaced it.
+ *
+ * Both checks below accept the two ways SAF mutates a display name:
+ * provider-appended extension (`.txt` for text/plain) and collision suffix
+ * (` (1)`, ` (2)`, …).
  */
 fun isSystemFile(path: String): Boolean {
     if (path.endsWith(TMP_SUFFIX)) return true
     if (path == SUMS_FOLDER || path.startsWith("$SUMS_FOLDER/")) return true
     if (path == LEGACY_SUMS_FILE) return true
-    if (path.startsWith("$LEGACY_SUMS_FILE ")) return true
+    if (path.startsWith("$LEGACY_SUMS_FILE ")) return true          // "SHA256SUM (1)"
+    if (path.startsWith("$LEGACY_SUMS_FILE.")) return true          // "SHA256SUM.txt", "SHA256SUM (1).txt"
+    // Dot-prefixed component anywhere: .nomedia (file or dir), .DS_Store,
+    // .thumbnails, .trashed, and everything under a dot-prefixed folder.
+    if (path.split('/').any { it.startsWith(".") }) return true
     return false
 }
 
