@@ -5,11 +5,15 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Environment
+import android.os.storage.StorageManager
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.util.Log
 import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
+import java.io.FileOutputStream
+import java.io.InputStream
 
 /**
  * Shared SAF utilities for tree walking, file creation, and permission management.
@@ -229,6 +233,43 @@ fun walkDocumentTree(
 }
 
 /**
+ * Walk a subtree rooted at [rootDocumentId] instead of the tree root. Same
+ * cursor-per-directory discipline as [walkDocumentTree]. [prefix] prepends
+ * to emitted paths; empty prefix yields paths relative to [rootDocumentId].
+ *
+ * Used when only one subfolder of a large tree is relevant (e.g. mirroring
+ * to <drive>/Mirror/ without scanning the rest of the drive).
+ */
+fun walkSubtree(
+    context: Context,
+    treeUri: Uri,
+    rootDocumentId: String,
+    prefix: String = "",
+): List<ScannedFile> {
+    val results = mutableListOf<ScannedFile>()
+    val stack = ArrayDeque<Pair<String, String>>()
+    stack.addLast(rootDocumentId to prefix)
+
+    while (stack.isNotEmpty()) {
+        val (dirId, dirPrefix) = stack.removeLast()
+        for (child in queryChildren(context, treeUri, dirId)) {
+            val childPath = if (dirPrefix.isEmpty()) child.name else "$dirPrefix/${child.name}"
+            if (child.isDirectory) {
+                stack.addLast(child.documentId to childPath)
+            } else {
+                results += ScannedFile(
+                    path = childPath,
+                    uri = documentUriInTree(treeUri, child.documentId).toString(),
+                    mtime = child.mtime,
+                    size = child.size,
+                )
+            }
+        }
+    }
+    return results
+}
+
+/**
  * Walk only immediate children of a subfolder within a tree.
  * Returns null if the subfolder doesn't exist.
  */
@@ -350,7 +391,7 @@ fun writeFileFromStream(
     subfolders: List<String>,
     displayName: String,
     mimeType: String,
-    source: java.io.InputStream,
+    source: InputStream,
 ): Uri {
     val folderId = navigateOrCreateId(context, treeUri, subfolders)
 
@@ -377,6 +418,71 @@ fun writeFileFromStream(
     } ?: error("Cannot open output stream for $created")
 
     return created
+}
+
+/**
+ * Write [source] to [displayName] under [subfolders] atomically and durably:
+ *
+ *   1. create <name>.tmp under the target folder
+ *   2. copy [source] into it, then fsync the write fd
+ *   3. delete any existing target with the same name
+ *   4. rename .tmp -> name
+ *
+ * A crash anywhere leaves the target untouched (a stray .tmp is cleaned by
+ * the next call). fsync surfaces ENOSPC / EIO / a drive pulled mid-write at
+ * write time instead of a later read. Falls back to a plain (non-fsync)
+ * write if the provider rejects "rw" mode; the caller accepts that the
+ * provider's durability guarantees are weaker.
+ */
+fun writeFileAtomic(
+    context: Context,
+    treeUri: Uri,
+    subfolders: List<String>,
+    displayName: String,
+    mimeType: String,
+    source: InputStream,
+): Uri {
+    val folder = navigateOrCreate(context, treeUri, subfolders)
+    val tmpName = "$displayName.tmp"
+
+    folder.findFile(tmpName)?.delete()
+
+    val tmpFile = folder.createFile(mimeType, tmpName)
+        ?: error("Cannot create $tmpName in ${folder.uri}")
+
+    try {
+        val pfd = try {
+            context.contentResolver.openFileDescriptor(tmpFile.uri, "rw")
+        } catch (_: Exception) {
+            null
+        }
+        if (pfd != null) {
+            pfd.use { p ->
+                FileOutputStream(p.fileDescriptor).use { out ->
+                    source.copyTo(out)
+                    out.flush()
+                    p.fileDescriptor.sync()
+                }
+            }
+        } else {
+            context.contentResolver.openOutputStream(tmpFile.uri)?.use { out ->
+                source.copyTo(out)
+            } ?: error("Cannot open output stream for ${tmpFile.uri}")
+        }
+    } catch (e: Exception) {
+        tmpFile.delete()
+        throw e
+    }
+
+    folder.findFile(displayName)?.delete()
+
+    if (!tmpFile.renameTo(displayName)) {
+        tmpFile.delete()
+        error("Cannot rename ${tmpFile.uri} to $displayName")
+    }
+
+    return folder.findFile(displayName)?.uri
+        ?: error("Cannot find $displayName after rename")
 }
 
 // ---------------------------------------------------------------------------
@@ -506,14 +612,32 @@ fun resolveOriginalUri(context: Context, uri: Uri): Uri {
 /**
  * Open an InputStream for a SAF URI.
  */
-fun openInputStream(context: Context, uri: Uri): java.io.InputStream? =
+fun openInputStream(context: Context, uri: Uri): InputStream? =
     context.contentResolver.openInputStream(resolveOriginalUri(context, uri))
 
 /**
  * Open an InputStream for a SAF URI string.
  */
-fun openInputStream(context: Context, uriStr: String): java.io.InputStream? =
+fun openInputStream(context: Context, uriStr: String): InputStream? =
     openInputStream(context, uriStr.toUri())
+
+/**
+ * Raw read, no [resolveOriginalUri]. Correct when:
+ *   - the URI is a NON-media file (redaction never applied), or
+ *   - the bytes on the medium were written BY THIS APP from already-
+ *     resolved original bytes (e.g. a thumb-drive pack or mirror copy
+ *     that this app created), so no further resolution is meaningful.
+ *
+ * WRONG for verifying a media file that this app wrote to a SAF tree: the
+ * SAF URI still routes through MediaProvider, which redacts image/video
+ * bytes on read unless [MediaStore.setRequireOriginal] is set. Use
+ * [openInputStream] instead.
+ *
+ * Skips the [isMediaUri] IPC call (one ContentResolver.getType per read),
+ * which matters for hot paths like range-reads of pack files.
+ */
+fun openInputStreamRaw(context: Context, uri: Uri): InputStream? =
+    context.contentResolver.openInputStream(uri)
 
 /**
  * Open a file descriptor for a SAF URI, promoted to read original bytes
@@ -521,3 +645,61 @@ fun openInputStream(context: Context, uriStr: String): java.io.InputStream? =
  */
 fun openFileDescriptor(context: Context, uri: Uri, mode: String = "r"): android.os.ParcelFileDescriptor? =
     context.contentResolver.openFileDescriptor(resolveOriginalUri(context, uri), mode)
+
+// ---------------------------------------------------------------------------
+// Thumb-drive enumeration
+// ---------------------------------------------------------------------------
+
+data class DriveInfo(
+    val uuid: String,
+    val label: String,
+    val treeUri: Uri,
+)
+
+/**
+ * True if [uri] names a removable volume, not internal storage. SAF tree ids
+ * are "primary:…" for internal and "XXXX-XXXX:…" for removable — the volume
+ * UUID prefix is the only portable distinction across OEMs and API levels.
+ */
+fun isExternalVolume(uri: Uri): Boolean = try {
+    val treeId = DocumentsContract.getTreeDocumentId(uri)
+    val uuid = treeId.substringBefore(':')
+    uuid.isNotEmpty() && !uuid.equals("primary", ignoreCase = true)
+} catch (_: Exception) {
+    false
+}
+
+/**
+ * Every removable volume that is currently MOUNTED and for which this app
+ * holds a persisted read+write grant. The intersection is exactly "drives
+ * we can write to right now". Drives granted but not plugged in are absent
+ * — the caller re-queries on resume.
+ */
+fun enumerateConnectedDrives(context: Context): List<DriveInfo> {
+    val sm = context.getSystemService(StorageManager::class.java) ?: return emptyList()
+
+    val grantsByUuid = mutableMapOf<String, Uri>()
+    for (perm in context.contentResolver.persistedUriPermissions) {
+        if (!perm.isWritePermission || !perm.isReadPermission) continue
+        val treeId = runCatching { DocumentsContract.getTreeDocumentId(perm.uri) }.getOrNull()
+            ?: continue
+        val uuid = treeId.substringBefore(':')
+        if (uuid.isEmpty() || uuid.equals("primary", ignoreCase = true)) continue
+        grantsByUuid.putIfAbsent(uuid, perm.uri)
+    }
+    if (grantsByUuid.isEmpty()) return emptyList()
+
+    return sm.storageVolumes
+        .asSequence()
+        .filter { it.isRemovable && it.state == Environment.MEDIA_MOUNTED }
+        .mapNotNull { vol ->
+            val uuid = vol.uuid ?: return@mapNotNull null
+            val treeUri = grantsByUuid[uuid] ?: return@mapNotNull null
+            DriveInfo(
+                uuid = uuid,
+                label = vol.getDescription(context) ?: uuid,
+                treeUri = treeUri,
+            )
+        }
+        .toList()
+}
