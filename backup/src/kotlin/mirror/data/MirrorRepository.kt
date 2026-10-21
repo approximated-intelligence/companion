@@ -44,10 +44,26 @@ private val LEGACY_SHORT_NAME    = Regex("^\\d{6}(?:\\.[A-Za-z0-9]+)?$")
 private val LEGACY_SUFFIXED_NAME = Regex("^\\d{6} \\(\\d+\\)(?:\\.[A-Za-z0-9]+)?$")
 private val NEW_SUMS_NAME        = Regex("^T\\d{13}(?:\\.[A-Za-z0-9]+)?$")
 
+/**
+ * Legacy root-level SHA256SUM files that pre-date the SUMS/ folder.
+ * Handles: bare "SHA256SUM", collision suffix "SHA256SUM (1)", and
+ * provider-appended extension on either ("SHA256SUM.txt", "SHA256SUM (1).txt").
+ *
+ * Without the ".txt" branch the check silently skipped provider-renamed
+ * files: a plain-text SHA256SUM written via DocumentsContract.createDocument
+ * with "text/plain" gets ".txt" appended on most devices, and the read side
+ * then never noticed the file existed.
+ */
+private val LEGACY_ROOT_SUMS_NAME =
+    Regex("^${Regex.escape(LEGACY_SUMS_FILE)}(?: \\(\\d+\\))?(?:\\.[A-Za-z0-9]+)?$")
+
 private fun isNewSumsName(name: String): Boolean = NEW_SUMS_NAME.matches(name)
 
 private fun isLegacySumsName(name: String): Boolean =
     LEGACY_SHORT_NAME.matches(name) || LEGACY_SUFFIXED_NAME.matches(name)
+
+private fun isLegacyRootSumsName(name: String): Boolean =
+    LEGACY_ROOT_SUMS_NAME.matches(name)
 
 /**
  * Ordering key for SUMS files. Legacy files always sort before timestamped
@@ -135,10 +151,7 @@ class MirrorRepository @Inject constructor(
         // Legacy SHA256SUM files at the Mirror/ root (pre-SUMS-folder era).
         val legacyRootFiles = queryChildren(ctx, driveRoot, mirrorDocId)
             .filter { !it.isDirectory }
-            .filter {
-                it.name == LEGACY_SUMS_FILE ||
-                    it.name.startsWith("$LEGACY_SUMS_FILE ")
-            }
+            .filter { isLegacyRootSumsName(it.name) }
             .sortedBy { it.name }
         for (f in legacyRootFiles) {
             readSumsInto(driveRoot, f.documentId, result)
