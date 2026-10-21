@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.core.di.ApplicationScope
@@ -19,6 +20,7 @@ private val Context.corePrefsDataStore: DataStore<Preferences> by preferencesDat
 )
 
 private val SETUP_DONE = booleanPreferencesKey("setup_done")
+private val STARTUP_FEATURE_ID = stringPreferencesKey("startup_feature_id")
 
 /** Core's own settings. Feature settings live in their feature modules. */
 @Singleton
@@ -35,4 +37,18 @@ class CorePrefs @Inject constructor(
         store.data.map { it[SETUP_DONE] ?: false }.distinctUntilChanged()
 
     suspend fun setSetupDone(done: Boolean) = store.edit { this[SETUP_DONE] = done }
+
+    /**
+     * The `FeatureEntry.id` whose `startRoute` the app should open on cold
+     * start, or null to use the natural default (lowest `order` with a
+     * non-null `startRoute`).
+     */
+    fun startupFeatureId(): String? = store.snapshot()[STARTUP_FEATURE_ID]
+
+    fun observeStartupFeatureId(): Flow<String?> =
+        store.data.map { it[STARTUP_FEATURE_ID] }.distinctUntilChanged()
+
+    suspend fun setStartupFeatureId(id: String?) = store.edit {
+        if (id == null) remove(STARTUP_FEATURE_ID) else this[STARTUP_FEATURE_ID] = id
+    }
 }

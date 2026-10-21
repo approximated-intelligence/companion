@@ -14,6 +14,7 @@ import de.perigon.companion.core.feature.MediaInbox
 import de.perigon.companion.core.feature.RecordedTrackSource
 import de.perigon.companion.core.feature.SettingsSection
 import de.perigon.companion.core.files.CacheSweep
+import de.perigon.companion.core.ui.settings.GeneralSettingsSection
 import de.perigon.companion.core.ui.settings.SettingsFeature
 
 /**
@@ -33,4 +34,5 @@ abstract class FeatureContractsModule {
 
     @Binds @IntoSet abstract fun cacheSweep(impl: CacheSweep): AppInitializer
     @Binds @IntoSet abstract fun settingsFeature(impl: SettingsFeature): FeatureEntry
+    @Binds @IntoSet abstract fun generalSettings(impl: GeneralSettingsSection): SettingsSection
 }
