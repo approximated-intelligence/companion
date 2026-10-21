@@ -289,6 +289,5 @@ class KfViewModel @Inject constructor(
     override fun onCleared() {
         stopGnss()
         stopBaro()
-        super.onCleared()
     }
 }
