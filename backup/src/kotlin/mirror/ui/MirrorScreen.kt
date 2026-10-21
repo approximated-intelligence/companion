@@ -54,13 +54,12 @@ import de.perigon.companion.core.data.UserNotificationEntity
 import de.perigon.companion.core.feature.CommonRequirements
 import de.perigon.companion.core.feature.isSatisfied
 import de.perigon.companion.core.prefs.FolderKeys
-import de.perigon.companion.core.saf.DriveInfo
-import de.perigon.companion.core.saf.enumerateConnectedDrives
 import de.perigon.companion.core.saf.isExternalVolume
 import de.perigon.companion.core.ui.AppTopBar
 import de.perigon.companion.core.ui.NotificationObserver
 import de.perigon.companion.core.ui.SectionHeader
 import de.perigon.companion.core.ui.formatDateTime
+import de.perigon.companion.core.ui.rememberConnectedDrives
 import kotlinx.coroutines.launch
 
 @Composable
@@ -78,8 +77,6 @@ fun MirrorScreen(
     val latestVerify by vm.latestVerify.collectAsStateWithLifecycle()
     val notifications by vm.recentMirrorNotifications.collectAsStateWithLifecycle()
 
-    // Snackbars for OTHER sources' messages. Mirror's own messages are shown
-    // inline in the Activity panel below, so they are excluded here.
     LaunchedEffect(Unit) {
         NotificationObserver.observe(
             scope = this,
@@ -89,23 +86,27 @@ fun MirrorScreen(
         )
     }
 
-    // Mirror notifications are displayed inline; mark them read so they do
-    // not linger as unread in the shared ledger or on other screens.
     LaunchedEffect(notifications) {
         if (notifications.isNotEmpty()) vm.markMirrorRead()
     }
 
-    var epoch by remember { mutableIntStateOf(0) }
+    // DCIM grant state needs a resume check (user may have visited Settings
+    // → Access and re-granted). Independent of the drive watcher.
+    var accessEpoch by remember { mutableIntStateOf(0) }
     LifecycleResumeEffect(Unit) {
-        epoch++
+        accessEpoch++
         onPauseOrDispose { }
     }
-    val drives: List<DriveInfo> = remember(epoch) { enumerateConnectedDrives(ctx) }
-    val dcimOk: Boolean = remember(epoch) {
+    val dcimOk: Boolean = remember(accessEpoch) {
         CommonRequirements.dcim.isSatisfied(ctx) { key ->
             if (key == FolderKeys.DCIM) vm.folderGrants.uri(FolderKeys.DCIM) else null
         }
     }
+
+    // Live: volume callback + resume + 3 s poll. The bump key is for the
+    // picker grant path — granting a tree does not fire a volume callback.
+    var drivesRefreshKey by remember { mutableIntStateOf(0) }
+    val drives = rememberConnectedDrives(drivesRefreshKey)
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocumentTree()
@@ -120,7 +121,7 @@ fun MirrorScreen(
                 uri,
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
             )
-            epoch++
+            drivesRefreshKey++
             scope.launch { snackbar.showSnackbar("Drive added") }
         } catch (e: Exception) {
             scope.launch { snackbar.showSnackbar("Grant failed: ${e.message}") }
