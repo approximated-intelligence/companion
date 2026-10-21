@@ -54,12 +54,15 @@ import de.perigon.companion.core.data.UserNotificationEntity
 import de.perigon.companion.core.feature.CommonRequirements
 import de.perigon.companion.core.feature.isSatisfied
 import de.perigon.companion.core.prefs.FolderKeys
+import de.perigon.companion.core.saf.driveUuidOf
 import de.perigon.companion.core.saf.isExternalVolume
 import de.perigon.companion.core.ui.AppTopBar
+import de.perigon.companion.core.ui.DriveEjectButton
 import de.perigon.companion.core.ui.NotificationObserver
 import de.perigon.companion.core.ui.SectionHeader
 import de.perigon.companion.core.ui.formatDateTime
 import de.perigon.companion.core.ui.rememberConnectedDrives
+import de.perigon.companion.core.ui.rememberEjectingUuids
 import kotlinx.coroutines.launch
 
 @Composable
@@ -76,6 +79,20 @@ fun MirrorScreen(
     val latestSync by vm.latestSync.collectAsStateWithLifecycle()
     val latestVerify by vm.latestVerify.collectAsStateWithLifecycle()
     val notifications by vm.recentMirrorNotifications.collectAsStateWithLifecycle()
+
+    // The drive the worker is currently writing to (treeUri string), or null
+    // when idle. Drives not equal to this are ejectable, including while the
+    // worker is busy with a different drive.
+    val writingDriveUri: String? = when {
+        syncRunning   -> latestSync?.progress?.getString(MirrorWorker.KEY_DEST_URI)
+        verifyRunning -> latestVerify?.progress?.getString(MirrorWorker.KEY_DEST_URI)
+        else          -> null
+    }
+
+    // System-side eject: the volume has begun unmounting. Drives in this set
+    // flip their button to "Ejecting…" and cannot be chosen for a new run.
+    // Cleared automatically on remount by ExternalDriveEjectBus.reportMounted.
+    val ejectingUuids = rememberEjectingUuids(vm.ejectBus)
 
     LaunchedEffect(Unit) {
         NotificationObserver.observe(
@@ -131,6 +148,8 @@ fun MirrorScreen(
     LaunchedEffect(Unit) {
         vm.snackbar.events.collect { snackbar.showSnackbar(it) }
     }
+
+    val busy = syncRunning || verifyRunning
 
     Scaffold(
         topBar = { AppTopBar(navController) },
@@ -188,6 +207,10 @@ fun MirrorScreen(
                     style = MaterialTheme.typography.bodySmall,
                 )
                 drives.forEach { d ->
+                    val uri = d.treeUri.toString()
+                    val uuid = driveUuidOf(d.treeUri)
+                    val isWriting = writingDriveUri == uri
+                    val isEjecting = uuid != null && uuid in ejectingUuids
                     Card(Modifier.fillMaxWidth()) {
                         Row(
                             Modifier.padding(12.dp),
@@ -200,12 +223,30 @@ fun MirrorScreen(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            Spacer(Modifier.weight(1f))
+                            DriveEjectButton(
+                                driveLabel = d.label,
+                                writing = isWriting,
+                                ejecting = isEjecting,
+                                volumeUuid = uuid,
+                            )
                         }
                     }
                 }
             }
 
-            val busy = syncRunning || verifyRunning
+            // Add-drive sits directly under the list it appends to. The
+            // Activity log is reference material and stays at the bottom.
+            OutlinedButton(
+                onClick = { picker.launch(null) },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !busy,
+            ) {
+                Icon(Icons.Default.Add, null, Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Add drive (grant access)")
+            }
+
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -333,16 +374,6 @@ fun MirrorScreen(
                         }
                     }
                 }
-            }
-
-            OutlinedButton(
-                onClick = { picker.launch(null) },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !busy,
-            ) {
-                Icon(Icons.Default.Add, null, Modifier.size(16.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("Add drive (grant access)")
             }
 
             Text(

@@ -11,6 +11,7 @@ import de.perigon.companion.backup.mirror.worker.enqueueMirrorVerify
 import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.data.UserNotificationEntity
 import de.perigon.companion.core.prefs.FolderGrants
+import de.perigon.companion.core.saf.ExternalDriveEjectBus
 import de.perigon.companion.core.ui.SnackbarChannel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -23,6 +24,7 @@ import javax.inject.Inject
 class MirrorViewModel @Inject constructor(
     private val workManager: WorkManager,
     val folderGrants: FolderGrants,
+    val ejectBus: ExternalDriveEjectBus,
     private val notificationDao: UserNotificationDao,
 ) : ViewModel() {
 
