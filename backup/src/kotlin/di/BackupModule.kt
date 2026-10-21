@@ -76,12 +76,18 @@ object BackupModule {
     @Provides @Singleton
     fun provideLazySodium(): LazySodiumAndroid = LazySodiumAndroid(SodiumAndroid())
 
+    // Features
     @Provides @IntoSet fun provideFeature(feature: BackupFeature): FeatureEntry = feature
     @Provides @IntoSet fun provideMirrorFeature(feature: MirrorFeature): FeatureEntry = feature
+
+    // Settings sections
     @Provides @IntoSet fun provideSettings(section: BackupSettingsSection): SettingsSection = section
     @Provides @IntoSet fun provideConsolidationSettings(section: ConsolidationSettingsSection): SettingsSection = section
+
+    // Startup
     @Provides @IntoSet fun provideScheduleInit(init: BackupScheduleInitializer): AppInitializer = init
 
+    // Notification channels
     @Provides @ElementsIntoSet
     fun provideChannels(): Set<ChannelSpec> = setOf(
         ChannelSpec(BackupChannels.BACKUP, "Backup"),
