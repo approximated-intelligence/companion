@@ -7,7 +7,10 @@ import de.perigon.companion.backup.data.BackupScannedFile
 import de.perigon.companion.backup.data.BackupSourceScanner
 import de.perigon.companion.backup.data.HashFailure
 import de.perigon.companion.backup.data.HashKey
+import de.perigon.companion.backup.domain.DriveEjectedException
 import de.perigon.companion.backup.mirror.data.MirrorRepository
+import de.perigon.companion.core.saf.ExternalDriveEjectBus
+import de.perigon.companion.core.saf.driveUuidOf
 import javax.inject.Inject
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -22,17 +25,37 @@ private const val MISMATCH_LOG_CAP = 20
  *
  * No notifications, no WorkManager. Those live in `worker/`. Pure orchestration
  * that can be tested with a fake repository and a fake scanner.
+ *
+ * Both sides of every diff are filtered through [isSystemFile]: the source
+ * scan AND the drive walk. That keeps the two consistent, and it means device
+ * markers (`.nomedia` as file or dir, `.DS_Store`, `.thumbnails`, `.trashed`)
+ * never show up as "not mirrored" or "unverifiable" — they're excluded from
+ * the diff before counting starts.
+ *
+ * [ejectBus] is consulted before each write so a mid-copy eject stops with
+ * [DriveEjectedException] instead of failing on an EBUSY write against a
+ * filesystem that is being torn down.
  */
 class MirrorEngine @Inject constructor(
     private val scanner: BackupSourceScanner,
     private val repo: MirrorRepository,
+    private val ejectBus: ExternalDriveEjectBus,
 ) {
+
+    private fun checkEject(driveUuid: String?) {
+        if (driveUuid != null && ejectBus.isEjecting(driveUuid)) {
+            throw DriveEjectedException("drive $driveUuid was ejected")
+        }
+    }
 
     suspend fun sync(
         driveRoot: Uri,
         onProgress: suspend (phase: String, current: String, done: Int, total: Int) -> Unit =
             { _, _, _, _ -> },
     ): SyncOutcome {
+        val driveUuid = driveUuidOf(driveRoot)
+        checkEject(driveUuid)
+
         onProgress("prepare", "", 0, 0)
         val mirrorDocId = repo.ensureMirrorFolder(driveRoot)
         repo.sweepTmp(driveRoot, mirrorDocId)
@@ -65,6 +88,12 @@ class MirrorEngine @Inject constructor(
             )
         }
 
+        // Apply the same "user data" filter to the source side as the drive
+        // walk uses below — .nomedia, .DS_Store, checksum files, etc. never
+        // enter the diff.
+        val sourceFiles    = scan.files.filter    { !isSystemFile(it.path) }
+        val sourceFailures = scan.failures.filter { !isSystemFile(it.key.path) }
+
         onProgress("diff", "", 0, 0)
         val driveFiles = repo.walkMirror(driveRoot, mirrorDocId)
             .filter { !isSystemFile(it.path) }
@@ -73,7 +102,7 @@ class MirrorEngine @Inject constructor(
 
         val toCopy = mutableListOf<BackupScannedFile>()
         val toAppend = mutableListOf<Pair<String, String>>()
-        for (sf in scan.files) {
+        for (sf in sourceFiles) {
             val drive = driveFiles[sf.path]
             when {
                 drive == null || drive.size != sf.size -> toCopy += sf
@@ -84,11 +113,14 @@ class MirrorEngine @Inject constructor(
         val copyFailures = mutableListOf<HashFailure>()
         var copied = 0
         for ((i, sf) in toCopy.withIndex()) {
+            checkEject(driveUuid)
             onProgress("copy", sf.path, i, toCopy.size)
             try {
                 repo.copyFromSource(driveRoot, sf.uri.toUri(), sf.path)
                 toAppend += sf.path to sf.sha256
                 copied++
+            } catch (e: DriveEjectedException) {
+                throw e
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -99,15 +131,16 @@ class MirrorEngine @Inject constructor(
 
         var sumsFile: String? = null
         if (toAppend.isNotEmpty()) {
+            checkEject(driveUuid)
             sumsFile = repo.writeSums(driveRoot, mirrorDocId, toAppend)
         }
 
         return SyncOutcome(
-            sourceFiles = scan.files.size,
+            sourceFiles = sourceFiles.size,
             copied = copied,
-            unchanged = scan.files.size - toCopy.size,
-            failures = scan.failures + copyFailures,
-            unreadable = scan.unreadable,
+            unchanged = sourceFiles.size - toCopy.size,
+            failures = sourceFailures + copyFailures,
+            unreadable = sourceFailures.size,
             enabledFolders = scan.enabledFolders,
             sumsFile = sumsFile,
         )
@@ -118,6 +151,9 @@ class MirrorEngine @Inject constructor(
         onProgress: suspend (phase: String, current: String, done: Int, total: Int) -> Unit =
             { _, _, _, _ -> },
     ): VerifyOutcome {
+        val driveUuid = driveUuidOf(driveRoot)
+        checkEject(driveUuid)
+
         onProgress("prepare", "", 0, 0)
         val mirrorDocId = repo.findMirrorFolder(driveRoot)
             ?: return VerifyOutcome(0, 0, 0, 0, 0, mirrorFolderMissing = true)
@@ -133,14 +169,19 @@ class MirrorEngine @Inject constructor(
             )
         }
 
+        // Same "user data" filter as the drive side; both sides must agree or
+        // .nomedia would show up as a mismatch every run.
+        val sourceFiles    = scan.files.filter    { !isSystemFile(it.path) }
+        val sourceFailures = scan.failures.filter { !isSystemFile(it.key.path) }
+
         onProgress("diff", "", 0, 0)
-        val sourceByPath = scan.files.associateBy { it.path }
+        val sourceByPath = sourceFiles.associateBy { it.path }
         val driveByPath = repo.walkMirror(driveRoot, mirrorDocId)
             .filter { !isSystemFile(it.path) }
             .associateBy { it.path }
         val shaSums = repo.readAllSums(driveRoot, mirrorDocId)
 
-        Log.i(TAG, "verify: source=${scan.files.size} (${scan.unreadable} unreadable), " +
+        Log.i(TAG, "verify: source=${sourceFiles.size} (${sourceFailures.size} unreadable), " +
             "drive=${driveByPath.size}, sumsEntries=${shaSums.size}")
 
         var okSource = 0
@@ -153,6 +194,7 @@ class MirrorEngine @Inject constructor(
 
         val entries = driveByPath.entries.toList()
         for ((i, entry) in entries.withIndex()) {
+            checkEject(driveUuid)
             val (path, drv) = entry
             onProgress("verify", path, i, entries.size)
 
@@ -199,6 +241,7 @@ class MirrorEngine @Inject constructor(
         val notMirrored = sourceByPath.keys.count { it !in driveByPath }
 
         if (toAppend.isNotEmpty()) {
+            checkEject(driveUuid)
             repo.writeSums(driveRoot, mirrorDocId, toAppend)
         }
 
@@ -208,8 +251,8 @@ class MirrorEngine @Inject constructor(
             mismatch = mismatch,
             unverifiable = unverifiable,
             notMirrored = notMirrored,
-            sourceFiles = scan.files.size,
-            sourceUnreadable = scan.unreadable,
+            sourceFiles = sourceFiles.size,
+            sourceUnreadable = sourceFailures.size,
             enabledFolders = scan.enabledFolders,
             mismatchPaths = mismatchPaths,
             unverifiableReasons = unverifiableReasons,
