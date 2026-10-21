@@ -34,6 +34,8 @@ import de.perigon.companion.backup.data.BackupSchedulePrefs
 import de.perigon.companion.backup.data.BackupSchedulePrefsImpl
 import de.perigon.companion.backup.data.FileContentHashDao
 import de.perigon.companion.backup.data.RestoreSelectionDao
+import de.perigon.companion.backup.mirror.MirrorChannels
+import de.perigon.companion.backup.mirror.MirrorFeature
 import de.perigon.companion.backup.settings.BackupSettingsSection
 import de.perigon.companion.backup.settings.ConsolidationSettingsSection
 import de.perigon.companion.core.feature.AppInitializer
@@ -75,6 +77,7 @@ object BackupModule {
     fun provideLazySodium(): LazySodiumAndroid = LazySodiumAndroid(SodiumAndroid())
 
     @Provides @IntoSet fun provideFeature(feature: BackupFeature): FeatureEntry = feature
+    @Provides @IntoSet fun provideMirrorFeature(feature: MirrorFeature): FeatureEntry = feature
     @Provides @IntoSet fun provideSettings(section: BackupSettingsSection): SettingsSection = section
     @Provides @IntoSet fun provideConsolidationSettings(section: ConsolidationSettingsSection): SettingsSection = section
     @Provides @IntoSet fun provideScheduleInit(init: BackupScheduleInitializer): AppInitializer = init
@@ -83,5 +86,6 @@ object BackupModule {
     fun provideChannels(): Set<ChannelSpec> = setOf(
         ChannelSpec(BackupChannels.BACKUP, "Backup"),
         ChannelSpec(BackupChannels.CONSOLIDATE, "Consolidation"),
+        ChannelSpec(MirrorChannels.MIRROR, "Mirror"),
     )
 }
