@@ -29,6 +29,10 @@ import javax.inject.Inject
  *
  * Knows no feature: the graph, menu and launch routing come from the
  * FeatureEntry set of this build.
+ *
+ * The ACTION_MEDIA_EJECT receiver is NOT registered here — see
+ * CompanionApp.registerDriveEjectSignals(). It lives in the Application so
+ * it survives activity recreation and matches the bus's lifetime.
  */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
