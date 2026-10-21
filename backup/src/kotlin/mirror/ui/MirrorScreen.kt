@@ -17,9 +17,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -28,6 +32,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -44,6 +49,8 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import de.perigon.companion.backup.mirror.worker.MirrorWorker
+import de.perigon.companion.core.data.NotificationType
+import de.perigon.companion.core.data.UserNotificationEntity
 import de.perigon.companion.core.feature.CommonRequirements
 import de.perigon.companion.core.feature.isSatisfied
 import de.perigon.companion.core.prefs.FolderKeys
@@ -53,6 +60,7 @@ import de.perigon.companion.core.saf.isExternalVolume
 import de.perigon.companion.core.ui.AppTopBar
 import de.perigon.companion.core.ui.NotificationObserver
 import de.perigon.companion.core.ui.SectionHeader
+import de.perigon.companion.core.ui.formatDateTime
 import kotlinx.coroutines.launch
 
 @Composable
@@ -68,9 +76,23 @@ fun MirrorScreen(
     val verifyRunning by vm.verifyRunning.collectAsStateWithLifecycle()
     val latestSync by vm.latestSync.collectAsStateWithLifecycle()
     val latestVerify by vm.latestVerify.collectAsStateWithLifecycle()
+    val notifications by vm.recentMirrorNotifications.collectAsStateWithLifecycle()
 
+    // Snackbars for OTHER sources' messages. Mirror's own messages are shown
+    // inline in the Activity panel below, so they are excluded here.
     LaunchedEffect(Unit) {
-        NotificationObserver.observe(this, vm.notifications, snackbar)
+        NotificationObserver.observe(
+            scope = this,
+            dao = vm.notifications,
+            snackbarHost = snackbar,
+            excludeSources = setOf("mirror"),
+        )
+    }
+
+    // Mirror notifications are displayed inline; mark them read so they do
+    // not linger as unread in the shared ledger or on other screens.
+    LaunchedEffect(notifications) {
+        if (notifications.isNotEmpty()) vm.markMirrorRead()
     }
 
     var epoch by remember { mutableIntStateOf(0) }
@@ -134,10 +156,15 @@ fun MirrorScreen(
                     ),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("DCIM access missing",
+                    Column(
+                        Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            "DCIM access missing",
                             color = MaterialTheme.colorScheme.onErrorContainer,
-                            style = MaterialTheme.typography.titleSmall)
+                            style = MaterialTheme.typography.titleSmall,
+                        )
                         Text(
                             "Mirror cannot read DCIM without it. Grant DCIM in Settings → Access.",
                             color = MaterialTheme.colorScheme.onErrorContainer,
@@ -155,7 +182,10 @@ fun MirrorScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
-                Text("${drives.size} drive(s) connected:", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "${drives.size} drive(s) connected:",
+                    style = MaterialTheme.typography.bodySmall,
+                )
                 drives.forEach { d ->
                     Card(Modifier.fillMaxWidth()) {
                         Row(
@@ -164,15 +194,21 @@ fun MirrorScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             Text(d.label, style = MaterialTheme.typography.bodyMedium)
-                            Text(d.uuid, style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(
+                                d.uuid,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                     }
                 }
             }
 
             val busy = syncRunning || verifyRunning
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 Button(
                     onClick = { vm.sync() },
                     enabled = drives.isNotEmpty() && !busy && dcimOk,
@@ -190,17 +226,38 @@ fun MirrorScreen(
                 val phase = info?.progress?.getString(MirrorWorker.KEY_PHASE).orEmpty()
                 val done = info?.progress?.getInt(MirrorWorker.KEY_DONE, 0) ?: 0
                 val total = info?.progress?.getInt(MirrorWorker.KEY_TOTAL, 0) ?: 0
+                val idx = info?.progress?.getInt(MirrorWorker.KEY_DEST_INDEX, 0) ?: 0
+                val of = info?.progress?.getInt(MirrorWorker.KEY_DEST_TOTAL, 0) ?: 0
                 val label = info?.progress?.getString(MirrorWorker.KEY_DEST_LABEL).orEmpty()
                 val current = info?.progress?.getString(MirrorWorker.KEY_CURRENT).orEmpty()
-                LinearProgressIndicator(
-                    progress = { if (total > 0) done.toFloat() / total else 0f },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text(
-                    "Syncing $label — $phase ${if (total > 0) "$done / $total" else ""} " +
-                        current.substringAfterLast('/'),
-                    style = MaterialTheme.typography.bodySmall,
-                )
+
+                Card(Modifier.fillMaxWidth()) {
+                    Column(
+                        Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            "Syncing $idx/$of — $label",
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        LinearProgressIndicator(
+                            progress = { if (total > 0) done.toFloat() / total else 0f },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            buildString {
+                                append(phase)
+                                if (total > 0) append("  $done / $total")
+                                if (current.isNotEmpty()) {
+                                    append("  —  ")
+                                    append(current.substringAfterLast('/'))
+                                }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
             }
 
             if (verifyRunning) {
@@ -208,15 +265,73 @@ fun MirrorScreen(
                 val phase = info?.progress?.getString(MirrorWorker.KEY_PHASE).orEmpty()
                 val done = info?.progress?.getInt(MirrorWorker.KEY_DONE, 0) ?: 0
                 val total = info?.progress?.getInt(MirrorWorker.KEY_TOTAL, 0) ?: 0
+                val idx = info?.progress?.getInt(MirrorWorker.KEY_DEST_INDEX, 0) ?: 0
+                val of = info?.progress?.getInt(MirrorWorker.KEY_DEST_TOTAL, 0) ?: 0
                 val label = info?.progress?.getString(MirrorWorker.KEY_DEST_LABEL).orEmpty()
-                LinearProgressIndicator(
-                    progress = { if (total > 0) done.toFloat() / total else 0f },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text(
-                    "Checking $label — $phase ${if (total > 0) "$done / $total" else ""}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                val current = info?.progress?.getString(MirrorWorker.KEY_CURRENT).orEmpty()
+
+                Card(Modifier.fillMaxWidth()) {
+                    Column(
+                        Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            "Checking $idx/$of — $label",
+                            style = MaterialTheme.typography.titleSmall,
+                        )
+                        LinearProgressIndicator(
+                            progress = { if (total > 0) done.toFloat() / total else 0f },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            buildString {
+                                append(phase)
+                                if (total > 0) append("  $done / $total")
+                                if (current.isNotEmpty()) {
+                                    append("  —  ")
+                                    append(current.substringAfterLast('/'))
+                                }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+
+            Card(Modifier.fillMaxWidth()) {
+                Column(
+                    Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Activity", style = MaterialTheme.typography.titleSmall)
+                        if (notifications.isNotEmpty() && !busy) {
+                            TextButton(onClick = vm::clearHistory) {
+                                Text("Clear")
+                            }
+                        }
+                    }
+
+                    if (notifications.isEmpty()) {
+                        Text(
+                            "No mirror activity yet.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        notifications.forEachIndexed { index, n ->
+                            if (index > 0) {
+                                HorizontalDivider()
+                            }
+                            MirrorNotificationRow(n)
+                        }
+                    }
+                }
             }
 
             OutlinedButton(
@@ -238,6 +353,41 @@ fun MirrorScreen(
                     "already guaranteed durability. A check run later reads disk.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun MirrorNotificationRow(n: UserNotificationEntity) {
+    val (icon, tint) = when (n.type) {
+        NotificationType.SUCCESS ->
+            Icons.Default.CheckCircle to MaterialTheme.colorScheme.primary
+        NotificationType.ERROR ->
+            Icons.Default.Error to MaterialTheme.colorScheme.error
+        NotificationType.INFO ->
+            Icons.Default.Info to MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp), tint = tint)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(n.message, style = MaterialTheme.typography.bodyMedium)
+            if (!n.detail.isNullOrBlank()) {
+                Text(
+                    n.detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                formatDateTime(n.createdAt, "MMM d, HH:mm:ss"),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.outline,
             )
         }
     }

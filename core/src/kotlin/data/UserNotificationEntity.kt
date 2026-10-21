@@ -35,6 +35,31 @@ interface UserNotificationDao {
     @Query("SELECT * FROM user_notifications WHERE readAt IS NULL ORDER BY createdAt DESC")
     fun observeUnread(): Flow<List<UserNotificationEntity>>
 
+    /**
+     * Unread notifications excluding [excluded] sources. Screens that own a
+     * feature's messages inline (e.g. Mirror) pass that feature's source so
+     * its messages aren't repeated as snackbars on other screens.
+     */
+    @Query(
+        "SELECT * FROM user_notifications " +
+            "WHERE readAt IS NULL AND source NOT IN (:excluded) " +
+            "ORDER BY createdAt DESC"
+    )
+    fun observeUnreadExcluding(excluded: List<String>): Flow<List<UserNotificationEntity>>
+
+    /**
+     * Recent notifications from one source, regardless of read state. Used by
+     * the owning screen to render its own activity log inline.
+     */
+    @Query(
+        "SELECT * FROM user_notifications " +
+            "WHERE source = :source ORDER BY createdAt DESC LIMIT :limit"
+    )
+    fun observeRecentBySource(
+        source: String,
+        limit: Int = 50,
+    ): Flow<List<UserNotificationEntity>>
+
     @Query("SELECT COUNT(*) FROM user_notifications WHERE readAt IS NULL")
     fun countUnread(): Flow<Int>
 
@@ -50,8 +75,20 @@ interface UserNotificationDao {
     @Query("UPDATE user_notifications SET readAt = :now WHERE readAt IS NULL")
     suspend fun markAllRead(now: Long = System.currentTimeMillis())
 
+    @Query(
+        "UPDATE user_notifications SET readAt = :now " +
+            "WHERE source = :source AND readAt IS NULL"
+    )
+    suspend fun markAllReadForSource(
+        source: String,
+        now: Long = System.currentTimeMillis(),
+    )
+
     @Query("DELETE FROM user_notifications WHERE createdAt < :before")
     suspend fun deleteOlderThan(before: Long)
+
+    @Query("DELETE FROM user_notifications WHERE source = :source")
+    suspend fun deleteAllForSource(source: String)
 
     @Query("DELETE FROM user_notifications")
     suspend fun deleteAll()
