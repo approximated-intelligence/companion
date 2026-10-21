@@ -22,6 +22,12 @@ data class BackupProgress(
     val currentFile: String = "",
     val errorType: String = BackupWorker.ERR_NONE,
     val errorDetail: String = "",
+    /**
+     * The destination the worker is writing right now:
+     * "B2" or "THUMBDRIVE:<treeUri>". Empty when nothing is running.
+     * Drives not equal to this string are idle and ejectable.
+     */
+    val currentDestination: String = "",
 ) {
     val hasError: Boolean get() = errorType != BackupWorker.ERR_NONE
 }
@@ -56,6 +62,8 @@ fun WorkInfo.toBackupProgress(prev: BackupProgress): BackupProgress {
             WorkInfo.State.SUCCEEDED -> ""
             else -> p.getString(BackupWorker.KEY_ERROR_DETAIL) ?: prev.errorDetail
         },
+        currentDestination = p.getString(BackupWorker.KEY_CURRENT_DESTINATION)
+                             ?: prev.currentDestination,
     )
 }
 
@@ -75,5 +83,6 @@ fun backupErrorLabel(type: String): String = when (type) {
     BackupWorker.ERR_MISSING_CREDENTIALS -> "Credentials not configured"
     BackupWorker.ERR_B2_ERROR            -> "Backup storage error"
     BackupWorker.ERR_INCONSISTENT        -> "Inconsistent state - pack was reset"
+    BackupWorker.ERR_DRIVE_EJECTED       -> "Thumb drive was ejected"
     else                                 -> "Backup failed ($type)"
 }

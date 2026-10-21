@@ -13,6 +13,8 @@ import de.perigon.companion.backup.data.HashFailure
 import de.perigon.companion.backup.data.userMessage
 import de.perigon.companion.backup.domain.BackupFileSource
 import de.perigon.companion.backup.domain.BackupOrchestrator
+import de.perigon.companion.backup.domain.DriveEjectedException
+import de.perigon.companion.backup.domain.EjectGuard
 import de.perigon.companion.backup.domain.ThumbDriveBackend
 import de.perigon.companion.backup.data.FileHasher
 import de.perigon.companion.core.network.S3Backend
@@ -21,6 +23,8 @@ import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.data.UserNotifications
 import de.perigon.companion.backup.data.BackupPrefs
 import de.perigon.companion.backup.data.BackupSecrets
+import de.perigon.companion.core.saf.ExternalDriveEjectBus
+import de.perigon.companion.core.saf.driveUuidOf
 import de.perigon.companion.core.saf.folderLabel
 import de.perigon.companion.core.saf.openInputStream
 import de.perigon.companion.core.util.fromHex
@@ -48,6 +52,7 @@ class BackupWorker @AssistedInject constructor(
     private val schedulePrefs:   BackupSchedulePrefs,
     private val notificationDao: UserNotificationDao,
     private val hasher:          FileHasher,
+    private val ejectBus:        ExternalDriveEjectBus,
 ) : CoroutineWorker(ctx, params) {
 
     companion object {
@@ -58,7 +63,7 @@ class BackupWorker @AssistedInject constructor(
         // pre-funnel periodic that used to live under "backup".
         const val WORK_NAME          = "backup_run"
 
-        /** Explicit destination list, e.g. ["B2", "THUMBDRIVE:content://..."]. */
+        /** Explicit destination list, e.g. ["THUMBDRIVE:content://…", "B2"]. */
         const val KEY_DESTINATIONS   = "destinations"
 
         const val KEY_PACK_POSITION  = "pack_position"
@@ -71,6 +76,12 @@ class BackupWorker @AssistedInject constructor(
         const val KEY_ERROR_TYPE     = "error_type"
         const val KEY_ERROR_DETAIL   = "error_detail"
         const val KEY_PACK_PERCENT   = "pack_percent"
+        /**
+         * The destination string the worker is writing right now. Consumed by
+         * the destination picker to decide which drive (if any) is busy and so
+         * must not be "ejected". Empty when nothing is running.
+         */
+        const val KEY_CURRENT_DESTINATION = "current_destination"
 
         const val STATE_PLANNING     = "PLANNING"
         const val STATE_RECOVERING   = "RECOVERING"
@@ -83,6 +94,7 @@ class BackupWorker @AssistedInject constructor(
         const val ERR_MISSING_CREDENTIALS = "MISSING_CREDENTIALS"
         const val ERR_B2_ERROR            = "B2_ERROR"
         const val ERR_INCONSISTENT        = "INCONSISTENT"
+        const val ERR_DRIVE_EJECTED       = "DRIVE_EJECTED"
     }
 
     private val notifier = BackupNotifier(applicationContext)
@@ -95,6 +107,12 @@ class BackupWorker @AssistedInject constructor(
     private var trackedPartNumber    = 0
     private var trackedPackPercent   = 0
     private var trackedPartsTotal    = 0
+    /**
+     * Destination string currently being written ("B2" or "THUMBDRIVE:…").
+     * Advertised through emitProgress() so the eject UI knows which drive is
+     * busy; drives with a different string are idle and ejectable.
+     */
+    private var trackedDestination   = ""
 
     /**
      * Files the pipeline could not include this run — accumulated from both
@@ -134,6 +152,38 @@ class BackupWorker @AssistedInject constructor(
             val results = mutableListOf<Pair<String, String>>()
 
             for (dest in destinations) {
+                // Advertise the active destination before any sub-progress, so
+                // the eject UI can disable only the busy drive's button and
+                // keep every other drive (and B2) idle-friendly.
+                trackedDestination = dest
+                emitProgress()
+
+                // Construct the eject guard ONCE per destination. `ForDrive`
+                // is required for a THUMBDRIVE destination — a destination
+                // with a tree URI but no volume UUID is a configuration error,
+                // not a silent no-op.
+                val driveUuid: String? = if (dest.startsWith("THUMBDRIVE:")) {
+                    driveUuidOf(dest.removePrefix("THUMBDRIVE:").toUri())
+                } else null
+
+                if (dest.startsWith("THUMBDRIVE:") && driveUuid == null) {
+                    results += dest to "FAILED: no volume UUID for drive"
+                    continue
+                }
+
+                val driveGuard: EjectGuard.ForDrive? =
+                    driveUuid?.let { EjectGuard.ForDrive(ejectBus, it) }
+                val orchestratorGuard: EjectGuard = driveGuard ?: EjectGuard.None
+
+                // Pre-flight: skip a destination the platform has already
+                // begun tearing down, before opening a multipart upload.
+                try {
+                    orchestratorGuard.check()
+                } catch (e: DriveEjectedException) {
+                    results += dest to "SKIPPED: drive ejected"
+                    continue
+                }
+
                 val (backend, useDbState, label) = when {
                     dest == "B2" -> Triple(
                         s3Factory.create(b2Config!!.endpoint, b2Config.bucket, b2Config.keyId, b2RwAppKey!!, b2Config.region),
@@ -143,7 +193,7 @@ class BackupWorker @AssistedInject constructor(
                     dest.startsWith("THUMBDRIVE:") -> {
                         val treeUri = dest.removePrefix("THUMBDRIVE:").toUri()
                         Triple(
-                            ThumbDriveBackend(applicationContext, treeUri) as S3Backend,
+                            ThumbDriveBackend(applicationContext, treeUri, requireNotNull(driveGuard)) as S3Backend,
                             false,
                             folderLabel(treeUri),
                         )
@@ -164,8 +214,15 @@ class BackupWorker @AssistedInject constructor(
                         hasher       = hasher,
                         partsPerPack = numParts,
                         packPrefix   = phonePkHex,
+                        ejectGuard   = orchestratorGuard,
                     ).run(backend, buildProgressListener(label), useDbState)
                     results += label to "OK"
+                } catch (e: DriveEjectedException) {
+                    // The drive went away mid-transfer. Not a failure of the
+                    // run as a whole: the B2 leg (if any) still proceeds, and
+                    // the user needs to know the drive needs re-inserting.
+                    android.util.Log.i("BackupWorker", "drive ejected mid-run: ${e.message}")
+                    results += label to "EJECTED: ${e.message}"
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -180,14 +237,25 @@ class BackupWorker @AssistedInject constructor(
             // notification DB failure cannot mask a successful run.
             postSkipSummary()
 
-            val failed = results.filter { it.second != "OK" }
+            val failed = results.filter { it.second.startsWith("FAILED") }
+            val ejected = results.filter {
+                it.second.startsWith("SKIPPED") || it.second.startsWith("EJECTED")
+            }
+            val ok = results.filter { it.second == "OK" }
             val summary = results.joinToString { "${it.first}: ${it.second}" }
 
-            if (results.isEmpty() || failed.size == results.size) {
-                return fail(ERR_B2_ERROR, "All destinations failed — $summary")
+            when {
+                results.isEmpty() -> fail(ERR_B2_ERROR, "No destinations")
+                ok.isNotEmpty() -> {
+                    UserNotifications.success(notificationDao, "backup", "Backup complete — $summary")
+                    Result.success()
+                }
+                // All outcomes were eject-related (pre-flight SKIPPED or
+                // mid-run EJECTED) — a user action, not a transport failure.
+                ejected.size == results.size -> fail(ERR_DRIVE_EJECTED, summary)
+                // Some FAILED, no OK: a real failure.
+                else -> fail(ERR_B2_ERROR, "No destination succeeded — $summary")
             }
-            UserNotifications.success(notificationDao, "backup", "Backup complete — $summary")
-            Result.success()
         } catch (e: CancellationException) {
             // Rethrow: swallowing CE recorded a user cancel as SUCCEEDED,
             // which observers (Consolidate screen) treated as a clean run.
@@ -347,6 +415,7 @@ class BackupWorker @AssistedInject constructor(
             errorType    = errorType,
             errorDetail  = errorDetail,
             packPercent  = trackedPackPercent,
+            currentDestination = trackedDestination,
         ))
     }
 }

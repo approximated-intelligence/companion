@@ -168,6 +168,13 @@ class BackupOrchestrator(
     private val hasher: FileHasher,
     private val partsPerPack: Int,
     private val packPrefix: String,
+    /**
+     * Required, never nullable. `EjectGuard.None` for B2; `EjectGuard.ForDrive`
+     * for a thumb drive. Making this optional was the exact failure mode the
+     * type exists to prevent: a forgotten argument would compile as a silent
+     * no-op check.
+     */
+    private val ejectGuard: EjectGuard,
 ) {
 
     interface ProgressListener {
@@ -202,6 +209,15 @@ class BackupOrchestrator(
     private fun packKey(number: Int) = "$packPrefix/%010d".format(number)
 
     /**
+     * Throws [DriveEjectedException] when the guard reports the current
+     * destination is going away. Cheap enough to call before every write;
+     * the alternative (letting the write fail with EBUSY) reports the wrong
+     * cause and leaves a half-written pack on a drive that is about to be
+     * unplugged.
+     */
+    private fun checkEject() = ejectGuard.check()
+
+    /**
      * Run against one [backend]. Scan+plan always runs first — it is a no-op
      * on a later destination because `getUnplannedFiles()` returns nothing.
      *
@@ -217,8 +233,10 @@ class BackupOrchestrator(
         listener: ProgressListener,
         useDbState: Boolean,
     ) {
+        checkEject()
         listener.onPackStateChange("PLANNING", 0)
         scanAndPlan(listener)
+        checkEject()
         if (useDbState) executeWithDbState(backend, listener)
         else executeWithoutDbState(backend, listener)
     }
@@ -348,6 +366,7 @@ class BackupOrchestrator(
 
         for (part in allPendingParts) {
             currentCoroutineContext().ensureActive()
+            checkEject()
 
             if (part.packNumber != currentPackNumber) {
                 if (currentPackNumber >= 0) {
@@ -440,6 +459,7 @@ class BackupOrchestrator(
     // ------------------------------------------------------------------------
 
     private suspend fun executeWithoutDbState(backend: S3Backend, listener: ProgressListener) {
+        checkEject()
         val missingPacks = stateRepo.getAllPackNumbers().filter { !backend.objectExists(packKey(it)) }
         if (missingPacks.isEmpty()) {
             listener.onPackStateChange("DONE", 0)
@@ -460,6 +480,7 @@ class BackupOrchestrator(
 
         for (packNumber in missingPacks) {
             currentCoroutineContext().ensureActive()
+            checkEject()
             listener.onPackStateChange("UPLOADING", packNumber)
 
             val parts = stateRepo.getPartsForPack(packNumber)
@@ -470,6 +491,7 @@ class BackupOrchestrator(
 
             for (part in parts) {
                 currentCoroutineContext().ensureActive()
+                checkEject()
                 val cipher = buildEncryptedPart(
                     packNumber = part.packNumber,
                     partNumber = part.partNumber,
@@ -489,6 +511,7 @@ class BackupOrchestrator(
             // ThumbDriveBackend writes the whole pack in one shot and deletes
             // its `.partial` on size mismatch — a truncated pack never
             // appears complete on the drive.
+            checkEject()
             backend.completeMultipart(
                 packKey(packNumber),
                 uploadId,
@@ -521,6 +544,7 @@ class BackupOrchestrator(
         secureRandom: SecureRandom,
         listener: ProgressListener,
     ): Pair<ByteArray, Int> {
+        checkEject()
         val chunks = stateRepo.getChunksForPart(packNumber, partNumber)
         val buffer = PartBuffer(PART_PAX_CAPACITY.toInt())
         var filesDone = filesDoneStart
@@ -678,6 +702,7 @@ class BackupOrchestrator(
     ): String {
         var lastError: Exception? = null
         repeat(3) { attempt ->
+            checkEject()
             try {
                 return backend.uploadPart(key, uploadId, partNumber, data)
             } catch (e: CancellationException) {

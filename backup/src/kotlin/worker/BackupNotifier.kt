@@ -38,6 +38,7 @@ class BackupNotifier(context: Context) {
         errorType: String,
         errorDetail: String,
         packPercent: Int = 0,
+        currentDestination: String = "",
     ) = workDataOf(
         BackupWorker.KEY_PACK_STATE to packState,
         BackupWorker.KEY_PACK_POSITION to packPosition,
@@ -49,5 +50,6 @@ class BackupNotifier(context: Context) {
         BackupWorker.KEY_ERROR_TYPE to errorType,
         BackupWorker.KEY_ERROR_DETAIL to errorDetail,
         BackupWorker.KEY_PACK_PERCENT to packPercent,
+        BackupWorker.KEY_CURRENT_DESTINATION to currentDestination,
     )
 }

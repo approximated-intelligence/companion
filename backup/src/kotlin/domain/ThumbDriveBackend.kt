@@ -30,15 +30,25 @@ private const val ROOT_FOLDER = "CompanionBackup"
  * `objectExists(key)` returns true iff the pack is on the drive.
  *
  * Read paths throw. This backend is write-only by contract.
+ *
+ * [ejectGuard] is required and narrowed to [EjectGuard.ForDrive]: this
+ * backend is only ever constructed for a thumb drive, so a missing eject
+ * check is a compile error, not a silent no-op. The check runs before every
+ * `writePack` — once the system has asked us to release the volume, a write
+ * is racing the unmount.
  */
 class ThumbDriveBackend(
     private val ctx: Context,
     private val treeUri: Uri,
+    private val ejectGuard: EjectGuard.ForDrive,
 ) : S3Backend {
 
     private val buffers = ConcurrentHashMap<String, ConcurrentHashMap<Int, ByteArray>>()
 
+    private fun checkEject() = ejectGuard.check()
+
     override suspend fun createMultipart(key: String): String = withContext(Dispatchers.IO) {
+        checkEject()
         buffers[key] = ConcurrentHashMap()
         "thumbdrive:$key"
     }
@@ -49,6 +59,7 @@ class ThumbDriveBackend(
         partNumber: Int,
         data: ByteArray,
     ): String = withContext(Dispatchers.IO) {
+        checkEject()
         buffers.getOrPut(key) { ConcurrentHashMap() }[partNumber] = data
         "part-$partNumber"
     }
@@ -67,7 +78,10 @@ class ThumbDriveBackend(
                 Log.w(TAG, "completeMultipart($key): parts missing from buffer, skipping")
                 return@withContext
             }
+            checkEject()
             writePack(key, ordered.map { buf.getValue(it) })
+        } catch (e: DriveEjectedException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "completeMultipart($key) failed", e)
         }
@@ -79,7 +93,10 @@ class ThumbDriveBackend(
 
     override suspend fun headObject(key: String): Boolean = withContext(Dispatchers.IO) {
         try {
+            checkEject()
             folderFor(key, create = false)?.findFile(fileName(key)) != null
+        } catch (e: DriveEjectedException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "headObject($key) failed", e)
             false
@@ -88,7 +105,10 @@ class ThumbDriveBackend(
 
     override suspend fun deleteMedia(key: String): Boolean = withContext(Dispatchers.IO) {
         try {
+            checkEject()
             folderFor(key, create = false)?.findFile(fileName(key))?.delete() ?: true
+        } catch (e: DriveEjectedException) {
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "deleteMedia($key) failed", e)
             false
@@ -98,7 +118,10 @@ class ThumbDriveBackend(
     override suspend fun putObject(key: String, data: ByteArray, contentType: String?) {
         withContext(Dispatchers.IO) {
             try {
+                checkEject()
                 writePack(key, listOf(data))
+            } catch (e: DriveEjectedException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "putObject($key) failed", e)
             }
@@ -118,6 +141,7 @@ class ThumbDriveBackend(
         throw UnsupportedOperationException("ThumbDriveBackend is write-only")
 
     private fun writePack(key: String, chunks: List<ByteArray>) {
+        checkEject()
         val folder = folderFor(key, create = true) ?: error("no folder for $key")
         val name = fileName(key)
         val tmpName = "$name.partial"
