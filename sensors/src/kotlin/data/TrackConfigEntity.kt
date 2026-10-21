@@ -1,5 +1,7 @@
 package de.perigon.companion.sensors.data
 
+import de.perigon.companion.sensors.domain.KalmanMode
+
 object RecordingMode {
     const val CONTINUOUS = "CONTINUOUS"
     const val SINGLE_FIX = "SINGLE_FIX"
@@ -25,6 +27,8 @@ data class TrackConfigEntity(
     val autoStopSeconds: Long            = 75600L,
     val autoSplitOnDayRollover: Boolean  = true,
     val autoSegmentGapMs: Long           = DEFAULT_AUTO_SEGMENT_GAP_MS,
+    val kalmanMode: KalmanMode           = KalmanMode.GAUSSIAN,
+    val iskfInverseHessian: Boolean      = false,
 ) {
     val autoStartTime: java.time.LocalTime get() = java.time.LocalTime.ofSecondOfDay(autoStartSeconds)
     val autoStopTime: java.time.LocalTime  get() = java.time.LocalTime.ofSecondOfDay(autoStopSeconds)
@@ -34,7 +38,7 @@ data class TrackConfigEntity(
         const val DEFAULT_HARDWARE_INTERVAL_MS  = 1_000L
         const val DEFAULT_FIX_TIMEOUT_MS        = 30_000L
         const val DEFAULT_MAX_INACCURACY_M      = 50f
-        const val DEFAULT_AUTO_SEGMENT_GAP_MS   = 30 * 60 * 1000L // 30 min
+        const val DEFAULT_AUTO_SEGMENT_GAP_MS   = 30 * 60 * 1000L  // 30 min
 
         // Two interval scales with the same shape (1/2/5/10/15/30/60…), kept
         // side by side because they are read together by the recording UI.

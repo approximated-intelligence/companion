@@ -5,6 +5,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import de.perigon.companion.core.di.ApplicationScope
+import de.perigon.companion.sensors.domain.KalmanMode
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -36,6 +37,8 @@ private object Keys {
     val AUTO_STOP_SECONDS       = longPreferencesKey("auto_stop_seconds")
     val AUTO_SPLIT_DAY_ROLLOVER = booleanPreferencesKey("auto_split_day_rollover")
     val AUTO_SEGMENT_GAP_MS     = longPreferencesKey("auto_segment_gap_ms")
+    val KALMAN_MODE             = stringPreferencesKey("kalman_mode")
+    val ISKF_INVERSE_HESSIAN    = booleanPreferencesKey("iskf_inverse_hessian")
 }
 
 private fun Preferences.toTrackConfig() = TrackConfigEntity(
@@ -53,7 +56,13 @@ private fun Preferences.toTrackConfig() = TrackConfigEntity(
     autoStopSeconds        = this[Keys.AUTO_STOP_SECONDS]       ?: TrackConfigEntity.DEFAULT.autoStopSeconds,
     autoSplitOnDayRollover = this[Keys.AUTO_SPLIT_DAY_ROLLOVER] ?: TrackConfigEntity.DEFAULT.autoSplitOnDayRollover,
     autoSegmentGapMs       = this[Keys.AUTO_SEGMENT_GAP_MS]     ?: TrackConfigEntity.DEFAULT.autoSegmentGapMs,
+    kalmanMode             = parseKalmanMode(this[Keys.KALMAN_MODE]),
+    iskfInverseHessian     = this[Keys.ISKF_INVERSE_HESSIAN]    ?: TrackConfigEntity.DEFAULT.iskfInverseHessian,
 )
+
+private fun parseKalmanMode(raw: String?): KalmanMode =
+    if (raw == null) KalmanMode.GAUSSIAN
+    else runCatching { KalmanMode.valueOf(raw) }.getOrDefault(KalmanMode.GAUSSIAN)
 
 /**
  * Sync-read facade over the track-config DataStore.
@@ -111,6 +120,8 @@ class TrackConfigPrefs @Inject constructor(
             set(Keys.AUTO_STOP_SECONDS,       updated.autoStopSeconds)
             set(Keys.AUTO_SPLIT_DAY_ROLLOVER, updated.autoSplitOnDayRollover)
             set(Keys.AUTO_SEGMENT_GAP_MS,     updated.autoSegmentGapMs)
+            set(Keys.KALMAN_MODE,             updated.kalmanMode.name)
+            set(Keys.ISKF_INVERSE_HESSIAN,    updated.iskfInverseHessian)
         }
     }
 }

@@ -14,6 +14,8 @@ data class BackgroundConfig(
     val airplaneMode: Boolean,
     val autoSplitOnDayRollover: Boolean,
     val autoSegmentGapMs: Long,
+    val kalmanMode: KalmanMode = KalmanMode.GAUSSIAN,
+    val iskfInverseHessian: Boolean = false,
 )
 
 sealed class FixStrategy {
