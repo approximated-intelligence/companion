@@ -39,9 +39,17 @@ class BackupDestinationSelection @Inject constructor() {
         _writeToDriveUris.update { it.intersect(present) }
     }
 
-    /** Destination strings for `BackupRequests.manual(...)`. */
+    /**
+     * Destination strings for `BackupRequests.manual(...)`.
+     *
+     * Thumb drives are emitted BEFORE B2 so their writes finish first: the
+     * user can eject each drive while the B2 leg (usually the slow one) is
+     * still uploading. The BackupWorker's per-destination progress in
+     * [de.perigon.companion.backup.ui.BackupProgress.currentDestination]
+     * drives the eject button's enabled state.
+     */
     fun current(): List<String> = buildList {
-        if (_writeToB2.value) add("B2")
         _writeToDriveUris.value.forEach { add("THUMBDRIVE:$it") }
+        if (_writeToB2.value) add("B2")
     }
 }
