@@ -27,6 +27,24 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
     }
 }
 
+/**
+ * v2 → v3: Kotlin-only change. `lat`/`lon` in TrackPointEntity and
+ * TrackPointRow go from Float to Double to carry the full precision of the
+ * underlying Location values into GPX export and distance math. SQLite REAL
+ * is already double-precision, so no DDL is needed — the migration body is
+ * deliberately empty.
+ *
+ * Existing rows keep whatever precision they were written with (old Float
+ * storage at ~0.4 m granularity at lat=48). New writes carry the full
+ * Location value. This is a one-way ratchet in favour of new data; old data
+ * cannot be un-quantized.
+ */
+val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        // REAL == REAL. Nothing to do.
+    }
+}
+
 /** Recordings are database objects until explicitly exported as GPX. */
 @Database(
     entities = [
@@ -37,7 +55,7 @@ val MIGRATION_1_2 = object : Migration(1, 2) {
         CurrentTrackEntity::class,
     ],
     views = [TrackPointRow::class],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 @TypeConverters(CurrentTrackStateConverter::class)

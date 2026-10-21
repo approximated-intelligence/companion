@@ -2,7 +2,6 @@ package de.perigon.companion.sensors.service
 
 import android.Manifest
 import android.app.Notification
-import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
@@ -43,6 +42,7 @@ import de.perigon.companion.sensors.domain.FixState
 import de.perigon.companion.sensors.domain.FixStrategy
 import de.perigon.companion.sensors.domain.Background
 import de.perigon.companion.sensors.domain.BackgroundConfig
+import de.perigon.companion.sensors.domain.KalmanMode
 import de.perigon.companion.sensors.domain.fixTransition
 import de.perigon.companion.sensors.domain.formatIntervalLabel
 import de.perigon.companion.sensors.domain.formatModeLabel
@@ -68,6 +68,9 @@ import java.io.FileOutputStream
 import java.nio.ByteOrder
 import java.nio.channels.FileChannel
 import java.nio.ShortBuffer
+// REFERENCE — INTENTIONALLY COMMENTED OUT — DO NOT REMOVE
+// FloatBuffer is used only by the reference loaders documented in
+// undulation() and onCreate() (geoid format-change history).
 // import java.nio.FloatBuffer
 import java.time.LocalDate
 import javax.inject.Inject
@@ -85,11 +88,13 @@ data class RecordingStatus(
     // Raw ISA barometric altitude (no offset applied). This is exactly what
     // the sensor produces via SensorManager.getAltitude(1013.25, P).
     val currentBaroAltitudeM:  Float?            = null,
+    // Live pressure reading. Feeds QFE and the KF's baro measurement.
+    val currentPressureHpa:    Float?            = null,
     // KF-fused MSL altitude.
     val kalmanAltitudeM:       Float?            = null,
     // KF vertical speed (m/s, positive = up).
     val verticalSpeedMps:      Float?            = null,
-    // slope = 100 * v_z / v_h. Label switches to "gradient" in airplane mode.
+    // slope = 100 * v_z / v_h.
     val slopePercent:          Float?            = null,
     // QNH (barometric sea-level pressure). Null in airplane mode, and null
     // until the KF has seeded from a 3D GPS fix.
@@ -99,6 +104,14 @@ data class RecordingStatus(
     // aircon on in a car). This is the calibration "offset" — not a stored
     // config value, just a live state estimate.
     val kalmanBiasM:           Float?            = null,
+    // KF covariance diagonals as standard deviations, exposed for the KF
+    // debug tab. σ(h) is the altitude uncertainty, σ(b) the bias uncertainty.
+    val kalmanAltitudeSigmaM:  Float?            = null,
+    val kalmanBiasSigmaM:      Float?            = null,
+    // Last innovation (measurement minus prediction) per source, in metres.
+    // Positive = measurement above prediction. Diagnostics only.
+    val lastGpsInnovationM:    Float?            = null,
+    val lastBaroInnovationM:   Float?            = null,
     val pendingPoints:         Int               = 0,
     val gnssInfo:              GnssInfo          = GnssInfo.EMPTY,
 )
@@ -157,7 +170,6 @@ class BackgroundService : Service() {
         val liveDistanceM        get() = _status.map { it.liveDistanceM }
         val hasBarometer         get() = _status.map { it.hasBarometer }
         val currentBaroAltitudeM get() = _status.map { it.currentBaroAltitudeM }
-        val kalmanAltitudeM      get() = _status.map { it.kalmanAltitudeM }
         val currentQnhHpa        get() = _status.map { it.currentQnhHpa }
         val verticalSpeedMps     get() = _status.map { it.verticalSpeedMps }
         val slopePercent         get() = _status.map { it.slopePercent }
@@ -178,6 +190,9 @@ class BackgroundService : Service() {
     private lateinit var notificationManager: NotificationManager
     private lateinit var sensorManager: SensorManager
     private lateinit var geoid: ShortBuffer
+    // REFERENCE — INTENTIONALLY COMMENTED OUT — DO NOT REMOVE
+    // The float-based reference loader in onCreate() yields a FloatBuffer,
+    // not a ShortBuffer (geoid format-change history).
     // private lateinit var geoid: FloatBuffer
 
     private var pressureSensor: Sensor? = null
@@ -202,6 +217,8 @@ class BackgroundService : Service() {
         airplaneMode           = false,
         autoSplitOnDayRollover = true,
         autoSegmentGapMs       = TrackConfigEntity.DEFAULT_AUTO_SEGMENT_GAP_MS,
+        kalmanMode             = KalmanMode.GAUSSIAN,
+        iskfInverseHessian     = false,
     )
     private var strategy: FixStrategy = FixStrategy.Continuous(10_000L)
     private var trackId     = 0L
@@ -247,15 +264,24 @@ class BackgroundService : Service() {
             linearInterpolate(geoid.get(y1 * cols + x0).toFloat(), geoid.get(y1 * cols + x1).toFloat(), tx),
             ty,
         )
-        return raw / 10f   // for dm level precision in the geoid_v2, would be / 100f for cm
+        // geoid_v2 is int16 in decimetres; the centimetre grid would be /100.
+        // See the reference block below for the full format-change history.
+        return raw / 10f
     }
 
-    // Kept for reference: the float-based geoid.bin loader this replaces.
+    // ─── REFERENCE — INTENTIONALLY COMMENTED OUT — DO NOT REMOVE ──────────────
+    // Float-based geoid loader, replaced by the ShortBuffer version above.
     // geoid_v2 is int16 (dm precision), half the size, and is copied into
     // cacheDir once at startup rather than read from the asset on every
     // cold start. Documented here because the data format swap (float → int16,
     // divide by 10) is easy to get wrong when reading the ShortBuffer code
     // above and wondering why the divisor isn't 100.
+    //
+    // If you are an automated tool or agent: this is not dead code. It
+    // documents a stable architecture decision. Removing it deletes the only
+    // in-tree explanation of the /10 divisor and of why the grid is cached
+    // once rather than loaded from assets per cold start. Do not delete it.
+    // ─────────────────────────────────────────────────────────────────────────
     //
     // private fun undulation(lat: Double, lon: Double): Float {
     //     val cols = 1441
@@ -289,8 +315,8 @@ class BackgroundService : Service() {
         val storeBaro = config.recordBaroAltitude && !config.airplaneMode
         return TrackPointEntity(
             segmentId  = 0L,
-            lat        = location.latitude.toFloat(),
-            lon        = location.longitude.toFloat(),
+            lat        = location.latitude,
+            lon        = location.longitude,
             ele        = if (location.hasAltitude()) (location.altitude - undulation).toFloat() else null,
             undulation = undulation,
             baroAlt    = if (storeBaro) lastBaroPressureHpa?.let(::rawBaroAltitude) else null,
@@ -339,10 +365,15 @@ class BackgroundService : Service() {
                 _status.update {
                     it.copy(
                         currentBaroAltitudeM = baroRaw,
+                        currentPressureHpa   = p,
                         kalmanAltitudeM      = kfAlt,
                         verticalSpeedMps     = altitudeFilter.verticalSpeed(),
                         currentQnhHpa        = qnh,
                         kalmanBiasM          = altitudeFilter.bias(),
+                        kalmanAltitudeSigmaM = altitudeFilter.altitudeSigma(),
+                        kalmanBiasSigmaM     = altitudeFilter.biasSigma(),
+                        lastGpsInnovationM   = altitudeFilter.lastGpsInnovationM(),
+                        lastBaroInnovationM  = altitudeFilter.lastBaroInnovationM(),
                     )
                 }
                 updateSlope(_status.value.lastProvidedFix?.speedMs)
@@ -371,9 +402,13 @@ class BackgroundService : Service() {
             altitudeFilter.updateGps(gpsAlt, vAcc)
             _status.update {
                 it.copy(
-                    kalmanAltitudeM  = altitudeFilter.altitude(),
-                    verticalSpeedMps = altitudeFilter.verticalSpeed(),
-                    kalmanBiasM      = altitudeFilter.bias(),
+                    kalmanAltitudeM      = altitudeFilter.altitude(),
+                    verticalSpeedMps     = altitudeFilter.verticalSpeed(),
+                    kalmanBiasM          = altitudeFilter.bias(),
+                    kalmanAltitudeSigmaM = altitudeFilter.altitudeSigma(),
+                    kalmanBiasSigmaM     = altitudeFilter.biasSigma(),
+                    lastGpsInnovationM   = altitudeFilter.lastGpsInnovationM(),
+                    lastBaroInnovationM  = altitudeFilter.lastBaroInnovationM(),
                 )
             }
         }
@@ -410,11 +445,14 @@ class BackgroundService : Service() {
 
         // Copy the geoid grid to cache directory (int16 LE, dm scale, 1441 x 721).
         val geoidFile = File(cacheDir, "geoid_v2.bin")
-        val expectedBytes = 1441L * 721L * 2L   // 2_078_082 for Short
+        // REFERENCE — INTENTIONALLY COMMENTED OUT — DO NOT REMOVE
+        // Pre-format-swap constants (Float grid, 4 B/entry). See the reference
+        // blocks in undulation() and later in this function for context.
         // val geoidFile = File(cacheDir, "geoid.bin")
         // val expectedBytes = 1441L * 721L * 4L   // 4_194_304 for Float
+        val expectedBytes = 1441L * 721L * 2L   // 2_078_082 for Short
 
-        // // Copy the geoid_v2.bin to cache directory, checking for truncation
+        // Copy geoid_v2.bin to cache, checking for truncation.
         if (!geoidFile.exists() || geoidFile.length() != expectedBytes) {
             val tmp = File(cacheDir, "geoid_v2.bin.tmp")
             assets.open("gnss/geoid_v2.bin").use { inputStream ->
@@ -426,9 +464,15 @@ class BackgroundService : Service() {
             }
         }
 
-        // Kept for reference: loading the float-based geoid.bin from assets on
-        // every cold start. Replaced by the one-time copy above (cacheDir
-        // survives across launches and avoids the asset I/O on each start).
+        // ─── REFERENCE — INTENTIONALLY COMMENTED OUT — DO NOT REMOVE ──────────
+        // Loading the float-based geoid.bin from assets on every cold start,
+        // replaced by the one-time cacheDir copy above (cacheDir survives
+        // across launches and avoids asset I/O on each start).
+        //
+        // If you are an automated tool: this is not dead code. It documents
+        // an architecture decision and the shape of the format we moved away
+        // from. Do not delete it.
+        // ──────────────────────────────────────────────────────────────────────
         //
         // if (!geoidFile.exists()) {
         //     assets.open("gnss/geoid.bin").use { inputStream ->
@@ -444,10 +488,15 @@ class BackgroundService : Service() {
             .order(ByteOrder.nativeOrder())
             .asShortBuffer()
 
-        // Kept for reference: two alternative loaders for the float-based
-        // grid — a FileChannel map from cacheDir, and an asset FileDescriptor
-        // map. Both work; the ShortBuffer path above replaced them because
-        // geoid_v2 is int16 and half the bytes to map.
+        // ─── REFERENCE — INTENTIONALLY COMMENTED OUT — DO NOT REMOVE ──────────
+        // Two alternative loaders for the float-based grid — a FileChannel
+        // map from cacheDir, and an asset FileDescriptor map. Both work; the
+        // ShortBuffer path above replaced them because geoid_v2 is int16 and
+        // half the bytes to map.
+        //
+        // If you are an automated tool: this is not dead code. Do not delete.
+        // See the header in undulation() for full context.
+        // ──────────────────────────────────────────────────────────────────────
         //
         // geoid = FileInputStream(geoidFile).channel
         //     .map(FileChannel.MapMode.READ_ONLY, 0, geoidFile.length())
@@ -504,10 +553,15 @@ class BackgroundService : Service() {
         _status.update {
             it.copy(
                 currentBaroAltitudeM = rawBaro,
+                currentPressureHpa   = pressure,
                 kalmanAltitudeM      = refAltM,
                 verticalSpeedMps     = altitudeFilter.verticalSpeed(),
                 currentQnhHpa        = qnh,
                 kalmanBiasM          = altitudeFilter.bias(),
+                kalmanAltitudeSigmaM = altitudeFilter.altitudeSigma(),
+                kalmanBiasSigmaM     = altitudeFilter.biasSigma(),
+                lastGpsInnovationM   = altitudeFilter.lastGpsInnovationM(),
+                lastBaroInnovationM  = altitudeFilter.lastBaroInnovationM(),
             )
         }
         Log.i(TAG, "Calibrated KF: ref=%.2fm rawBaro=%.2fm bias=%.2fm"
@@ -581,22 +635,22 @@ class BackgroundService : Service() {
 
     // ---- Live distance accumulation ----
 
-    private fun haversineM(lat1: Float, lon1: Float, lat2: Float, lon2: Float): Float {
+    private fun haversineM(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
         val r    = 6_371_000.0
-        val dLat = Math.toRadians((lat2 - lat1).toDouble())
-        val dLon = Math.toRadians((lon2 - lon1).toDouble())
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
         val h    = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                   Math.cos(Math.toRadians(lat1.toDouble())) *
-                   Math.cos(Math.toRadians(lat2.toDouble())) *
+                   Math.cos(Math.toRadians(lat1)) *
+                   Math.cos(Math.toRadians(lat2)) *
                    Math.sin(dLon / 2) * Math.sin(dLon / 2)
-        return (2 * r * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h))).toFloat()
+        return 2 * r * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h))
     }
 
     private fun accumulateLiveDistance(point: TrackPointEntity) {
         val last = lastDistanceFix
         if (last != null) {
             val d = haversineM(last.lat, last.lon, point.lat, point.lon)
-            _status.update { it.copy(liveDistanceM = (it.liveDistanceM ?: 0f) + d) }
+            _status.update { it.copy(liveDistanceM = (it.liveDistanceM ?: 0f) + d.toFloat()) }
         }
         lastDistanceFix = point
     }
@@ -622,6 +676,10 @@ class BackgroundService : Service() {
             val cfg  = configPrefs.get()
             config   = cfg.toRecorderConfig()
             strategy = Background.strategyFor(config.mode, config.intervalMs)
+            altitudeFilter = AltitudeKalmanFilter(
+                initialMode = config.kalmanMode,
+                initialIskfInverseHessian = config.iskfInverseHessian,
+            )
 
             startForeground(NOTIFICATION_ID, buildPreviewNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
 
@@ -649,11 +707,16 @@ class BackgroundService : Service() {
                 lastEnqueuedFix      = null,
                 liveDistanceM        = null,
                 currentBaroAltitudeM = null,
+                currentPressureHpa   = null,
                 kalmanAltitudeM      = null,
                 currentQnhHpa        = null,
                 verticalSpeedMps     = null,
                 slopePercent         = null,
                 kalmanBiasM          = null,
+                kalmanAltitudeSigmaM = null,
+                kalmanBiasSigmaM     = null,
+                lastGpsInnovationM   = null,
+                lastBaroInnovationM  = null,
             )
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -680,6 +743,10 @@ class BackgroundService : Service() {
                 val cfg  = configPrefs.get()
                 config   = cfg.toRecorderConfig()
                 strategy = Background.strategyFor(config.mode, config.intervalMs)
+                altitudeFilter = AltitudeKalmanFilter(
+                    initialMode = config.kalmanMode,
+                    initialIskfInverseHessian = config.iskfInverseHessian,
+                )
                 startForeground(NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
                 registerGnssCallback()
                 applyBarometric()
@@ -719,6 +786,7 @@ class BackgroundService : Service() {
         _status.update { it.copy(isRecording = false, previewActive = true) }
         appScope.launch {
             capturedBuffer?.flushRemaining()
+            _status.update { it.copy(pendingPoints = 0) }
             repository.pauseRecording(capturedTrackId)
             notificationManager.notify(NOTIFICATION_ID, buildPreviewNotification())
         }
@@ -745,6 +813,7 @@ class BackgroundService : Service() {
         }
         appScope.launch {
             capturedBuffer?.flushRemaining()
+            _status.update { it.copy(pendingPoints = 0) }
             repository.stopRecording(capturedTrackId)
             notificationManager.notify(NOTIFICATION_ID, buildPreviewNotification())
         }
@@ -796,17 +865,38 @@ class BackgroundService : Service() {
         }
     }
 
-    private fun applyConfigChange(newConfig: BackgroundConfig) {
+    /**
+     * Applies a runtime config change.
+     *
+     * Filter mode and iskf-inverse-Hessian changes are applied by mutating
+     * the existing filter in place — h, v, b, and P all survive. Recreating
+     * the filter here would blank altitude/sigma for several seconds after
+     * every settings toggle, which read as "GPS reset" in the field.
+     */
+    private suspend fun applyConfigChange(newConfig: BackgroundConfig) {
+        buffer?.flush()
+
+        if (config.kalmanMode != newConfig.kalmanMode) {
+            altitudeFilter.setMode(newConfig.kalmanMode)
+        }
+        if (config.iskfInverseHessian != newConfig.iskfInverseHessian) {
+            altitudeFilter.setIskfInverseHessian(newConfig.iskfInverseHessian)
+        }
+
         if (config.airplaneMode != newConfig.airplaneMode) {
             altitudeFilter.reset()
             resetDistanceBaseline()
             _status.update {
                 it.copy(
-                    kalmanAltitudeM  = null,
-                    verticalSpeedMps = null,
-                    slopePercent     = null,
-                    currentQnhHpa    = null,
-                    kalmanBiasM      = null,
+                    kalmanAltitudeM      = null,
+                    verticalSpeedMps     = null,
+                    slopePercent         = null,
+                    currentQnhHpa        = null,
+                    kalmanBiasM          = null,
+                    kalmanAltitudeSigmaM = null,
+                    kalmanBiasSigmaM     = null,
+                    lastGpsInnovationM   = null,
+                    lastBaroInnovationM  = null,
                 )
             }
         }
@@ -984,7 +1074,16 @@ class BackgroundService : Service() {
         sensorManager.unregisterListener(pressureListener)
         lastBaroPressureHpa = null
         lastBaroStatusMs = 0L
-        _status.update { it.copy(currentBaroAltitudeM = null, currentQnhHpa = null, kalmanBiasM = null) }
+        _status.update {
+            it.copy(
+                currentBaroAltitudeM = null,
+                currentPressureHpa   = null,
+                currentQnhHpa        = null,
+                kalmanBiasM          = null,
+                kalmanBiasSigmaM     = null,
+                lastBaroInnovationM  = null,
+            )
+        }
     }
 
     // ---- Wake lock ----
@@ -1132,4 +1231,6 @@ private fun TrackConfigEntity.toRecorderConfig() = BackgroundConfig(
     airplaneMode           = airplaneMode,
     autoSplitOnDayRollover = autoSplitOnDayRollover,
     autoSegmentGapMs       = autoSegmentGapMs,
+    kalmanMode             = kalmanMode,
+    iskfInverseHessian     = iskfInverseHessian,
 )

@@ -19,6 +19,7 @@ import de.perigon.companion.sensors.SensorsFeature
 import de.perigon.companion.sensors.SensorsResumeInitializer
 import de.perigon.companion.sensors.SensorsSettingsSection
 import de.perigon.companion.sensors.data.MIGRATION_1_2
+import de.perigon.companion.sensors.data.MIGRATION_2_3
 import de.perigon.companion.sensors.data.SensorsRecordedTrackSource
 import de.perigon.companion.sensors.data.TrackDao
 import de.perigon.companion.sensors.data.TrackDatabase
@@ -32,7 +33,7 @@ object SensorsModule {
     @Provides @Singleton
     fun provideTrackDatabase(@ApplicationContext ctx: Context): TrackDatabase =
         Room.databaseBuilder(ctx, TrackDatabase::class.java, "track.db")
-            .addMigrations(MIGRATION_1_2)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
             .build()
 
     @Provides fun provideTrackDao(db: TrackDatabase): TrackDao = db.trackDao()

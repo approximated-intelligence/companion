@@ -9,6 +9,13 @@ import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Bridges the sensors module's Double-precision track storage to the core
+ * renderer contract, which stays Float ([LatLon]). Rendering is a canvas
+ * pixel grid (~1 m/px at useful zoom); the upcast from Double storage to
+ * Float LatLon happens exactly once, here, and never touches the
+ * distance/GPX-export path that the source-of-truth values flow through.
+ */
 @Singleton
 class SensorsRecordedTrackSource @Inject constructor(
     private val repository: TrackRepository,
@@ -33,7 +40,7 @@ class SensorsRecordedTrackSource @Inject constructor(
         return RenderableRecordedTrack(
             name     = entity.name,
             firstTimestamp = segments.firstOrNull()?.firstOrNull()?.time,
-            segments = segments.map { seg -> seg.map { LatLon(it.lat, it.lon) } },
+            segments = segments.map { seg -> seg.map { LatLon(it.lat.toFloat(), it.lon.toFloat()) } },
         )
     }
 }

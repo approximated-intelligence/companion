@@ -50,8 +50,11 @@ data class TrackSegmentEntity(
 data class TrackPointEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val segmentId: Long,
-    val lat: Float,
-    val lon: Float,
+    // Double: Location.getLatitude()/getLongitude() are Double, and these
+    // feed the distance math and GPX export directly. Everything else below
+    // stays Float — those mirror what Location/SensorManager actually return.
+    val lat: Double,
+    val lon: Double,
     val ele: Float? = null,
     val undulation: Float? = null,
     // Barometric altitude from TYPE_PRESSURE via SensorManager.getAltitude
@@ -83,6 +86,8 @@ data class TrackStatsEntity(
     val pointCount: Int = 0,
     val durationMs: Long,
     val recordingLengthMs: Long,
+    // Display stat — Float is more than enough (1 mm precision at 10 km).
+    // The accumulator inside computeTrackStats is Double.
     val distanceM: Float,
     val timeMovingMs: Long,
 )
@@ -120,8 +125,8 @@ data class TrackPointRow(
     val segmentId: Long,
     val segmentStartedAt: Long,
     val pointId: Long,
-    val lat: Float,
-    val lon: Float,
+    val lat: Double,
+    val lon: Double,
     val ele: Float?,
     val undulation: Float?,
     val baroAlt: Float?,
@@ -398,7 +403,8 @@ fun computeTrackStats(trackId: Long, segments: List<List<TrackPointEntity>>): Tr
     val durationMs = (latest - earliest).coerceAtLeast(0L)
 
     var recordingLengthMs = 0L
-    var distanceM         = 0f
+    // Accumulate in Double; convert to Float once at construction.
+    var distanceM         = 0.0
     var timeMovingMs      = 0L
 
     for (seg in segments) {
@@ -417,7 +423,7 @@ fun computeTrackStats(trackId: Long, segments: List<List<TrackPointEntity>>): Tr
         pointCount        = allPoints.size,
         durationMs        = durationMs,
         recordingLengthMs = recordingLengthMs,
-        distanceM         = distanceM,
+        distanceM         = distanceM.toFloat(),
         timeMovingMs      = timeMovingMs,
     )
 }
@@ -428,18 +434,18 @@ private fun movingMs(a: TrackPointEntity, b: TrackPointEntity): Long {
     val speed = b.speedMs ?: a.speedMs
     if (speed != null) return if (speed >= MOVING_THRESHOLD_MS) intervalMs else 0L
     val distance = haversineM(a.lat, a.lon, b.lat, b.lon)
-    return if (distance >= 0.5f) intervalMs else 0L
+    return if (distance >= 0.5) intervalMs else 0L
 }
 
-private fun haversineM(lat1: Float, lon1: Float, lat2: Float, lon2: Float): Float {
+private fun haversineM(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
     val r    = 6_371_000.0
-    val dLat = Math.toRadians((lat2 - lat1).toDouble())
-    val dLon = Math.toRadians((lon2 - lon1).toDouble())
+    val dLat = Math.toRadians(lat2 - lat1)
+    val dLon = Math.toRadians(lon2 - lon1)
     val h    = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-               Math.cos(Math.toRadians(lat1.toDouble())) *
-               Math.cos(Math.toRadians(lat2.toDouble())) *
+               Math.cos(Math.toRadians(lat1)) *
+               Math.cos(Math.toRadians(lat2)) *
                Math.sin(dLon / 2) * Math.sin(dLon / 2)
-    return (2 * r * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h))).toFloat()
+    return 2 * r * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h))
 }
 
 // ---------------------------------------------------------------------------
