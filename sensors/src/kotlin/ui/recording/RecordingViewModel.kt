@@ -20,6 +20,7 @@ import de.perigon.companion.sensors.data.TrackSummary
 import de.perigon.companion.sensors.data.isValidLoggingRate
 import de.perigon.companion.sensors.data.smallestValidLoggingRate
 import de.perigon.companion.sensors.domain.GpxExporter
+import de.perigon.companion.sensors.domain.KalmanMode
 import de.perigon.companion.sensors.service.AutoScheduler
 import de.perigon.companion.sensors.service.GnssInfo
 import de.perigon.companion.sensors.service.BackgroundService
@@ -32,10 +33,12 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.time.LocalDate
 import java.time.LocalTime
 import javax.inject.Inject
@@ -60,11 +63,16 @@ data class RecordingUiState(
     val liveDistanceM:         Float?             = null,
     val hasBarometer:          Boolean            = false,
     val currentBaroAltitudeM:  Float?             = null,
+    val currentPressureHpa:    Float?             = null,
     val kalmanAltitudeM:       Float?             = null,
     val currentQnhHpa:         Float?             = null,
     val verticalSpeedMps:      Float?             = null,
     val slopePercent:          Float?             = null,
     val kalmanBiasM:           Float?             = null,
+    val kalmanAltitudeSigmaM:  Float?             = null,
+    val kalmanBiasSigmaM:      Float?             = null,
+    val lastGpsInnovationM:    Float?             = null,
+    val lastBaroInnovationM:   Float?             = null,
     val pendingPoints:         Int                = 0,
     val gnssInfo:              GnssInfo           = GnssInfo.EMPTY,
     val gpxExportFolderUri:    String?            = null,
@@ -126,11 +134,16 @@ class RecordingViewModel @Inject constructor(
                     liveDistanceM        = status.liveDistanceM,
                     hasBarometer         = status.hasBarometer,
                     currentBaroAltitudeM = status.currentBaroAltitudeM,
+                    currentPressureHpa   = status.currentPressureHpa,
                     kalmanAltitudeM      = status.kalmanAltitudeM,
                     currentQnhHpa        = status.currentQnhHpa,
                     verticalSpeedMps     = status.verticalSpeedMps,
                     slopePercent         = status.slopePercent,
                     kalmanBiasM          = status.kalmanBiasM,
+                    kalmanAltitudeSigmaM = status.kalmanAltitudeSigmaM,
+                    kalmanBiasSigmaM     = status.kalmanBiasSigmaM,
+                    lastGpsInnovationM   = status.lastGpsInnovationM,
+                    lastBaroInnovationM  = status.lastBaroInnovationM,
                     pendingPoints        = status.pendingPoints,
                     gnssInfo             = status.gnssInfo,
                     config               = config,
@@ -290,6 +303,14 @@ class RecordingViewModel @Inject constructor(
     fun setAutoSplitOnDayRollover(v: Boolean)    { viewModelScope.launch { configPrefs.update { it.copy(autoSplitOnDayRollover = v) } } }
     fun setAutoSegmentGapMs(ms: Long)            { viewModelScope.launch { configPrefs.update { it.copy(autoSegmentGapMs = ms) } } }
 
+    fun setKalmanMode(mode: KalmanMode) {
+        viewModelScope.launch { configPrefs.update { it.copy(kalmanMode = mode) } }
+    }
+
+    fun setIskfInverseHessian(enabled: Boolean) {
+        viewModelScope.launch { configPrefs.update { it.copy(iskfInverseHessian = enabled) } }
+    }
+
     fun setHardwareInterval(ms: Long) {
         viewModelScope.launch {
             configPrefs.update { cfg ->
@@ -436,31 +457,50 @@ class RecordingViewModel @Inject constructor(
         enqueueExport(allIds, uri)
     }
 
-    fun shareTrack(trackId: Long) {
-        viewModelScope.launch {
-            flushActiveBuffer()
-            val track    = trackRepository.getTrackById(trackId) ?: return@launch
-            val segments = withContext(Dispatchers.IO) { trackRepository.getSegmentsWithPoints(trackId) }
-            if (segments.isEmpty()) return@launch
-            val file = withContext(Dispatchers.IO) {
-                val dir = File(ctx.cacheDir, "gpx_share"); dir.mkdirs()
-                val f = File(dir, "${track.name.sanitizeFilename()}.gpx")
-                f.outputStream().use { GpxExporter.export(track.name, segments, it) }
-                f
-            }
-            val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.track.fileprovider", file)
-            ctx.startActivity(
-                Intent.createChooser(
-                    Intent(Intent.ACTION_SEND).apply {
-                        type = "application/gpx+xml"
-                        putExtra(Intent.EXTRA_STREAM, uri)
-                        putExtra(Intent.EXTRA_SUBJECT, track.name)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-                    },
-                    "Share track",
-                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
+    fun shareCurrentTrack() {
+        val trackId = _state.value.currentTrackId ?: run {
+            snackbar.send("Nothing to share yet")
+            return
         }
+        viewModelScope.launch { doShare(trackId) }
+    }
+
+    fun shareTrack(trackId: Long) {
+        viewModelScope.launch { doShare(trackId) }
+    }
+
+    private suspend fun doShare(trackId: Long) {
+        if (_state.value.pendingPoints > 0) {
+            ctx.startService(Intent(ctx, BackgroundService::class.java).apply {
+                action = BackgroundService.ACTION_FLUSH
+            })
+            withTimeoutOrNull(3_000) {
+                _state.first { it.pendingPoints == 0 }
+            }
+        }
+
+        val track    = trackRepository.getTrackById(trackId) ?: return
+        val segments = withContext(Dispatchers.IO) { trackRepository.getSegmentsWithPoints(trackId) }
+        if (segments.isEmpty()) return
+
+        val file = withContext(Dispatchers.IO) {
+            val dir = File(ctx.cacheDir, "gpx_share"); dir.mkdirs()
+            val f = File(dir, "${track.name.sanitizeFilename()}.gpx")
+            f.outputStream().use { GpxExporter.export(track.name, segments, it) }
+            f
+        }
+        val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.track.fileprovider", file)
+        ctx.startActivity(
+            Intent.createChooser(
+                Intent(Intent.ACTION_SEND).apply {
+                    type = "application/gpx+xml"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, track.name)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+                },
+                "Share track",
+            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
     }
 
     fun renderSelected() {
@@ -493,8 +533,11 @@ class RecordingViewModel @Inject constructor(
         }
     }
 
-    fun shareLastProvidedFixAsGeo() {
-        val fix = _state.value.lastProvidedFix ?: return
+    /**
+     * Opens the system map at [fix]'s coordinates. Called from any of the
+     * three position lines in the live card — provided, accepted, enqueued.
+     */
+    fun shareFixAsGeo(fix: TrackPointEntity) {
         ctx.startActivity(
             Intent.createChooser(
                 Intent(Intent.ACTION_VIEW, "geo:${fix.lat},${fix.lon}?z=16".toUri()).apply {

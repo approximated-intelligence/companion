@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.core.di.ApplicationScope
+import de.perigon.companion.core.geo.CoordFormat
 import de.perigon.companion.core.prefs.SnapshotStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
@@ -22,7 +23,8 @@ private val Context.trackPrefsDataStore: DataStore<Preferences> by preferencesDa
 
 /**
  * Recorder settings: background GPS switch, deprecated-mode visibility, GPX
- * export folder. Tile-source config moved to media.data.RenderPrefs.
+ * export folder, GNSS coordinate display format. Tile-source config moved to
+ * media.data.RenderPrefs.
  */
 @Singleton
 class TrackPrefs @Inject constructor(
@@ -64,6 +66,23 @@ class TrackPrefs @Inject constructor(
         remove(Keys.GPX_EXPORT_LABEL)
     }
 
+    // ---- GNSS coordinate display format ----
+    fun coordFormat(): CoordFormat =
+        parseCoordFormat(store.snapshot()[Keys.COORD_FORMAT])
+
+    fun observeCoordFormat(): Flow<CoordFormat> =
+        store.data
+            .map { parseCoordFormat(it[Keys.COORD_FORMAT]) }
+            .distinctUntilChanged()
+
+    suspend fun setCoordFormat(format: CoordFormat) =
+        store.edit { set(Keys.COORD_FORMAT, format.name) }
+
+    private fun parseCoordFormat(raw: String?): CoordFormat {
+        if (raw == null) return CoordFormat.DD
+        return runCatching { CoordFormat.valueOf(raw) }.getOrDefault(CoordFormat.DD)
+    }
+
     suspend fun clear() = store.edit { this.clear() }
 
     private object Keys {
@@ -71,5 +90,6 @@ class TrackPrefs @Inject constructor(
         val SHOW_DEPRECATED_MODES = booleanPreferencesKey("show_deprecated_modes")
         val GPX_EXPORT_URI        = stringPreferencesKey("gpx_export_folder_uri")
         val GPX_EXPORT_LABEL      = stringPreferencesKey("gpx_export_folder_label")
+        val COORD_FORMAT          = stringPreferencesKey("coord_format")
     }
 }

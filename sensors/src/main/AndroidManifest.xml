@@ -9,6 +9,13 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
+    <!-- Optional permissions for the GNSS / WiFi / GSM tabs.
+         CHANGE_WIFI_STATE is deliberately absent: the WiFi tab only reads
+         scan results (throttled OS-side), never triggers startScan(). -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+
     <application>
         <service
             android:name="de.perigon.companion.sensors.service.BackgroundService"

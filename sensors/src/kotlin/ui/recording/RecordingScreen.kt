@@ -1,6 +1,8 @@
 package de.perigon.companion.sensors.ui.recording
 
 import de.perigon.companion.core.ui.ToggleRow
+import de.perigon.companion.core.ui.cardinal
+import de.perigon.companion.core.ui.formatDateTime
 import de.perigon.companion.core.ui.formatSpan
 import de.perigon.companion.core.saf.folderLabel
 
@@ -9,6 +11,7 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -22,15 +25,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.navigation.NavController
-import de.perigon.companion.core.ui.AppTopBar
 import de.perigon.companion.core.ui.SecureWindow
 import de.perigon.companion.sensors.data.RecordingMode
 import de.perigon.companion.sensors.data.TrackConfigEntity
@@ -38,19 +41,14 @@ import de.perigon.companion.sensors.data.TrackPointEntity
 import de.perigon.companion.sensors.data.TrackStatsEntity
 import de.perigon.companion.sensors.data.TrackSummary
 import de.perigon.companion.sensors.data.isValidLoggingRate
+import de.perigon.companion.sensors.domain.KalmanMode
 import de.perigon.companion.sensors.domain.formatIntervalLabel
 import de.perigon.companion.sensors.domain.formatModeLabel
 import de.perigon.companion.sensors.service.GnssInfo
-import java.time.Instant
-import java.time.format.DateTimeFormatter
-
-private val LOCAL_FORMAT: DateTimeFormatter =
-    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ssXXX")
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun RecordingScreen(
-    navController: NavController,
+fun RecordingScreenContent(
     vm: RecordingViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -162,27 +160,11 @@ fun RecordingScreen(
     val showLiveCard = state.previewActive || state.isRecording
     val otherTracks = state.recentTracks.filter { it.id != state.currentTrackId }
 
-    Scaffold(
-        topBar       = { AppTopBar(navController) },
-        snackbarHost = { SnackbarHost(snackbar) },
-        bottomBar    = {
-            if (selectionMode) {
-                SelectionBottomBar(
-                    selectedCount = state.selectedTrackIds.size,
-                    allSelected   = state.selectedTrackIds == otherTracks.map { it.id }.toSet(),
-                    onClear       = vm::clearSelection,
-                    onToggleAll   = vm::toggleSelectAll,
-                    onExport      = vm::exportSelectedOrSnack,
-                    onRender      = vm::renderSelected,
-                    onDelete      = { confirmDeleteSelected = true },
-                )
-            }
-        },
-    ) { padding ->
+    Box(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
-            modifier            = Modifier.padding(padding).padding(horizontal = 16.dp).fillMaxWidth(),
+            modifier            = Modifier.padding(horizontal = 16.dp).fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(12.dp),
-            contentPadding      = PaddingValues(vertical = 16.dp),
+            contentPadding      = PaddingValues(top = 16.dp, bottom = 96.dp),
         ) {
             item {
                 RecordingControls(
@@ -194,6 +176,7 @@ fun RecordingScreen(
                     onPause               = vm::pause,
                     onResume              = vm::resume,
                     onNewSegment          = vm::newSegment,
+                    onShareCurrent        = vm::shareCurrentTrack,
                 )
             }
 
@@ -209,16 +192,21 @@ fun RecordingScreen(
                         lastEnqueuedFix      = state.lastEnqueuedFix,
                         liveDistanceM        = state.liveDistanceM,
                         currentBaroAltitudeM = state.currentBaroAltitudeM,
+                        currentPressureHpa   = state.currentPressureHpa,
                         kalmanAltitudeM      = state.kalmanAltitudeM,
                         currentQnhHpa        = state.currentQnhHpa,
                         verticalSpeedMps     = state.verticalSpeedMps,
                         slopePercent         = state.slopePercent,
                         kalmanBiasM          = state.kalmanBiasM,
+                        kalmanAltitudeSigmaM = state.kalmanAltitudeSigmaM,
+                        kalmanBiasSigmaM     = state.kalmanBiasSigmaM,
+                        lastGpsInnovationM   = state.lastGpsInnovationM,
+                        lastBaroInnovationM  = state.lastBaroInnovationM,
                         baroEnabled          = state.config.recordBaroAltitude,
                         hasBarometer         = state.hasBarometer,
                         airplaneMode         = state.config.airplaneMode,
                         gnssInfo             = state.gnssInfo,
-                        onShareGeo           = vm::shareLastProvidedFixAsGeo,
+                        onShareFix           = vm::shareFixAsGeo,
                         onCalibrateBaro      = vm::calibrateBaro,
                         onSetAirplaneMode    = vm::setAirplaneMode,
                     )
@@ -308,6 +296,27 @@ fun RecordingScreen(
             item { Text("Barometric altitude", style = MaterialTheme.typography.titleSmall) }
             item { ToggleRow("Record barometric altitude", "MEMS pressure sensor via standard atmosphere. Adds relative climb precision; ~100 µA at 5 Hz.", state.config.recordBaroAltitude, vm::setRecordBaroAltitude) }
 
+            if (state.config.recordBaroAltitude) {
+                item { HorizontalDivider() }
+                item { Text("Altitude filter", style = MaterialTheme.typography.titleSmall) }
+                item {
+                    KalmanModeSelector(
+                        currentMode = state.config.kalmanMode,
+                        onModeSelected = vm::setKalmanMode,
+                    )
+                }
+                if (state.config.kalmanMode == KalmanMode.ISKF) {
+                    item {
+                        ToggleRow(
+                            title = "Inverse-Hessian covariance (advanced)",
+                            subtitle = "Report the exact robust posterior covariance instead of the nominal Riccati one. Affects only the σ values shown; a slightly larger cost per measurement.",
+                            checked = state.config.iskfInverseHessian,
+                            onCheckedChange = vm::setIskfInverseHessian,
+                        )
+                    }
+                }
+            }
+
             item { HorizontalDivider() }
             item { Text("Segmentation", style = MaterialTheme.typography.titleSmall) }
             item {
@@ -384,7 +393,7 @@ fun RecordingScreen(
                 GpxExportFolder(
                     label    = state.gpxExportFolderLabel,
                     onSelect = { exportFolderPicker.launch(null) },
-                    onClear  = vm::clearGpxExportFolder,
+                    onClear  = { vm.clearGpxExportFolder() },
                 )
             }
             item {
@@ -416,7 +425,56 @@ fun RecordingScreen(
                 }
             }
         }
+
+        SnackbarHost(
+            hostState = snackbar,
+            modifier = Modifier.align(Alignment.BottomCenter)
+        )
+
+        if (selectionMode) {
+            SelectionBottomBar(
+                selectedCount = state.selectedTrackIds.size,
+                allSelected   = state.selectedTrackIds == otherTracks.map { it.id }.toSet(),
+                onClear       = vm::clearSelection,
+                onToggleAll   = vm::toggleSelectAll,
+                onExport      = vm::exportSelectedOrSnack,
+                onRender      = vm::renderSelected,
+                onDelete      = { confirmDeleteSelected = true },
+                modifier      = Modifier.align(Alignment.BottomCenter),
+            )
+        }
     }
+}
+
+@Composable
+private fun KalmanModeSelector(currentMode: KalmanMode, onModeSelected: (KalmanMode) -> Unit) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        KalmanMode.entries.forEach { mode ->
+            FilterChip(
+                selected = currentMode == mode,
+                onClick = { onModeSelected(mode) },
+                label = { Text(mode.label()) },
+            )
+        }
+    }
+    Spacer(Modifier.height(4.dp))
+    Text(
+        when (currentMode) {
+            KalmanMode.GAUSSIAN -> "Plain Kalman filter. No outlier rejection; the reference."
+            KalmanMode.HUBER -> "Huber M-estimation: downweights measurement outliers, Joseph-form covariance."
+            KalmanMode.VBAKF -> "Variational Bayesian: estimates the measurement noise covariance online (inverse-gamma prior)."
+            KalmanMode.ISKF -> "Iteratively Saturated KF (Yang & Boyd 2025): convex robust MAP with separate process and measurement outlier terms."
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+private fun KalmanMode.label(): String = when (this) {
+    KalmanMode.GAUSSIAN -> "Gaussian"
+    KalmanMode.HUBER -> "Huber"
+    KalmanMode.VBAKF -> "VBAKF"
+    KalmanMode.ISKF -> "ISKF"
 }
 
 @Composable
@@ -429,6 +487,7 @@ private fun RecordingControls(
     onPause: () -> Unit,
     onResume: () -> Unit,
     onNewSegment: () -> Unit,
+    onShareCurrent: () -> Unit,
 ) {
     when {
         isRecording -> Card(
@@ -456,6 +515,9 @@ private fun RecordingControls(
                         Spacer(Modifier.width(4.dp))
                         Text("Stop")
                     }
+                }
+                IconButton(onClick = onShareCurrent) {
+                    Icon(Icons.Default.Share, "Share current track")
                 }
             }
         }
@@ -486,6 +548,9 @@ private fun RecordingControls(
                         Text("Stop")
                     }
                 }
+                IconButton(onClick = onShareCurrent) {
+                    Icon(Icons.Default.Share, "Share current track")
+                }
             }
         }
 
@@ -505,48 +570,68 @@ private fun RecordingControls(
     }
 }
 
+@Composable
+private fun StatValueWithUnit(
+    value: String,
+    unit: String,
+    modifier: Modifier = Modifier,
+    color: Color,
+    horizontalAlignment: Arrangement.Horizontal,
+    valueStyle: TextStyle = MaterialTheme.typography.headlineMedium,
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = horizontalAlignment,
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        Text(
+            value,
+            style = valueStyle,
+            fontWeight = FontWeight.SemiBold,
+            color = color,
+            maxLines = 1,
+            softWrap = false,
+        )
+        if (unit.isNotEmpty()) {
+            Spacer(Modifier.width(2.dp))
+            Text(
+                unit,
+                style = MaterialTheme.typography.bodySmall,
+                color = color.copy(alpha = 0.75f),
+                modifier = Modifier.padding(bottom = 3.dp),
+                maxLines = 1,
+                softWrap = false,
+            )
+        }
+    }
+}
+
 /**
- * Bicycle-computer card. No live-state-driven conditional hiding: every
- * stat stays on screen and shows "--" until the data arrives.
+ * Bicycle-computer card.
  *
  *   [status · points]
  *   [distance]           [speed]           [heading]
  *   [altitude]           [slope]           [v_z]
- *     altitude            slope             v_z
- *   heights: GPS · geoid · WGS84 · baro · QNH (one line, placeholders)
- *   calibration row (b shown here, and only here)
- *   fix chain · GNSS · airplane toggle
+ *     heights (one line): GPS · geoid · WGS84 · baro
+ *     KF diagnostics (one line): b · σ(h) · σ(b) · Δgps · Δbaro
+ *     Q-values (one line, right-aligned "recalibrate" link when live)
+ *   fix chain (each line clickable → share via map)
+ *   GNSS · airplane toggle
  *
- * The first three values use large type and inline units (km, km/h, °) so
- * they read as a unit and need no labels. The second row uses slightly
- * smaller type and one-word labels, because "+2.1%" and "+1.23 m/s" are
- * ambiguous without them.
+ * The three top-row values are rendered as value + smaller unit inline so
+ * they never wrap; the previous `"%.1f km/h".format(...)` fit on one line
+ * only up to ~99.9 km/h at `headlineMedium`.
  *
- * QNH shows "(needs 3D fix)" when the barometer is enabled and working but
- * the altitude filter has not yet seeded — that happens when the device is
- * stationary indoors or otherwise has only a 2D fix. The filter requires a
- * GPS altitude measurement to initialize; a barometer-only seed is not
- * possible because the weather bias is unknown until GPS pins the
- * absolute reference.
+ * The three fix-chain lines are tight `labelSmall` text (lineHeight 14 sp)
+ * and are clickable directly — no icon button. The 24 dp icon button that
+ * used to sit on the provided-fix line enforced a Row height that pushed
+ * the three lines apart. Every fix is shareable, not just the most recent.
  *
- * "heading" is Location.getBearing(): course over ground, the direction
- * the device is actually moving. Goes null at rest (hasBearing is false
- * when stationary), which is why the column used to disappear — the fix
- * is to keep it visible and show "--" while still. Not bearing-to-a-
- * target; this app has no routing.
+ * Airplane-mode hides the baro-derived values (b, σ(b), Δbaro, Q-line,
+ * recalibrate) — cabin pressure is not valid baro input.
  *
- * Airplane-mode interaction:
- *   - KF altitude still works (GPS-only smoothing).
- *   - slope label flips to "gradient".
- *   - bias b and QNH disappear: they describe a barometric measurement
- *     that is no longer in the pipeline. Calibration row is hidden.
- *   - the baro reading is labelled "cabin" and never stored.
- *
- * No-barometer interaction (hardware without a pressure sensor):
- *   - calibration row is hidden
- *   - debug line shows "baro (no sensor)" instead of a numeric placeholder
- *   - QNH is omitted entirely (there is no pressure from which to compute it)
- *   - KF still works from GPS alone
+ * No-barometer hides baro from the heights line and the Q-line/recalibrate
+ * entirely.
  */
 @Composable
 private fun LiveCard(
@@ -559,16 +644,21 @@ private fun LiveCard(
     lastEnqueuedFix: TrackPointEntity?,
     liveDistanceM: Float?,
     currentBaroAltitudeM: Float?,
+    currentPressureHpa: Float?,
     kalmanAltitudeM: Float?,
     currentQnhHpa: Float?,
     verticalSpeedMps: Float?,
     slopePercent: Float?,
     kalmanBiasM: Float?,
+    kalmanAltitudeSigmaM: Float?,
+    kalmanBiasSigmaM: Float?,
+    lastGpsInnovationM: Float?,
+    lastBaroInnovationM: Float?,
     baroEnabled: Boolean,
     hasBarometer: Boolean,
     airplaneMode: Boolean,
     gnssInfo: GnssInfo,
-    onShareGeo: () -> Unit,
+    onShareFix: (TrackPointEntity) -> Unit,
     onCalibrateBaro: (Float) -> Unit,
     onSetAirplaneMode: (Boolean) -> Unit,
 ) {
@@ -584,7 +674,6 @@ private fun LiveCard(
         isPaused    -> MaterialTheme.colorScheme.onSecondaryContainer
         else        -> MaterialTheme.colorScheme.onSurfaceVariant
     }
-    val slopeLabel = if (airplaneMode) "gradient" else "slope"
 
     val speedKmh: Float? = lastProvidedFix?.speedMs?.let { it * 3.6f }
     // Location.getBearing() is course over ground (direction of travel),
@@ -593,51 +682,78 @@ private fun LiveCard(
     val heading: Float? = lastProvidedFix?.bearing
 
     // Row 1 — values with units inline, no labels.
-    val distanceText: String = liveDistanceM?.let {
-        if (it >= 1000f) "%.2f km".format(it / 1000f) else "%.0f m".format(it)
-    } ?: "--"
-    val speedText: String = speedKmh?.let { "%.1f km/h".format(it) } ?: "--"
-    val headingText: String = heading?.let { "${cardinal(it)} ${it.toInt()}°" } ?: "--"
+    val (distanceValue, distanceUnit) = when {
+        liveDistanceM == null -> "--" to ""
+        liveDistanceM >= 1000f -> "%.2f".format(liveDistanceM / 1000f) to "km"
+        else -> "%.0f".format(liveDistanceM) to "m"
+    }
+    val (speedValue, speedUnit) = if (speedKmh != null) {
+        "%.1f".format(speedKmh) to "km/h"
+    } else "--" to ""
+    val (headingValue, headingUnit) = if (heading != null) {
+        "${cardinal(heading)} ${heading.toInt()}" to "°"
+    } else "--" to ""
 
-    // Row 2 — smaller; values with units inline, tiny label below.
     val kfAltitudeText: String = kalmanAltitudeM?.let { "%.1f m".format(it) } ?: "--"
     val slopeText: String = "%+.1f%%".format(slopePercent ?: 0f)
     val vzText: String = verticalSpeedMps?.let { "%+.2f m/s".format(it) } ?: "--"
 
-    // Debug line. Every height representation the pipeline carries, plus QNH.
+    // Debug line. Every height representation the pipeline carries, plus baro.
     // Each part is present with a "--" placeholder when the value is not yet
-    // available, so the line never changes shape as state arrives. QNH is
-    // gated only on config (baro on, not airplane mode), never on live state.
+    // available, so the line never changes shape as state arrives.
     val eleM: Float? = lastProvidedFix?.ele
     val geoidM: Float? = lastProvidedFix?.undulation
     val wgs84M: Float? = if (eleM != null && geoidM != null) eleM + geoidM else null
-    val baroRawM: Float? = currentBaroAltitudeM
-    val debugParts = buildList {
-        add("GPS " + (eleM?.let { "%.1f".format(it) } ?: "--"))
-        add("geoid " + (geoidM?.let { "%.1f".format(it) } ?: "--"))
-        add("WGS84 " + (wgs84M?.let { "%.1f".format(it) } ?: "--"))
+    val heightLine = buildString {
+        append("GPS ").append(eleM?.let { "%.1f".format(it) } ?: "--")
+        append(" · geoid ").append(geoidM?.let { "%.1f".format(it) } ?: "--")
+        append(" · WGS84 ").append(wgs84M?.let { "%.1f".format(it) } ?: "--")
         if (baroEnabled) {
-            when {
-                !hasBarometer -> add("baro (no sensor)")
-                else -> {
-                    val baroLabel = if (airplaneMode) "cabin " else "baro "
-                    add(baroLabel + (baroRawM?.let { "%.1f".format(it) } ?: "--"))
-                    if (!airplaneMode) {
-                        // QNH requires a 3D fix: the filter cannot seed from
-                        // baro alone, because the weather bias is unknown
-                        // until GPS pins the absolute reference.
-                        val qnhText = when {
-                            currentQnhHpa != null   -> "%.0f".format(currentQnhHpa)
-                            kalmanAltitudeM == null -> "(needs 3D fix)"
-                            else                    -> "--"
-                        }
-                        add("QNH " + qnhText)
-                    }
-                }
+            append(" · ")
+            if (!hasBarometer) {
+                append("baro (no sensor)")
+            } else {
+                append(if (airplaneMode) "cabin " else "baro ")
+                append(currentBaroAltitudeM?.let { "%.1f".format(it) } ?: "--")
             }
         }
     }
 
+    val baroInPipeline = baroEnabled && !airplaneMode && hasBarometer
+    val kfLine: String? = if (kalmanAltitudeM != null) {
+        buildString {
+            if (baroInPipeline) {
+                append("b ").append(kalmanBiasM?.let { "%+.1f m".format(it) } ?: "--")
+                append(" · ")
+            }
+            append("σ(h) ").append(kalmanAltitudeSigmaM?.let { "%.1f".format(it) } ?: "--")
+            if (baroInPipeline) {
+                append(" · σ(b) ").append(kalmanBiasSigmaM?.let { "%.1f".format(it) } ?: "--")
+            }
+            append(" · Δgps ").append(lastGpsInnovationM?.let { "%+.1f".format(it) } ?: "--")
+            if (baroInPipeline) {
+                append(" · Δbaro ").append(lastBaroInnovationM?.let { "%+.1f".format(it) } ?: "--")
+            }
+        }
+    } else null
+
+    // QNH requires a 3D fix: the filter cannot seed from baro alone, because
+    // the weather bias is unknown until GPS pins the absolute reference.
+    // "(needs 3D fix)" is shown in that window rather than a bare "--".
+    val qLine: String? = if (baroInPipeline) {
+        buildString {
+            append("QFE ")
+            append(currentPressureHpa?.let { "%.1f hPa".format(it) } ?: "-- hPa")
+            append(" · QNH ")
+            when {
+                currentQnhHpa != null   -> append("%.1f hPa".format(currentQnhHpa))
+                kalmanAltitudeM == null -> append("(needs 3D fix)")
+                else                    -> append("-- hPa")
+            }
+        }
+    } else null
+
+    val canRecalibrate = baroInPipeline && currentBaroAltitudeM != null
     val gnssText: String = gnssInfo.format().ifEmpty { "--" }
 
     Card(
@@ -645,7 +761,6 @@ private fun LiveCard(
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            // Status row.
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Icon(
                     when {
@@ -675,45 +790,22 @@ private fun LiveCard(
                 }
             }
 
-            // Row 1: distance · speed · heading, inline units, no labels.
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                Text(
-                    distanceText,
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = contentColor,
-                    textAlign = TextAlign.Start,
-                )
-                Text(
-                    speedText,
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = contentColor,
-                    textAlign = TextAlign.Center,
-                )
-                Text(
-                    headingText,
-                    modifier = Modifier.weight(1f),
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = contentColor,
-                    textAlign = TextAlign.End,
-                )
+                StatValueWithUnit(distanceValue, distanceUnit, Modifier.weight(1f), contentColor, Arrangement.Start)
+                StatValueWithUnit(speedValue, speedUnit, Modifier.weight(1f), contentColor, Arrangement.Center)
+                StatValueWithUnit(headingValue, headingUnit, Modifier.weight(1f), contentColor, Arrangement.End)
             }
 
-            // Row 2: altitude · slope · v_z — one step down in prominence.
+            // Row 2 — altitude · slope · v_z, one step down in prominence.
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 StatColumn(
                     value = kfAltitudeText,
-                    // label = "altitude",
                     modifier = Modifier.weight(1f),
                     color = contentColor,
                     valueStyle = MaterialTheme.typography.titleLarge,
@@ -721,7 +813,6 @@ private fun LiveCard(
                 )
                 StatColumn(
                     value = slopeText,
-                    // label = slopeLabel,
                     modifier = Modifier.weight(1f),
                     color = contentColor,
                     valueStyle = MaterialTheme.typography.titleLarge,
@@ -729,7 +820,6 @@ private fun LiveCard(
                 )
                 StatColumn(
                     value = vzText,
-                    // label = "v_z",
                     modifier = Modifier.weight(1f),
                     color = contentColor,
                     valueStyle = MaterialTheme.typography.titleMedium,
@@ -737,36 +827,42 @@ private fun LiveCard(
                 )
             }
 
-            // Debug line: single row, all heights + QNH, "--" placeholders.
-            Text(
-                debugParts.joinToString(" · "),
-                style = MaterialTheme.typography.labelSmall,
-                color = contentColor.copy(alpha = 0.6f),
-            )
-
-            // Calibration row. b lives here, and only here. Config-gated
-            // (baro on, not airplane mode) AND hardware-gated (sensor present)
-            // — no flicker with live state, no dead calibration button on
-            // phones without a barometer.
-            if (baroEnabled && !airplaneMode && hasBarometer) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
+                val debugStyle = MaterialTheme.typography.labelSmall.copy(lineHeight = 14.sp)
+                Text(
+                    heightLine,
+                    style = debugStyle,
+                    color = contentColor.copy(alpha = 0.6f),
+                )
+                if (kfLine != null) {
                     Text(
-                        if (kalmanBiasM == null) "uncalibrated (converging)"
-                        else "b = %+.1f m".format(kalmanBiasM),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (kalmanBiasM == null) MaterialTheme.colorScheme.error else contentColor.copy(alpha = 0.7f),
+                        kfLine,
+                        style = debugStyle,
+                        color = contentColor.copy(alpha = 0.6f),
                     )
-                    Spacer(Modifier.weight(1f))
-                    TextButton(
-                        onClick = { showCalibrateDialog = true },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
-                        modifier = Modifier.height(24.dp),
+                }
+                if (qLine != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Text(
-                            if (kalmanBiasM == null) "initial calibration" else "recalibrate",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = contentColor,
+                            qLine,
+                            modifier = Modifier.weight(1f),
+                            style = debugStyle,
+                            color = contentColor.copy(alpha = 0.6f),
                         )
+                        if (canRecalibrate) {
+                            Text(
+                                "recalibrate",
+                                style = debugStyle,
+                                color = contentColor.copy(alpha = 0.85f),
+                                modifier = Modifier
+                                    .clickable { showCalibrateDialog = true }
+                                    .padding(horizontal = 4.dp),
+                            )
+                        }
                     }
                 }
             }
@@ -778,7 +874,7 @@ private fun LiveCard(
                 acceptedFix = lastAcceptedFix,
                 enqueuedFix = lastEnqueuedFix,
                 contentColor = contentColor,
-                onShareGeo = onShareGeo,
+                onShareFix = onShareFix,
             )
 
             // GNSS: always shown. "--" before first satellite status arrives.
@@ -825,10 +921,9 @@ private fun LiveCard(
 @Composable
 private fun StatColumn(
     value: String,
-    // label: String,
     modifier: Modifier = Modifier,
     color: Color,
-    valueStyle: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.titleMedium,
+    valueStyle: TextStyle = MaterialTheme.typography.titleMedium,
     textAlign: TextAlign = TextAlign.Start,
 ) {
     Column(modifier = modifier) {
@@ -840,13 +935,6 @@ private fun StatColumn(
             textAlign = textAlign,
             modifier = Modifier.fillMaxWidth(),
         )
-        // Text(
-        //     label,
-        //     style = MaterialTheme.typography.labelSmall,
-        //     color = color.copy(alpha = 0.7f),
-        //     textAlign = textAlign,
-        //     modifier = Modifier.fillMaxWidth(),
-        // )
     }
 }
 
@@ -856,38 +944,41 @@ private fun FixChain(
     acceptedFix: TrackPointEntity?,
     enqueuedFix: TrackPointEntity?,
     contentColor: Color,
-    onShareGeo: () -> Unit,
+    onShareFix: (TrackPointEntity) -> Unit,
 ) {
     // Each line appears once and stays for the session — monotone progression
     // through the pipeline. "waiting for fixes…" is the only state where all
     // three are absent, and it is replaced the moment the first fix arrives.
     // Not flicker: state advances, it does not oscillate.
-    if (providedFix != null) {
-        val parts = mutableListOf("provided ${formatLocal(providedFix.time)}")
-        if (providedFix.accuracyM != null) parts += "±%.0fm".format(providedFix.accuracyM)
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(parts.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = contentColor.copy(alpha = 0.7f), modifier = Modifier.weight(1f))
-            IconButton(onClick = onShareGeo, modifier = Modifier.size(24.dp)) {
-                Icon(Icons.Default.MyLocation, "Share location", tint = contentColor, modifier = Modifier.size(14.dp))
-            }
-        }
-    }
+    val lineStyle = MaterialTheme.typography.labelSmall.copy(lineHeight = 14.sp)
 
-    if (acceptedFix != null) {
-        val parts = mutableListOf("accepted ${formatLocal(acceptedFix.time)}")
-        if (acceptedFix.accuracyM != null) parts += "±%.0fm".format(acceptedFix.accuracyM)
-        Text(parts.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = contentColor.copy(alpha = 0.7f))
-    }
-
-    if (enqueuedFix != null) {
-        val parts = mutableListOf("enqueued ${formatLocal(enqueuedFix.time)}")
-        if (enqueuedFix.accuracyM != null) parts += "±%.0fm".format(enqueuedFix.accuracyM)
-        Text(parts.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = contentColor.copy(alpha = 0.7f))
-    }
+    if (providedFix != null) FixLine("provided", providedFix, lineStyle, contentColor, onShareFix)
+    if (acceptedFix != null) FixLine("accepted", acceptedFix, lineStyle, contentColor, onShareFix)
+    if (enqueuedFix != null) FixLine("enqueued", enqueuedFix, lineStyle, contentColor, onShareFix)
 
     if (providedFix == null && acceptedFix == null && enqueuedFix == null) {
-        Text("waiting for fixes…", style = MaterialTheme.typography.labelSmall, color = contentColor.copy(alpha = 0.7f))
+        Text("waiting for fixes…", style = lineStyle, color = contentColor.copy(alpha = 0.7f))
     }
+}
+
+@Composable
+private fun FixLine(
+    label: String,
+    fix: TrackPointEntity,
+    style: TextStyle,
+    contentColor: Color,
+    onShareFix: (TrackPointEntity) -> Unit,
+) {
+    val parts = mutableListOf("$label ${formatDateTime(fix.time, "yyyy-MM-dd HH:mm:ssXXX")}")
+    if (fix.accuracyM != null) parts += "±%.0fm".format(fix.accuracyM)
+    Text(
+        parts.joinToString(" · "),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onShareFix(fix) },
+        style = style,
+        color = contentColor.copy(alpha = 0.7f),
+    )
 }
 
 @Composable
@@ -1120,8 +1211,9 @@ private fun SelectionBottomBar(
     onExport: () -> Unit,
     onRender: () -> Unit,
     onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    BottomAppBar {
+    BottomAppBar(modifier = modifier) {
         IconButton(onClick = onClear) { Icon(Icons.Default.Close, "Cancel selection") }
         Text("$selectedCount selected", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
         IconButton(onClick = onToggleAll) {
@@ -1189,23 +1281,3 @@ private fun TimePickerRow(label: String, time: java.time.LocalTime, onTimeSelect
 }
 
 private fun formatTime(time: java.time.LocalTime): String = "%02d:%02d".format(time.hour, time.minute)
-
-private fun formatLocal(timeMs: Long): String =
-    Instant.ofEpochMilli(timeMs)
-        .atZone(java.time.ZoneId.systemDefault())
-        .format(LOCAL_FORMAT)
-
-private fun cardinal(deg: Float): String {
-    val d = ((deg % 360f) + 360f) % 360f
-    return when {
-        d < 22.5f || d >= 337.5f -> "N"
-        d < 67.5f  -> "NE"
-        d < 112.5f -> "E"
-        d < 157.5f -> "SE"
-        d < 202.5f -> "S"
-        d < 247.5f -> "SW"
-        d < 292.5f -> "W"
-        d < 337.5f -> "NW"
-        else       -> "N"
-    }
-}

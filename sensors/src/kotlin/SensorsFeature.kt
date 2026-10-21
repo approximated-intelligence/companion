@@ -28,7 +28,7 @@ import de.perigon.companion.sensors.data.TrackConfigPrefs
 import de.perigon.companion.sensors.data.TrackPrefs
 import de.perigon.companion.sensors.service.AutoScheduler
 import de.perigon.companion.sensors.service.BackgroundService
-import de.perigon.companion.sensors.ui.recording.RecordingScreen
+import de.perigon.companion.sensors.ui.SensorsScreen
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import javax.inject.Inject
@@ -51,7 +51,7 @@ object SensorsRequirements {
     val location: AccessRequirement = AccessRequirement.Permissions(
         key = "location",
         title = "Location",
-        rationale = "For recording tracks.",
+        rationale = "For recording tracks and showing the GNSS skyplot.",
         permissions = listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
         optional = true,
     )
@@ -59,21 +59,61 @@ object SensorsRequirements {
         AccessRequirement.BackgroundLocation("For recording with the screen off.")
     val exactAlarms: AccessRequirement =
         AccessRequirement.ExactAlarms("For scheduled recording and alarm-mode fixes.")
+
+    /**
+     * Cell info on API 30+ requires BOTH permissions: READ_PHONE_STATE for
+     * the TelephonyCallback to fire, and ACCESS_FINE_LOCATION for the cells
+     * not to be redacted (MCC/MNC blank, CID/NCI = UNAVAILABLE). Asking for
+     * only READ_PHONE_STATE produced a callback that delivered cells with
+     * every identity field blank — indistinguishable from "no cells".
+     * Both are already required elsewhere ([location] asks for the same
+     * FINE_LOCATION), so in practice this doesn't add a new prompt; it just
+     * makes the WiFi/GSM tab's own requirement honest.
+     */
+    val telephony: AccessRequirement = AccessRequirement.Permissions(
+        key = "telephony",
+        title = "Phone State",
+        rationale = "Required to display GSM/LTE/NR cell tower information.",
+        permissions = listOf(
+            Manifest.permission.READ_PHONE_STATE,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        ),
+        optional = true
+    )
+
+    /**
+     * NEARBY_WIFI_DEVICES is the only runtime permission WiFi scan needs on
+     * API 33+. ACCESS_FINE_LOCATION was required on API 30-32, but minSdk=34
+     * excludes those — and requiring it here would force any user who wants
+     * only the WiFi tab to grant a location permission for a feature that
+     * doesn't use location.
+     */
+    val wifi: AccessRequirement = AccessRequirement.Permissions(
+        key = "wifi_scan",
+        title = "WiFi Scan",
+        rationale = "Required to display nearby WiFi networks.",
+        permissions = listOf(Manifest.permission.NEARBY_WIFI_DEVICES),
+        optional = true
+    )
 }
 
 /**
- * The recording feature. Produces tracks; does not consume GPX from other
- * apps, and does not render — both live in :media.
+ * The sensors feature: recording, GNSS skyplot, raw sensors, WiFi and GSM
+ * inspection. Produces tracks; does not consume GPX from other apps, and
+ * does not render — both live in :media.
  */
-class SensorsFeature @Inject constructor(
-    private val prefs: TrackPrefs,
-) : FeatureEntry {
+class SensorsFeature @Inject constructor() : FeatureEntry {
     override val id = "sensors"
     override val order = 300
     override val startRoute: Any = SensorsRoute.Recording
 
+    /**
+     * Always visible: only the Track tab needs background GPS, and the other
+     * tabs (GNSS / Raw / Wifi / GSM) work regardless of it. [SensorsScreen]
+     * hides the Track tab itself when background GPS is off.
+     */
     override val menuItems = listOf(
-        MenuItem("Track", SensorsRoute.Recording, order = 70, visible = prefs.observeBackgroundGps()),
+        MenuItem("Sensors", SensorsRoute.Recording, order = 70),
     )
 
     override val requirements = listOf(
@@ -81,14 +121,16 @@ class SensorsFeature @Inject constructor(
         SensorsRequirements.backgroundLocation,
         SensorsRequirements.exactAlarms,
         CommonRequirements.notifications,
+        SensorsRequirements.telephony,
+        SensorsRequirements.wifi
     )
 
     override fun register(graph: NavGraphBuilder, nav: NavHostController) {
-        graph.composable<SensorsRoute.Recording> { RecordingScreen(navController = nav) }
+        graph.composable<SensorsRoute.Recording> { SensorsScreen(navController = nav) }
     }
 
     override fun titleFor(route: String): String? = when {
-        route.endsWith("SensorsRoute.Recording") -> "Run"
+        route.endsWith("SensorsRoute.Recording") -> "Sensors"
         else -> null
     }
 
