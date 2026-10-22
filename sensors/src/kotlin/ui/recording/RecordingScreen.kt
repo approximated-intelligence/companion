@@ -41,10 +41,13 @@ import de.perigon.companion.sensors.data.TrackPointEntity
 import de.perigon.companion.sensors.data.TrackStatsEntity
 import de.perigon.companion.sensors.data.TrackSummary
 import de.perigon.companion.sensors.data.isValidLoggingRate
+import de.perigon.companion.sensors.data.toKalmanTuning
 import de.perigon.companion.sensors.domain.KalmanMode
+import de.perigon.companion.sensors.domain.KalmanModel
 import de.perigon.companion.sensors.domain.formatIntervalLabel
 import de.perigon.companion.sensors.domain.formatModeLabel
 import de.perigon.companion.sensors.service.GnssInfo
+import de.perigon.companion.sensors.ui.KalmanAdvancedPanel
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -299,12 +302,25 @@ fun RecordingScreenContent(
             if (state.config.recordBaroAltitude) {
                 item { HorizontalDivider() }
                 item { Text("Altitude filter", style = MaterialTheme.typography.titleSmall) }
+
                 item {
+                    Text("Model", style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(4.dp))
+                    KalmanModelSelector(
+                        currentModel = state.config.kalmanModel,
+                        onModelSelected = vm::setKalmanModel,
+                    )
+                }
+
+                item {
+                    Text("Update method", style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(4.dp))
                     KalmanModeSelector(
                         currentMode = state.config.kalmanMode,
                         onModeSelected = vm::setKalmanMode,
                     )
                 }
+
                 if (state.config.kalmanMode == KalmanMode.ISKF) {
                     item {
                         ToggleRow(
@@ -314,6 +330,20 @@ fun RecordingScreenContent(
                             onCheckedChange = vm::setIskfInverseHessian,
                         )
                     }
+                }
+
+                // Advanced tuning expander. Same composable as the KF tab,
+                // but wired to the persisted config: onChange writes through
+                // RecordingViewModel → TrackConfigPrefs, applyConfigChange
+                // picks it up, and the filter rebuilds if the change affects
+                // process noise. No "Apply to Track" button here — the tab
+                // *is* the Track settings.
+                item {
+                    KalmanAdvancedPanel(
+                        model = state.config.kalmanModel,
+                        tuning = state.config.toKalmanTuning(),
+                        onChange = vm::setKalmanTuning,
+                    )
                 }
             }
 
@@ -444,6 +474,30 @@ fun RecordingScreenContent(
             )
         }
     }
+}
+
+@Composable
+private fun KalmanModelSelector(currentModel: KalmanModel, onModelSelected: (KalmanModel) -> Unit) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        KalmanModel.entries.forEach { model ->
+            FilterChip(
+                selected = currentModel == model,
+                onClick = { onModelSelected(model) },
+                label = { Text(model.displayName) },
+            )
+        }
+    }
+    Spacer(Modifier.height(4.dp))
+    Text(
+        when (currentModel) {
+            KalmanModel.THREE_STATE ->
+                "h, v_z, b. v_z is a proper KF state; velocity observable from GPS but weakly, so σ_h grows as t^{3/2} during outages. Better for short outages with well-tracked velocity; worse for long ones."
+            KalmanModel.TWO_STATE ->
+                "h, b. Baro drives h at full bandwidth; no velocity state steals baro information. v_z is derived by a cascade position-difference filter (leaf; no feedback). σ_h grows as t^{1/2} during outages. Better for long outages; worse for short ones on a moving vehicle."
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 @Composable
@@ -632,6 +686,14 @@ private fun StatValueWithUnit(
  *
  * No-barometer hides baro from the heights line and the Q-line/recalibrate
  * entirely.
+ *
+ * slope and v_z are populated in BOTH models. 3-state: v_z is the KF's own
+ * velocity state. 2-state: v_z comes from the filter's cascade
+ * position-difference estimator (a leaf — no feedback into h or b), so the
+ * live card shows climb rate and slope in the 2-state too. The "--" case
+ * for slope remains valid: it also covers v_h < 0.5 m/s, and the first
+ * fraction of a second after seed when the cascade has not produced its
+ * first sample yet.
  */
 @Composable
 private fun LiveCard(
@@ -695,7 +757,10 @@ private fun LiveCard(
     } else "--" to ""
 
     val kfAltitudeText: String = kalmanAltitudeM?.let { "%.1f m".format(it) } ?: "--"
-    val slopeText: String = "%+.1f%%".format(slopePercent ?: 0f)
+    // "--" covers three cases: v_h < 0.5 m/s (below MIN_SPEED_FOR_SLOPE_MPS),
+    // v_z not yet available (first sample after seed), or the filter not
+    // seeded at all. All three are genuinely unknown, not "flat".
+    val slopeText: String = slopePercent?.let { "%+.1f%%".format(it) } ?: "--"
     val vzText: String = verticalSpeedMps?.let { "%+.2f m/s".format(it) } ?: "--"
 
     // Debug line. Every height representation the pipeline carries, plus baro.

@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextMeasurer
@@ -44,17 +45,26 @@ import de.perigon.companion.core.ui.ToggleRow
 import de.perigon.companion.core.ui.access.RequireAccess
 import de.perigon.companion.sensors.SensorsRequirements
 import de.perigon.companion.sensors.domain.KalmanMode
+import de.perigon.companion.sensors.domain.KalmanModel
+import de.perigon.companion.sensors.ui.KalmanAdvancedPanel
 import kotlin.math.abs
 import kotlin.math.max
 
 private val COLOR_H = Color(0xFF4CAF50)
+private val COLOR_H_DIFF = Color(0xFF00897B)
 private val COLOR_BARO = Color(0xFF2196F3)
 private val COLOR_GPS = Color(0xFFFF9800)
 private val COLOR_B = Color(0xFF9C27B0)
+// Smoothed b uses cyan, not a darker purple — the two lines must be
+// distinguishable on a shared axis when they nearly overlap. On a well-
+// tuned filter they will, and cyan-vs-purple is unambiguous.
+private val COLOR_B_SMOOTH = Color(0xFF00BCD4)
+private val COLOR_VZ = Color(0xFF00838F)
 private val COLOR_SIGMA_H = Color(0xFF1976D2)
 private val COLOR_SIGMA_B = Color(0xFFC2185B)
 private val COLOR_DGPS = Color(0xFFEF6C00)
 private val COLOR_DBARO = Color(0xFF00897B)
+private val COLOR_REF = Color(0xFFB00020)
 
 data class ChartSeries(
     val label: String,
@@ -72,6 +82,11 @@ fun KfContent(vm: KfViewModel) {
     // predict(). Composition survives lifecycle pause but is disposed on
     // tab switch, so this runs exactly while the KF tab is the selected
     // content — which is the semantics we want.
+    //
+    // start() also starts the foreground service (via the ViewModel) that
+    // keeps the process in FOREGROUND_SERVICE_LOCATION state with the
+    // screen off, so the filter can converge overnight. The service
+    // notification is mandatory on Android; see KfSandboxService.
     DisposableEffect(Unit) {
         vm.start()
         onDispose { vm.stop() }
@@ -103,8 +118,33 @@ fun KfContent(vm: KfViewModel) {
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("Kalman Filter", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Sandbox — nothing here is saved or shared with the recorder.",
+                        "Sandbox — nothing here is saved or shared with the recorder. " +
+                            "Runs as a foreground service while this tab is open, so " +
+                            "the filter keeps sampling with the screen off.",
                         style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            // Model chips + description as one item: they describe each other.
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        KalmanModel.entries.forEach { m ->
+                            FilterChip(
+                                selected = state.model == m,
+                                onClick = { vm.setModel(m) },
+                                label = { Text(m.displayName) },
+                            )
+                        }
+                    }
+                    Text(
+                        modelDescription(state.model),
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -173,11 +213,58 @@ fun KfContent(vm: KfViewModel) {
             }
 
             item { HorizontalDivider() }
+            item { Text("Sandbox", style = MaterialTheme.typography.titleSmall) }
+            item {
+                // The FGS runs whenever this tab is composed, so the filter
+                // keeps sampling with the screen off. The wake-lock is a
+                // secondary reinforcement for CPU during screen-off — it is
+                // not needed for the FGS contract, only to prevent the CPU
+                // from sleeping between sensor deliveries. Preference is
+                // persisted (TrackPrefs) so it survives tab changes and app
+                // restarts; the *active* lock is session-scoped.
+                ToggleRow(
+                    title = "Hold wake lock",
+                    subtitle = "Keeps the CPU awake while the tab is open. Required for reliable convergence with the screen off (the foreground service alone handles app-level throttling, not CPU sleep).",
+                    checked = state.wakeLockEnabled,
+                    onCheckedChange = vm::setWakeLockEnabled,
+                )
+            }
+
+            item { HorizontalDivider() }
+            // Advanced tuning expander. Model-aware: shows only the active
+            // model's knobs plus the cross-model baro sigma and GPS floor.
+            // "Apply to Track settings" is the explicit promotion path from
+            // this sandbox to the persisted config; the panel itself never
+            // writes config.
+            item {
+                KalmanAdvancedPanel(
+                    model = state.model,
+                    tuning = state.tuning,
+                    onChange = vm::setTuning,
+                    onPromote = vm::applyToTrackSettings,
+                )
+            }
+
+            item { HorizontalDivider() }
             item { Text("Filter state", style = MaterialTheme.typography.titleSmall) }
             item {
-                // The four numeric rows are one tabular block; keeping them in
+                // The numeric rows are one tabular block; keeping them in
                 // one item gives them the tight internal spacing that reads
-                // as a table rather than four unrelated lines.
+                // as a table rather than unrelated lines.
+                //
+                // v_z and σ(v) are shown in every model. In the 2-state the
+                // filter derives them with a cascade position-difference
+                // estimator — a leaf of the main filter, no feedback into h
+                // or b — so the debug tab shows the same velocity quantities
+                // for both models, just sourced differently.
+                //
+                // NIS² means are the calibration check: expected ≈ 1.0 under
+                // a well-specified model. Drift above 1 indicates the filter
+                // is overconfident (R_gps underreported, or P too small);
+                // below 1, underconfident. Robust methods (Huber, VBAKF,
+                // ISKF) inflate S on rejected samples, so their NIS tends to
+                // sit below 1 on outlier-heavy data — that is the intended
+                // signature, not a calibration failure.
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     NumericRow(
                         listOf(
@@ -207,6 +294,13 @@ fun KfContent(vm: KfViewModel) {
                             "geoid (m)" to fmtSignedM(state.geoidUndulationM, 1),
                         )
                     )
+                    NumericRow(
+                        listOf(
+                            "NIS² gps" to fmtNis(state.nisGpsMean),
+                            "NIS² baro" to fmtNis(state.nisBaroMean),
+                            "expected" to "1.0",
+                        )
+                    )
                     Text(
                         modeSpecificLine(state),
                         style = MaterialTheme.typography.bodySmall,
@@ -217,7 +311,11 @@ fun KfContent(vm: KfViewModel) {
 
             item { HorizontalDivider() }
             item { Text("Live charts", style = MaterialTheme.typography.titleSmall) }
+
             item {
+                // Filtered h alongside its inputs. This is the "what the
+                // filter sees and produces" chart; the smoother overlays are
+                // in the dedicated charts below.
                 KfChart(
                     title = "Heights (m)",
                     series = listOf(
@@ -229,10 +327,61 @@ fun KfContent(vm: KfViewModel) {
                 )
             }
             item {
+                // Difference chart for h: h's absolute scale varies (stationary
+                // vs. climbing vs. descending), so overlaying h and h* would
+                // compress the correction into invisibility. The residual-to-
+                // smoothed IS the informative envelope here.
+                //
+                // Reading: near-zero → filter tracks as well as hindsight
+                // would; systematic drift at steps → filter over/under-
+                // trusts measurements; oscillation at turns → process noise
+                // too small for real motion.
+                KfChart(
+                    title = "h − h* (m)",
+                    series = listOf(
+                        ChartSeries("h − h*", COLOR_H_DIFF, samples.map {
+                            if (it.h != null && it.hSmoothed != null) it.h - it.hSmoothed else null
+                        }),
+                    ),
+                    centerAtZero = true,
+                    windowSeconds = windowSec,
+                )
+            }
+            item {
+                KfChart(
+                    title = "Vertical speed (m/s)",
+                    series = listOf(
+                        ChartSeries("v_z", COLOR_VZ, samples.map { it.v }),
+                    ),
+                    centerAtZero = true,
+                    windowSeconds = windowSec,
+                )
+            }
+            item {
+                // Overlay chart, not difference. For a slow-moving state like
+                // b, the RTS correction is a predictable ramp — the smoother
+                // pulls past b toward the value implied by the final
+                // measurements — so the difference chart collapses to a
+                // linear-to-zero line that hides the underlying trajectory
+                // and looks like an artifact.
+                //
+                // Overlay makes both curves visible:
+                //   - b_filtered drifts (the filter's live estimate)
+                //   - b_smoothed is flatter (hindsight, conditioned on the
+                //     whole buffer)
+                //   - vertical gap = how much hindsight would correct
+                //
+                // When b_filtered and b_smoothed track together, qB is well
+                // matched (or too low — the filter can't keep up with real
+                // drift). When b_filtered drifts away from b_smoothed *with
+                // the gap growing backward in time*, qB is too high — the
+                // filter is chasing noise that hindsight rejects. This is the
+                // direct visual comparison the difference chart obscured.
                 KfChart(
                     title = "Bias b (m)",
                     series = listOf(
                         ChartSeries("b", COLOR_B, samples.map { it.b }),
+                        ChartSeries("b*", COLOR_B_SMOOTH, samples.map { it.bSmoothed }),
                     ),
                     centerAtZero = true,
                     windowSeconds = windowSec,
@@ -257,6 +406,30 @@ fun KfContent(vm: KfViewModel) {
                     ),
                     centerAtZero = true,
                     windowSeconds = windowSec,
+                )
+            }
+            item {
+                // NIS² sits below Innovation: same quantity, normalized.
+                // Reference line at 3.84 = χ²(1, 0.95). Robust methods push
+                // S up on rejected samples, so NIS² runs below the line by
+                // design; under Gaussian, a well-specified model yields ~5%
+                // of samples above the line and a running mean near 1.0.
+                KfChart(
+                    title = "Innovation consistency (NIS²)",
+                    series = listOf(
+                        ChartSeries("gps", COLOR_DGPS, samples.map { it.nisGps }),
+                        ChartSeries("baro", COLOR_DBARO, samples.map { it.nisBaro }),
+                    ),
+                    referenceLines = listOf(3.84f),
+                    yClampMax = 10f,
+                    windowSeconds = windowSec,
+                )
+                Text(
+                    "Dashed line: χ²(1, 0.95) = 3.84. Valid under Gaussian. " +
+                        "Robust methods inflate S on rejected samples, so NIS² sits below the line by design.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
                 )
             }
 
@@ -303,6 +476,16 @@ private fun NumericRow(items: List<Pair<String, String>>) {
  * from the visible range, so a 0.01 m σ range doesn't render as five
  * identical "0.0"s and a 2000 m altitude swing doesn't burn four digits on
  * tenths.
+ *
+ * [referenceLines] draws dashed horizontal lines at the given y-values; used
+ * by the NIS² chart for the χ²(1, 0.95) threshold. Values above the threshold
+ * are the ~5% tail on a calibrated model.
+ *
+ * [yClampMax], when set, clips the visible y range to [min, yClampMax] and
+ * clamps plotted values to that range. Without it, a single NIS² spike of
+ * 100 would compress the ~1 values near zero, making the chart unreadable.
+ * The clamp is a display-only operation; the underlying samples are not
+ * truncated.
  */
 @Composable
 private fun KfChart(
@@ -310,10 +493,13 @@ private fun KfChart(
     series: List<ChartSeries>,
     modifier: Modifier = Modifier,
     centerAtZero: Boolean = false,
+    referenceLines: List<Float> = emptyList(),
+    yClampMax: Float? = null,
     windowSeconds: Int = 90,
 ) {
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val gridColor = MaterialTheme.colorScheme.outlineVariant
+    val refColor = COLOR_REF
     val textMeasurer = rememberTextMeasurer()
 
     Column(modifier.fillMaxWidth()) {
@@ -354,7 +540,8 @@ private fun KfChart(
             }
 
             val dataLo = all.min()
-            val dataHi = all.max()
+            val dataHiRaw = all.max()
+            val dataHi = if (yClampMax != null) minOf(dataHiRaw, yClampMax) else dataHiRaw
             val (yLo, yHi) = if (centerAtZero) {
                 val sym = max(abs(dataLo), abs(dataHi)).coerceAtLeast(0.01f)
                 -sym * 1.1f to sym * 1.1f
@@ -408,6 +595,22 @@ private fun KfChart(
                 )
             }
 
+            // User-supplied reference lines (dashed). Used for statistical
+            // thresholds like χ²(1, 0.95) on the NIS chart.
+            val dash = PathEffect.dashPathEffect(floatArrayOf(8f, 6f), 0f)
+            for (ref in referenceLines) {
+                if (ref in yLo..yHi) {
+                    val refY = plotHeight * (1f - (ref - yLo) / yRange)
+                    drawLine(
+                        color = refColor.copy(alpha = 0.55f),
+                        start = Offset(0f, refY),
+                        end = Offset(plotWidth, refY),
+                        strokeWidth = 1.dp.toPx(),
+                        pathEffect = dash,
+                    )
+                }
+            }
+
             // Series.
             for (s in series) {
                 val n = s.values.size
@@ -415,11 +618,12 @@ private fun KfChart(
                 var prevX: Float? = null
                 var prevY: Float? = null
                 for (i in 0 until n) {
-                    val value = s.values[i]
-                    if (value == null) {
+                    val raw = s.values[i]
+                    if (raw == null) {
                         prevX = null; prevY = null
                         continue
                     }
+                    val value = if (yClampMax != null) minOf(raw, yClampMax) else raw
                     val x = plotWidth * i / (n - 1)
                     val y = plotHeight * (1f - (value - yLo) / yRange)
                     if (prevX != null && prevY != null) {
@@ -473,6 +677,13 @@ private fun KalmanMode.longDescription(): String = when (this) {
         "Iteratively Saturated KF (Yang & Boyd 2025). Convex robust MAP with separate process and measurement outlier terms."
 }
 
+private fun modelDescription(m: KalmanModel): String = when (m) {
+    KalmanModel.THREE_STATE ->
+        "h, v_z, b. CV dynamics. v_z is a proper KF state; σ_h grows as t^{3/2} during outages. Better for short outages with well-tracked velocity."
+    KalmanModel.TWO_STATE ->
+        "h, b. Random walk on h; baro drives h at full bandwidth. v_z is derived by a cascade position-difference filter (no feedback). σ_h grows as t^{1/2} during outages. Better for long outages; worse for short ones on a moving vehicle."
+}
+
 private fun modeSpecificLine(state: KfUiState): String = when (state.mode) {
     KalmanMode.GAUSSIAN ->
         "Reference mode — no per-update weights."
@@ -514,3 +725,6 @@ private fun fmtM(value: Float?, decimals: Int): String =
 
 private fun fmtSignedM(value: Float?, decimals: Int): String =
     value?.let { "%+.${decimals}f".format(it) } ?: "--"
+
+private fun fmtNis(value: Float?): String =
+    value?.let { "%.2f".format(it) } ?: "--"

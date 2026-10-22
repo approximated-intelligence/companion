@@ -21,6 +21,8 @@ import de.perigon.companion.sensors.data.isValidLoggingRate
 import de.perigon.companion.sensors.data.smallestValidLoggingRate
 import de.perigon.companion.sensors.domain.GpxExporter
 import de.perigon.companion.sensors.domain.KalmanMode
+import de.perigon.companion.sensors.domain.KalmanModel
+import de.perigon.companion.sensors.domain.KalmanTuning
 import de.perigon.companion.sensors.service.AutoScheduler
 import de.perigon.companion.sensors.service.GnssInfo
 import de.perigon.companion.sensors.service.BackgroundService
@@ -303,12 +305,41 @@ class RecordingViewModel @Inject constructor(
     fun setAutoSplitOnDayRollover(v: Boolean)    { viewModelScope.launch { configPrefs.update { it.copy(autoSplitOnDayRollover = v) } } }
     fun setAutoSegmentGapMs(ms: Long)            { viewModelScope.launch { configPrefs.update { it.copy(autoSegmentGapMs = ms) } } }
 
+    fun setKalmanModel(model: KalmanModel) {
+        viewModelScope.launch { configPrefs.update { it.copy(kalmanModel = model) } }
+    }
+
     fun setKalmanMode(mode: KalmanMode) {
         viewModelScope.launch { configPrefs.update { it.copy(kalmanMode = mode) } }
     }
 
     fun setIskfInverseHessian(enabled: Boolean) {
         viewModelScope.launch { configPrefs.update { it.copy(iskfInverseHessian = enabled) } }
+    }
+
+    /**
+     * Write the Advanced-tuning overrides to config. Null fields become
+     * "remove the override, fall back to the built-in default" — matching
+     * the "Reset" semantics in the panel. Called from the Track tab's
+     * Advanced expander; the KF tab uses [KfViewModel.applyToTrackSettings]
+     * to the same effect.
+     *
+     * Process-noise fields are stored in q (variance rate) units, matching
+     * the filter's internal representation and the panel's slider labels.
+     */
+    fun setKalmanTuning(tuning: KalmanTuning) {
+        viewModelScope.launch {
+            configPrefs.update { cfg ->
+                cfg.copy(
+                    kalmanAccelNoiseQ     = tuning.accelNoiseQ,
+                    kalmanBiasNoiseQ      = tuning.biasNoiseQ,
+                    kalmanQH              = tuning.qH,
+                    kalmanDerivedVelNoise = tuning.derivedVelNoise,
+                    baroSigmaM            = tuning.baroSigmaM,
+                    kalmanGpsVerticalMinM = tuning.gpsVerticalMinM,
+                )
+            }
+        }
     }
 
     fun setHardwareInterval(ms: Long) {
