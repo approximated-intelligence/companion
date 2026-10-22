@@ -1,0 +1,617 @@
+package de.perigon.companion.archive.consolidate.ui
+
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.ViewList
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavController
+import coil3.compose.AsyncImage
+import de.perigon.companion.archive.consolidate.data.SafeToDeleteView
+import de.perigon.companion.archive.ui.BackupDestinationSection
+import de.perigon.companion.archive.ui.backupErrorLabel
+import de.perigon.companion.archive.ui.backupStateLabel
+import de.perigon.companion.archive.worker.BackupWorker
+import de.perigon.companion.core.ui.AppTopBar
+import de.perigon.companion.core.ui.NotificationLogDialog
+import de.perigon.companion.core.ui.NotificationObserver
+import de.perigon.companion.core.ui.formatBytes
+import de.perigon.companion.core.ui.formatDateTime
+
+@Composable
+fun ConsolidateScreen(
+    navController: NavController,
+    vm: ConsolidateViewModel = hiltViewModel(),
+) {
+    val state by vm.state.collectAsStateWithLifecycle()
+    val snackbar = remember { SnackbarHostState() }
+    val context = LocalContext.current
+
+    // Consolidation writes with source "consolidate", backup with "backup".
+    // Both can be triggered from here, so the history dialog shows the union.
+    var showLog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        NotificationObserver.observe(this, vm.notifications, snackbar)
+    }
+
+    LaunchedEffect(Unit) {
+        vm.snackbar.events.collect { snackbar.showSnackbar(it) }
+    }
+
+    LaunchedEffect(Unit) {
+        vm.previewIntents.collect { intent ->
+            context.startActivity(intent)
+        }
+    }
+
+    if (showLog) {
+        NotificationLogDialog(
+            title = "Archive log",
+            sources = listOf("consolidate", "backup"),
+            dao = vm.notifications,
+            onDismiss = { showLog = false },
+        )
+    }
+
+    if (state.confirmDeleteCount != null) {
+        AlertDialog(
+            onDismissRequest = vm::dismissDelete,
+            title = { Text("Delete files?") },
+            text = { Text("Delete ${state.confirmDeleteCount} file(s) from Camera? This cannot be undone.") },
+            confirmButton = {
+                TextButton(onClick = vm::confirmDelete) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = vm::dismissDelete) { Text("Cancel") }
+            },
+        )
+    }
+
+    if (state.deleteProgress != null) {
+        val progress = state.deleteProgress!!
+        AlertDialog(
+            onDismissRequest = { /* not dismissable while deleting */ },
+            title = { Text("Deleting…") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("${progress.current} / ${progress.total}")
+                    LinearProgressIndicator(
+                        progress = { progress.current.toFloat() / progress.total },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {},
+        )
+    }
+
+    if (state.confirmUnprotectId != null) {
+        AlertDialog(
+            onDismissRequest = vm::dismissUnprotect,
+            title = { Text("Remove protection?") },
+            text = { Text("This file will become eligible for deletion again.") },
+            confirmButton = {
+                TextButton(onClick = vm::confirmUnprotect) { Text("Remove") }
+            },
+            dismissButton = {
+                TextButton(onClick = vm::dismissUnprotect) { Text("Cancel") }
+            },
+        )
+    }
+
+    // No DcimGate here: AppAccessGate wraps the whole nav graph, so reaching
+    // this screen already implies a writable DCIM grant.
+    Scaffold(
+        topBar = {
+            if (state.selectionMode) {
+                SelectionTopBar(
+                    selectedCount = state.selectedCount,
+                    onSelectAll = vm::selectAll,
+                    onExit = vm::exitSelectionMode,
+                    onDelete = vm::requestDelete,
+                    deleteEnabled = !state.isDeleting,
+                )
+            } else {
+                AppTopBar(navController)
+            }
+        },
+        snackbarHost = { SnackbarHost(snackbar) },
+    ) { padding ->
+        Column(Modifier.padding(padding).fillMaxSize()) {
+            when (state.viewMode) {
+                ViewMode.LIST -> ListContent(
+                    padding              = PaddingValues(),
+                    state                = state,
+                    snackbarHost         = snackbar,
+                    onOpenLog            = { showLog = true },
+                    onStartConsolidate   = vm::startConsolidate,
+                    onCancelConsolidate  = vm::cancelConsolidate,
+                    onStartBackup        = vm::startBackup,
+                    onCancelBackup       = vm::cancelBackup,
+                    onStartBoth          = vm::startConsolidateAndBackup,
+                    onSetViewMode        = vm::setViewMode,
+                    onSetSortField       = vm::setSortField,
+                    onEnterSelectionMode = vm::enterSelectionMode,
+                    onToggleSelected     = vm::toggleSelected,
+                    onShowPreview        = vm::showPreview,
+                    onProtect            = vm::protect,
+                    onRequestUnprotect   = vm::requestUnprotect,
+                    onBackfillExisting   = vm::backfillExisting,
+                )
+                ViewMode.GRID -> GridContent(
+                    padding              = PaddingValues(),
+                    state                = state,
+                    snackbarHost         = snackbar,
+                    onOpenLog            = { showLog = true },
+                    onStartConsolidate   = vm::startConsolidate,
+                    onCancelConsolidate  = vm::cancelConsolidate,
+                    onStartBackup        = vm::startBackup,
+                    onCancelBackup       = vm::cancelBackup,
+                    onStartBoth          = vm::startConsolidateAndBackup,
+                    onSetViewMode        = vm::setViewMode,
+                    onSetSortField       = vm::setSortField,
+                    onEnterSelectionMode = vm::enterSelectionMode,
+                    onToggleSelected     = vm::toggleSelected,
+                    onShowPreview        = vm::showPreview,
+                    onProtect            = vm::protect,
+                    onRequestUnprotect   = vm::requestUnprotect,
+                    onBackfillExisting   = vm::backfillExisting,
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SelectionTopBar(
+    selectedCount: Int,
+    onSelectAll: () -> Unit,
+    onExit: () -> Unit,
+    onDelete: () -> Unit,
+    deleteEnabled: Boolean,
+) {
+    TopAppBar(
+        navigationIcon = {
+            IconButton(onClick = onExit) {
+                Icon(Icons.Default.Close, "Exit selection")
+            }
+        },
+        title = { Text("$selectedCount selected") },
+        actions = {
+            TextButton(onClick = onSelectAll) { Text("All") }
+            IconButton(onClick = onDelete, enabled = selectedCount > 0 && deleteEnabled) {
+                Icon(Icons.Default.Delete, "Delete selected",
+                    tint = if (selectedCount > 0 && deleteEnabled) MaterialTheme.colorScheme.error
+                           else MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+    )
+}
+
+@Composable
+private fun ListContent(
+    padding: PaddingValues,
+    state: ConsolidateUiState,
+    snackbarHost: SnackbarHostState,
+    onOpenLog: () -> Unit,
+    onStartConsolidate: () -> Unit,
+    onCancelConsolidate: () -> Unit,
+    onStartBackup: () -> Unit,
+    onCancelBackup: () -> Unit,
+    onStartBoth: () -> Unit,
+    onSetViewMode: (ViewMode) -> Unit,
+    onSetSortField: (SortField) -> Unit,
+    onEnterSelectionMode: (Long) -> Unit,
+    onToggleSelected: (Long) -> Unit,
+    onShowPreview: (String) -> Unit,
+    onProtect: (Long) -> Unit,
+    onRequestUnprotect: (Long) -> Unit,
+    onBackfillExisting: () -> Unit,
+) {
+    LazyColumn(
+        modifier = Modifier
+            .padding(padding)
+            .padding(horizontal = 16.dp)
+            .fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(vertical = 16.dp),
+    ) {
+        item { ConsolidateProgressCard(state) }
+
+        if (state.backup.isRunning || state.backup.packState != BackupWorker.STATE_DONE) {
+            item { BackupProgressCard(state) }
+        }
+
+        if (state.backup.hasError) {
+            item { BackupErrorCard(state) }
+        }
+
+        item { StatusCard(state, onOpenLog) }
+
+        item {
+            BackupDestinationSection(
+                snackbarHost = snackbarHost,
+                enabled      = !state.backup.isRunning && !state.consolidateRunning && !state.isDeleting,
+                currentDestination = state.backup.currentDestination,
+            )
+        }
+
+        item {
+            ActionButtons(
+                state              = state,
+                onStartConsolidate = onStartConsolidate,
+                onCancelConsolidate = onCancelConsolidate,
+                onStartBackup      = onStartBackup,
+                onCancelBackup     = onCancelBackup,
+                onStartBoth        = onStartBoth,
+            )
+        }
+
+        if (state.sortedSafeToDelete.isNotEmpty()) {
+            item { HorizontalDivider() }
+            item { FileListHeader(state, onSetViewMode, onSetSortField) }
+
+            items(state.sortedSafeToDelete, key = { it.id }) { file ->
+                SafeToDeleteListRow(
+                    file = file,
+                    isProtected = file.isProtected,
+                    isSelected = file.id in state.selectedIds,
+                    selectionMode = state.selectionMode,
+                    onLongPress = { if (!file.isProtected) onEnterSelectionMode(file.id) },
+                    onTap = {
+                        if (state.selectionMode && !file.isProtected) onToggleSelected(file.id)
+                        else onShowPreview(file.uri)
+                    },
+                    onProtect = { onProtect(file.id) },
+                    onUnprotect = { onRequestUnprotect(file.id) },
+                )
+            }
+        }
+
+        item { BackfillButton(state, onBackfillExisting) }
+    }
+}
+
+@Composable
+private fun GridContent(
+    padding: PaddingValues,
+    state: ConsolidateUiState,
+    snackbarHost: SnackbarHostState,
+    onOpenLog: () -> Unit,
+    onStartConsolidate: () -> Unit,
+    onCancelConsolidate: () -> Unit,
+    onStartBackup: () -> Unit,
+    onCancelBackup: () -> Unit,
+    onStartBoth: () -> Unit,
+    onSetViewMode: (ViewMode) -> Unit,
+    onSetSortField: (SortField) -> Unit,
+    onEnterSelectionMode: (Long) -> Unit,
+    onToggleSelected: (Long) -> Unit,
+    onShowPreview: (String) -> Unit,
+    onProtect: (Long) -> Unit,
+    onRequestUnprotect: (Long) -> Unit,
+    onBackfillExisting: () -> Unit,
+) {
+    // Single LazyVerticalGrid as the root — the previous LazyVerticalGrid
+    // nested in a LazyColumn behind heightIn(max = 10000.dp) forced every cell
+    // to compose at once. Cards/headers are full-span items.
+    val fullSpan: androidx.compose.foundation.lazy.grid.LazyGridItemSpanScope.() -> GridItemSpan =
+        { GridItemSpan(maxLineSpan) }
+
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(3),
+        modifier = Modifier
+            .padding(padding)
+            .padding(horizontal = 16.dp)
+            .fillMaxSize(),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(vertical = 16.dp),
+    ) {
+        item(span = fullSpan) { ConsolidateProgressCard(state) }
+
+        if (state.backup.isRunning || state.backup.packState != BackupWorker.STATE_DONE) {
+            item(span = fullSpan) { BackupProgressCard(state) }
+        }
+
+        if (state.backup.hasError) {
+            item(span = fullSpan) { BackupErrorCard(state) }
+        }
+
+        item(span = fullSpan) { StatusCard(state, onOpenLog) }
+
+        item(span = fullSpan) {
+            BackupDestinationSection(
+                snackbarHost = snackbarHost,
+                enabled      = !state.backup.isRunning && !state.consolidateRunning && !state.isDeleting,
+                currentDestination = state.backup.currentDestination,
+            )
+        }
+
+        item(span = fullSpan) {
+            ActionButtons(
+                state              = state,
+                onStartConsolidate = onStartConsolidate,
+                onCancelConsolidate = onCancelConsolidate,
+                onStartBackup      = onStartBackup,
+                onCancelBackup     = onCancelBackup,
+                onStartBoth        = onStartBoth,
+            )
+        }
+
+        if (state.sortedSafeToDelete.isNotEmpty()) {
+            item(span = fullSpan) { HorizontalDivider() }
+            item(span = fullSpan) { FileListHeader(state, onSetViewMode, onSetSortField) }
+
+            items(state.sortedSafeToDelete, key = { it.id }) { file ->
+                SafeToDeleteGridCell(
+                    file = file,
+                    isProtected = file.isProtected,
+                    isSelected = file.id in state.selectedIds,
+                    selectionMode = state.selectionMode,
+                    onLongPress = { if (!file.isProtected) onEnterSelectionMode(file.id) },
+                    onTap = {
+                        if (state.selectionMode && !file.isProtected) onToggleSelected(file.id)
+                        else onShowPreview(file.uri)
+                    },
+                    onProtect = { onProtect(file.id) },
+                    onUnprotect = { onRequestUnprotect(file.id) },
+                )
+            }
+        }
+
+        item(span = fullSpan) { BackfillButton(state, onBackfillExisting) }
+    }
+}
+
+@Composable
+private fun ConsolidateProgressCard(state: ConsolidateUiState) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp).animateContentSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text("Consolidation", style = MaterialTheme.typography.titleSmall)
+                if (state.consolidateRunning && state.consolidateTotal > 0) {
+                    Text("${state.consolidateProcessed * 100 / state.consolidateTotal}%", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            if (state.consolidateRunning && state.consolidateTotal > 0) {
+                LinearProgressIndicator(progress = { state.consolidateProcessed.toFloat() / state.consolidateTotal }, modifier = Modifier.fillMaxWidth())
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("File ${state.consolidateProcessed} / ${state.consolidateTotal}", style = MaterialTheme.typography.bodySmall)
+                    if (state.consolidateFailed > 0) { Text("${state.consolidateFailed} failed", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+                }
+                if (state.consolidateCurrentFile.isNotBlank()) {
+                    Text(state.consolidateCurrentFile.substringAfterLast('/'), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            } else if (state.consolidateRunning) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Text("Scanning…", style = MaterialTheme.typography.bodySmall)
+                }
+            } else {
+                Text("Ready", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
+private fun BackupProgressCard(state: ConsolidateUiState) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp).animateContentSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text(backupStateLabel(state.backup.packState), style = MaterialTheme.typography.titleSmall)
+                if (state.backup.packPosition > 0) { Text("Pack ${state.backup.packPosition}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+            if (state.backup.filesTotal > 0) {
+                LinearProgressIndicator(progress = { state.backup.fileIndex.toFloat() / state.backup.filesTotal }, modifier = Modifier.fillMaxWidth())
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("File ${state.backup.fileIndex} / ${state.backup.filesTotal}", style = MaterialTheme.typography.bodySmall)
+                    if (state.backup.partNumber > 0) { Text("${state.backup.partNumber} parts - ${state.backup.packPercent}%", style = MaterialTheme.typography.bodySmall) }
+                }
+                if (state.backup.currentFile.isNotEmpty()) {
+                    Text(state.backup.currentFile.substringAfterLast('/'), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BackupErrorCard(state: ConsolidateUiState) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer), modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            // Human label, not the raw ERR_ constant the sibling Backup screen
+            // already translates.
+            Text(backupErrorLabel(state.backup.errorType), color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.titleSmall)
+            if (state.backup.errorDetail.isNotEmpty()) { Text(state.backup.errorDetail, color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis) }
+        }
+    }
+}
+
+@Composable
+private fun StatusCard(state: ConsolidateUiState, onOpenLog: () -> Unit) {
+    Card(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Status", style = MaterialTheme.typography.titleSmall)
+                Text("${state.consolidatedCount} files consolidated")
+                Text("${state.confirmedCount} files confirmed in B2")
+            }
+            TextButton(onClick = onOpenLog) {
+                Icon(Icons.AutoMirrored.Filled.List, null, Modifier.size(16.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Log")
+            }
+        }
+    }
+}
+
+/**
+ * The three primary actions. Each button flips to a Cancel while its worker
+ * is running — the label, icon and handler all change together, so the
+ * running state and its cancel affordance are the same target. The combined
+ * "Consolidate + Back up" action is disabled whenever either worker is live;
+ * the individual buttons handle cancellation for the running one.
+ */
+@Composable
+private fun ActionButtons(
+    state: ConsolidateUiState,
+    onStartConsolidate: () -> Unit,
+    onCancelConsolidate: () -> Unit,
+    onStartBackup: () -> Unit,
+    onCancelBackup: () -> Unit,
+    onStartBoth: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilledTonalButton(
+                onClick = if (state.consolidateRunning) onCancelConsolidate else onStartConsolidate,
+                modifier = Modifier.weight(1f),
+            ) {
+                if (state.consolidateRunning) {
+                    Icon(Icons.Default.Stop, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Stop")
+                } else {
+                    Icon(Icons.Default.Compress, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Consolidate")
+                }
+            }
+            FilledTonalButton(
+                onClick = if (state.backup.isRunning) onCancelBackup else onStartBackup,
+                modifier = Modifier.weight(1f),
+            ) {
+                if (state.backup.isRunning) {
+                    Icon(Icons.Default.Stop, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Stop")
+                } else {
+                    Icon(Icons.Default.CloudUpload, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Back up")
+                }
+            }
+        }
+        Button(onClick = onStartBoth, enabled = !state.consolidateRunning && !state.backup.isRunning, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Consolidate + Back up")
+        }
+    }
+}
+
+@Composable
+private fun FileListHeader(
+    state: ConsolidateUiState,
+    onSetViewMode: (ViewMode) -> Unit,
+    onSetSortField: (SortField) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("${state.safeToDelete.size} safe to delete", style = MaterialTheme.typography.titleSmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                IconButton(onClick = { onSetViewMode(ViewMode.LIST) }) {
+                    Icon(Icons.AutoMirrored.Filled.ViewList, "List view", tint = if (state.viewMode == ViewMode.LIST) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                IconButton(onClick = { onSetViewMode(ViewMode.GRID) }) {
+                    Icon(Icons.Default.GridView, "Grid view", tint = if (state.viewMode == ViewMode.GRID) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            SortChip("Name", SortField.NAME, state, onSetSortField)
+            SortChip("Date", SortField.MODIFIED, state, onSetSortField)
+            SortChip("Size", SortField.SIZE, state, onSetSortField)
+            SortChip("Type", SortField.TYPE, state, onSetSortField)
+        }
+    }
+}
+
+@Composable
+private fun SortChip(label: String, field: SortField, state: ConsolidateUiState, onSetSortField: (SortField) -> Unit) {
+    val isActive = state.sortField == field
+    FilterChip(selected = isActive, onClick = { onSetSortField(field) }, label = {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(label)
+            if (isActive) { Icon(if (state.sortDirection == SortDirection.ASC) Icons.Default.ArrowUpward else Icons.Default.ArrowDownward, null, modifier = Modifier.size(14.dp)) }
+        }
+    })
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun SafeToDeleteListRow(file: SafeToDeleteView, isProtected: Boolean, isSelected: Boolean, selectionMode: Boolean, onLongPress: () -> Unit, onTap: () -> Unit, onProtect: () -> Unit, onUnprotect: () -> Unit) {
+    Row(Modifier.fillMaxWidth().then(if (isSelected) Modifier.background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)) else Modifier).combinedClickable(onClick = onTap, onLongClick = { if (!selectionMode) onLongPress() }).padding(vertical = 6.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(48.dp)) {
+            AsyncImage(model = file.uri.toUri(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            if (selectionMode && isSelected) {
+                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)), contentAlignment = Alignment.Center) { Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(20.dp)) }
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(file.path.substringAfterLast('/'), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text("${formatBytes(file.size)} · ${formatDateTime(file.mtime, "MMM d, yyyy")}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        IconButton(onClick = { if (isProtected) onUnprotect() else onProtect() }, modifier = Modifier.size(36.dp)) {
+            Icon(if (isProtected) Icons.Default.Shield else Icons.Default.ShieldMoon, contentDescription = if (isProtected) "Unprotect" else "Protect", tint = if (isProtected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, modifier = Modifier.size(18.dp))
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun SafeToDeleteGridCell(file: SafeToDeleteView, isProtected: Boolean, isSelected: Boolean, selectionMode: Boolean, onLongPress: () -> Unit, onTap: () -> Unit, onProtect: () -> Unit, onUnprotect: () -> Unit) {
+    Box(Modifier.aspectRatio(1f).combinedClickable(onClick = onTap, onLongClick = { if (!selectionMode) onLongPress() })) {
+        AsyncImage(model = file.uri.toUri(), contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        if (selectionMode && isSelected) {
+            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)), contentAlignment = Alignment.Center) { Icon(Icons.Default.Check, null, tint = Color.White, modifier = Modifier.size(28.dp)) }
+        }
+        IconButton(onClick = { if (isProtected) onUnprotect() else onProtect() }, modifier = Modifier.align(Alignment.TopEnd).size(32.dp)) {
+            Icon(if (isProtected) Icons.Default.Shield else Icons.Default.ShieldMoon, contentDescription = if (isProtected) "Unprotect" else "Protect", tint = if (isProtected) MaterialTheme.colorScheme.primary else Color.White, modifier = Modifier.size(16.dp))
+        }
+        Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color.Black.copy(alpha = 0.5f)).padding(4.dp)) {
+            Text(file.path.substringAfterLast('/'), style = MaterialTheme.typography.labelSmall, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
+private fun BackfillButton(state: ConsolidateUiState, onBackfillExisting: () -> Unit) {
+    Spacer(Modifier.height(8.dp))
+    OutlinedButton(onClick = onBackfillExisting, enabled = !state.backfillRunning, modifier = Modifier.fillMaxWidth()) {
+        if (state.backfillRunning) {
+            CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("Scanning…")
+        } else {
+            Icon(Icons.Default.SearchOff, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Scan for previously consolidated files")
+        }
+    }
+}
