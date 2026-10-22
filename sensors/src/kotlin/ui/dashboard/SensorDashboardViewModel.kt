@@ -26,15 +26,12 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.core.geo.CoordFormat
 import de.perigon.companion.sensors.data.TrackPrefs
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -72,7 +69,7 @@ class SensorDashboardViewModel @Inject constructor(
 
     private var telephonyCallback: TelephonyCallback? = null
 
-    private var wifiJob: Job? = null
+    private var wifiCallback: WifiManager.ScanResultsCallback? = null
 
     private var rawSensorListener: SensorEventListener? = null
     private var rawSensorManager: SensorManager? = null
@@ -294,31 +291,70 @@ class SensorDashboardViewModel @Inject constructor(
 
     // ---- WiFi ----
 
+    /**
+     * Push, not poll. `registerScanResultsCallback` (API 30+) fires once per
+     * completed platform scan; the poll that used to live here read the same
+     * `scanResults` cache every 5 s and returned the same list between scans.
+     * The platform throttles `startScan()` to roughly 4 per 2 minutes in the
+     * foreground and disables it while idle, so the notification rate is
+     * whatever the OS scanner produces — this callback is informed of it
+     * without doing any work in between.
+     *
+     * The callback carries no payload: the API contract is "results changed,
+     * go read them". `scanResults` is a synchronous getter (cached in the
+     * WiFi service), so the read is cheap; it runs on `context.mainExecutor`
+     * for consistency with `startGnss()` and `startTelephony()` above. The
+     * previous poll also ran it on main (via `viewModelScope`), so this is
+     * not a regression — it just eliminates the idle wakeups.
+     *
+     * Seed from the current cache on registration: the callback only fires
+     * after the NEXT platform scan, which on a throttled or idle device can
+     * be many seconds away. Without the seed, opening the WiFi tab on a cold
+     * device would show nothing for up to that long.
+     */
     fun startWifi() {
-        if (wifiJob != null || !checkWifiPermission()) return
+        if (wifiCallback != null || !checkWifiPermission()) return
 
         val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
 
-        wifiJob = viewModelScope.launch {
-            while (isActive) {
-                val results = wm.scanResults.map {
-                    WifiInfo(
-                        ssid = scanResultSsid(it),
-                        bssid = it.BSSID ?: "",
-                        frequencyMhz = it.frequency,
-                        signalDbm = it.level,
-                    )
-                }.sortedByDescending { it.signalDbm }
-
-                _wifiNetworks.value = results
-                delay(5000)
+        val callback = object : WifiManager.ScanResultsCallback() {
+            override fun onScanResultsAvailable() {
+                publishWifiResults(wm)
             }
+        }
+
+        try {
+            wm.registerScanResultsCallback(context.mainExecutor, callback)
+            wifiCallback = callback
+            publishWifiResults(wm)
+        } catch (e: SecurityException) {
+            // permission revoked between check and here
         }
     }
 
+    private fun publishWifiResults(wm: WifiManager) {
+        val results = try {
+            wm.scanResults.map {
+                WifiInfo(
+                    ssid = scanResultSsid(it),
+                    bssid = it.BSSID ?: "",
+                    frequencyMhz = it.frequency,
+                    signalDbm = it.level,
+                )
+            }.sortedByDescending { it.signalDbm }
+        } catch (e: SecurityException) {
+            return
+        }
+        _wifiNetworks.value = results
+    }
+
     fun stopWifi() {
-        wifiJob?.cancel()
-        wifiJob = null
+        val callback = wifiCallback ?: return
+        val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        try {
+            wm.unregisterScanResultsCallback(callback)
+        } catch (e: Exception) {}
+        wifiCallback = null
     }
 
     @Suppress("DEPRECATION")
