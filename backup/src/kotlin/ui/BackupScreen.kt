@@ -67,7 +67,7 @@ fun BackupScreen(
     if (showLog) {
         NotificationLogDialog(
             title = "Backup log",
-            source = "backup",
+            sources = listOf("backup"),
             dao = vm.notifications,
             onDismiss = { showLog = false },
         )

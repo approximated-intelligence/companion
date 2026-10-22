@@ -60,6 +60,21 @@ interface UserNotificationDao {
         limit: Int = 50,
     ): Flow<List<UserNotificationEntity>>
 
+    /**
+     * Recent notifications from several sources, regardless of read state.
+     * The Archive screen's log uses this: consolidation and backup write to
+     * different sources but are triggered from the same surface, so the user
+     * needs one merged history.
+     */
+    @Query(
+        "SELECT * FROM user_notifications " +
+            "WHERE source IN (:sources) ORDER BY createdAt DESC LIMIT :limit"
+    )
+    fun observeRecentBySources(
+        sources: List<String>,
+        limit: Int = 50,
+    ): Flow<List<UserNotificationEntity>>
+
     @Query("SELECT COUNT(*) FROM user_notifications WHERE readAt IS NULL")
     fun countUnread(): Flow<Int>
 
@@ -89,6 +104,9 @@ interface UserNotificationDao {
 
     @Query("DELETE FROM user_notifications WHERE source = :source")
     suspend fun deleteAllForSource(source: String)
+
+    @Query("DELETE FROM user_notifications WHERE source IN (:sources)")
+    suspend fun deleteAllForSources(sources: List<String>)
 
     @Query("DELETE FROM user_notifications")
     suspend fun deleteAll()

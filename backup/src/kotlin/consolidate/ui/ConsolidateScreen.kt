@@ -49,8 +49,8 @@ fun ConsolidateScreen(
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
 
-    // Consolidation writes with source "consolidate" (CALLER_TAG in
-    // ConsolidateWorker); the history dialog reads exactly that stream.
+    // Consolidation writes with source "consolidate", backup with "backup".
+    // Both can be triggered from here, so the history dialog shows the union.
     var showLog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -69,8 +69,8 @@ fun ConsolidateScreen(
 
     if (showLog) {
         NotificationLogDialog(
-            title = "Consolidation log",
-            source = "consolidate",
+            title = "Archive log",
+            sources = listOf("consolidate", "backup"),
             dao = vm.notifications,
             onDismiss = { showLog = false },
         )
@@ -148,7 +148,9 @@ fun ConsolidateScreen(
                     snackbarHost         = snackbar,
                     onOpenLog            = { showLog = true },
                     onStartConsolidate   = vm::startConsolidate,
+                    onCancelConsolidate  = vm::cancelConsolidate,
                     onStartBackup        = vm::startBackup,
+                    onCancelBackup       = vm::cancelBackup,
                     onStartBoth          = vm::startConsolidateAndBackup,
                     onSetViewMode        = vm::setViewMode,
                     onSetSortField       = vm::setSortField,
@@ -165,7 +167,9 @@ fun ConsolidateScreen(
                     snackbarHost         = snackbar,
                     onOpenLog            = { showLog = true },
                     onStartConsolidate   = vm::startConsolidate,
+                    onCancelConsolidate  = vm::cancelConsolidate,
                     onStartBackup        = vm::startBackup,
+                    onCancelBackup       = vm::cancelBackup,
                     onStartBoth          = vm::startConsolidateAndBackup,
                     onSetViewMode        = vm::setViewMode,
                     onSetSortField       = vm::setSortField,
@@ -215,7 +219,9 @@ private fun ListContent(
     snackbarHost: SnackbarHostState,
     onOpenLog: () -> Unit,
     onStartConsolidate: () -> Unit,
+    onCancelConsolidate: () -> Unit,
     onStartBackup: () -> Unit,
+    onCancelBackup: () -> Unit,
     onStartBoth: () -> Unit,
     onSetViewMode: (ViewMode) -> Unit,
     onSetSortField: (SortField) -> Unit,
@@ -254,7 +260,16 @@ private fun ListContent(
             )
         }
 
-        item { ActionButtons(state, onStartConsolidate, onStartBackup, onStartBoth) }
+        item {
+            ActionButtons(
+                state              = state,
+                onStartConsolidate = onStartConsolidate,
+                onCancelConsolidate = onCancelConsolidate,
+                onStartBackup      = onStartBackup,
+                onCancelBackup     = onCancelBackup,
+                onStartBoth        = onStartBoth,
+            )
+        }
 
         if (state.sortedSafeToDelete.isNotEmpty()) {
             item { HorizontalDivider() }
@@ -288,7 +303,9 @@ private fun GridContent(
     snackbarHost: SnackbarHostState,
     onOpenLog: () -> Unit,
     onStartConsolidate: () -> Unit,
+    onCancelConsolidate: () -> Unit,
     onStartBackup: () -> Unit,
+    onCancelBackup: () -> Unit,
     onStartBoth: () -> Unit,
     onSetViewMode: (ViewMode) -> Unit,
     onSetSortField: (SortField) -> Unit,
@@ -335,7 +352,16 @@ private fun GridContent(
             )
         }
 
-        item(span = fullSpan) { ActionButtons(state, onStartConsolidate, onStartBackup, onStartBoth) }
+        item(span = fullSpan) {
+            ActionButtons(
+                state              = state,
+                onStartConsolidate = onStartConsolidate,
+                onCancelConsolidate = onCancelConsolidate,
+                onStartBackup      = onStartBackup,
+                onCancelBackup     = onCancelBackup,
+                onStartBoth        = onStartBoth,
+            )
+        }
 
         if (state.sortedSafeToDelete.isNotEmpty()) {
             item(span = fullSpan) { HorizontalDivider() }
@@ -449,20 +475,51 @@ private fun StatusCard(state: ConsolidateUiState, onOpenLog: () -> Unit) {
     }
 }
 
+/**
+ * The three primary actions. Each button flips to a Cancel while its worker
+ * is running — the label, icon and handler all change together, so the
+ * running state and its cancel affordance are the same target. The combined
+ * "Consolidate + Back up" action is disabled whenever either worker is live;
+ * the individual buttons handle cancellation for the running one.
+ */
 @Composable
 private fun ActionButtons(
     state: ConsolidateUiState,
     onStartConsolidate: () -> Unit,
+    onCancelConsolidate: () -> Unit,
     onStartBackup: () -> Unit,
+    onCancelBackup: () -> Unit,
     onStartBoth: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilledTonalButton(onClick = onStartConsolidate, enabled = !state.consolidateRunning, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Default.Compress, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Consolidate")
+            FilledTonalButton(
+                onClick = if (state.consolidateRunning) onCancelConsolidate else onStartConsolidate,
+                modifier = Modifier.weight(1f),
+            ) {
+                if (state.consolidateRunning) {
+                    Icon(Icons.Default.Stop, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Stop")
+                } else {
+                    Icon(Icons.Default.Compress, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Consolidate")
+                }
             }
-            FilledTonalButton(onClick = onStartBackup, enabled = !state.backup.isRunning, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Default.CloudUpload, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Back up")
+            FilledTonalButton(
+                onClick = if (state.backup.isRunning) onCancelBackup else onStartBackup,
+                modifier = Modifier.weight(1f),
+            ) {
+                if (state.backup.isRunning) {
+                    Icon(Icons.Default.Stop, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Stop")
+                } else {
+                    Icon(Icons.Default.CloudUpload, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Back up")
+                }
             }
         }
         Button(onClick = onStartBoth, enabled = !state.consolidateRunning && !state.backup.isRunning, modifier = Modifier.fillMaxWidth()) {

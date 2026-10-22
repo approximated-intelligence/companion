@@ -217,6 +217,25 @@ class ConsolidateViewModel @Inject constructor(
     }
 
     /**
+     * Cancel a running consolidation. Safe when nothing is running; a no-op.
+     * The worker's CoroutineWorker cancellation signal turns into a clean
+     * CANCELLED state, which observeConsolidateWorker maps to
+     * consolidateRunning = false.
+     */
+    fun cancelConsolidate() {
+        workManager.cancelUniqueWork(ConsolidateWorker.WORK_NAME)
+    }
+
+    /**
+     * Cancel a running backup. Same reasoning as [cancelConsolidate]: the
+     * unique-work name covers both the manual button path and the scheduled
+     * trigger (which funnels into the same slot with KEEP).
+     */
+    fun cancelBackup() {
+        workManager.cancelUniqueWork(BackupWorker.WORK_NAME)
+    }
+
+    /**
      * Consolidate, then back up once consolidation is finished. App scope:
      * leaving the screen must not cancel the chained backup. Awaiting the
      * enqueue first keeps a PREVIOUS finished run from firing the backup early.

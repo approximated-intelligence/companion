@@ -39,27 +39,31 @@ import kotlinx.coroutines.launch
 /**
  * Full per-feature history, backed by the `user_notifications` table.
  *
- * Same source the Mirror screen renders inline; here it is a dialog so any
- * feature can offer a "Log" button without restructuring its screen. A
- * LazyColumn inside an AlertDialog is a known trap — it can starve the
+ * Most callers pass a single [sources] entry — the feature's own source —
+ * so the dialog shows exactly that feature's log. The Archive screen passes
+ * both `"consolidate"` and `"backup"`, because consolidation and backup can
+ * be triggered from one surface and the user needs a merged view; splitting
+ * them would hide exactly the history that explains a bad run.
+ *
+ * A LazyColumn inside an AlertDialog is a known trap — it can starve the
  * confirm/dismiss buttons of height (the dialog measures the list at its
  * intrinsic size and the buttons fall off the bottom). The fix is to use a
  * bare [Dialog] with a Column, put the list at weight(1f, fill = false) inside
  * a bounded heightIn, and keep the buttons outside the list.
  *
- * Clear deletes only this [source]'s rows, behind a confirmation — other
- * features' logs are untouched. The running worker's newly-posted rows
- * continue to appear; the dialog does not try to suppress them.
+ * Clear deletes only rows whose `source` is in [sources]; other features'
+ * logs are untouched. The running worker's newly-posted rows continue to
+ * appear; the dialog does not try to suppress them.
  */
 @Composable
 fun NotificationLogDialog(
     title: String,
-    source: String,
+    sources: List<String>,
     dao: UserNotificationDao,
     onDismiss: () -> Unit,
     limit: Int = 100,
 ) {
-    val rows by dao.observeRecentBySource(source, limit)
+    val rows by dao.observeRecentBySources(sources, limit)
         .collectAsStateWithLifecycle(initialValue = emptyList())
     var confirmClear by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -118,14 +122,15 @@ fun NotificationLogDialog(
             title = { Text("Clear this log?") },
             text = {
                 Text(
-                    "Removes every entry written by this feature. Other " +
-                        "features' logs are untouched."
+                    "Removes every entry written by " +
+                        (if (sources.size == 1) "this feature." else "these features.") +
+                        " Other features' logs are untouched."
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
                     confirmClear = false
-                    scope.launch { dao.deleteAllForSource(source) }
+                    scope.launch { dao.deleteAllForSources(sources) }
                 }) { Text("Clear") }
             },
             dismissButton = {
