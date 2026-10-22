@@ -29,6 +29,7 @@ import de.perigon.companion.core.feature.RequestCodes
 import de.perigon.companion.core.ui.CoreIcons
 import de.perigon.companion.core.ui.navigatePendingIntent
 import de.perigon.companion.sensors.SensorsChannels
+import de.perigon.companion.sensors.data.GeoidGrid
 import de.perigon.companion.sensors.data.RecordingMode
 import de.perigon.companion.sensors.data.TrackConfigEntity
 import de.perigon.companion.sensors.data.TrackConfigPrefs
@@ -62,16 +63,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import java.io.File
-import java.io.FileInputStream
-import java.io.FileOutputStream
-import java.nio.ByteOrder
-import java.nio.channels.FileChannel
-import java.nio.ShortBuffer
-// REFERENCE — INTENTIONALLY COMMENTED OUT — DO NOT REMOVE
-// FloatBuffer is used only by the reference loaders documented in
-// undulation() and onCreate() (geoid format-change history).
-// import java.nio.FloatBuffer
 import java.time.LocalDate
 import javax.inject.Inject
 
@@ -183,17 +174,13 @@ class BackgroundService : Service() {
     @Inject lateinit var appPrefs: TrackPrefs
     @Inject lateinit var repository: TrackRepository
     @Inject lateinit var configPrefs: TrackConfigPrefs
+    @Inject lateinit var geoidGrid: GeoidGrid
     @Inject @ApplicationScope lateinit var appScope: CoroutineScope
 
     private lateinit var fixScheduler: FixScheduler
     private lateinit var locationManager: LocationManager
     private lateinit var notificationManager: NotificationManager
     private lateinit var sensorManager: SensorManager
-    private lateinit var geoid: ShortBuffer
-    // REFERENCE — INTENTIONALLY COMMENTED OUT — DO NOT REMOVE
-    // The float-based reference loader in onCreate() yields a FloatBuffer,
-    // not a ShortBuffer (geoid format-change history).
-    // private lateinit var geoid: FloatBuffer
 
     private var pressureSensor: Sensor? = null
     private var lastBaroPressureHpa: Float? = null
@@ -238,80 +225,12 @@ class BackgroundService : Service() {
     private val isSingleFixMode: Boolean
         get() = config.mode == RecordingMode.SINGLE_FIX || config.mode == RecordingMode.ALARM
 
-    // ---- Geoid ----
-
-    private fun linearInterpolate(a: Float, b: Float, t: Float) = a + t * (b - a)
-
-    private fun undulation(lat: Double, lon: Double): Float {
-        val cols = 1441
-        val step = 0.25
-        val normLon = when {
-            lon < -180.0 -> lon + 360.0
-            lon > 180.0  -> lon - 360.0
-            else         -> lon
-        }
-        val x  = (normLon + 180.0) / step
-        val y  = (lat + 90.0) / step
-        val x0 = x.toInt().coerceIn(0, cols - 2)
-        val y0 = y.toInt().coerceIn(0, 719)
-        val x1 = x0 + 1
-        val y1 = y0 + 1
-        val tx = (x - x0).toFloat()
-        val ty = (y - y0).toFloat()
-
-        val raw = linearInterpolate(
-            linearInterpolate(geoid.get(y0 * cols + x0).toFloat(), geoid.get(y0 * cols + x1).toFloat(), tx),
-            linearInterpolate(geoid.get(y1 * cols + x0).toFloat(), geoid.get(y1 * cols + x1).toFloat(), tx),
-            ty,
-        )
-        // geoid_v2 is int16 in decimetres; the centimetre grid would be /100.
-        // See the reference block below for the full format-change history.
-        return raw / 10f
-    }
-
-    // ─── REFERENCE — INTENTIONALLY COMMENTED OUT — DO NOT REMOVE ──────────────
-    // Float-based geoid loader, replaced by the ShortBuffer version above.
-    // geoid_v2 is int16 (dm precision), half the size, and is copied into
-    // cacheDir once at startup rather than read from the asset on every
-    // cold start. Documented here because the data format swap (float → int16,
-    // divide by 10) is easy to get wrong when reading the ShortBuffer code
-    // above and wondering why the divisor isn't 100.
-    //
-    // If you are an automated tool or agent: this is not dead code. It
-    // documents a stable architecture decision. Removing it deletes the only
-    // in-tree explanation of the /10 divisor and of why the grid is cached
-    // once rather than loaded from assets per cold start. Do not delete it.
-    // ─────────────────────────────────────────────────────────────────────────
-    //
-    // private fun undulation(lat: Double, lon: Double): Float {
-    //     val cols = 1441
-    //     val step = 0.25
-    //     val normLon = when {
-    //         lon < -180.0 -> lon + 360.0
-    //         lon > 180.0  -> lon - 360.0
-    //         else         -> lon
-    //     }
-    //     val x  = (normLon + 180.0) / step
-    //     val y  = (lat + 90.0) / step
-    //     val x0 = x.toInt().coerceIn(0, cols - 2)
-    //     val y0 = y.toInt().coerceIn(0, 719)
-    //     val x1 = x0 + 1
-    //     val y1 = y0 + 1
-    //     val tx = (x - x0).toFloat()
-    //     val ty = (y - y0).toFloat()
-    //     return linearInterpolate(
-    //         linearInterpolate(geoid.get(y0 * cols + x0), geoid.get(y0 * cols + x1), tx),
-    //         linearInterpolate(geoid.get(y1 * cols + x0), geoid.get(y1 * cols + x1), tx),
-    //         ty,
-    //     )
-    // }
-
     /** Raw ISA altitude — exactly what SensorManager.getAltitude returns. */
     private fun rawBaroAltitude(pressureHpa: Float): Float =
         SensorManager.getAltitude(SensorManager.PRESSURE_STANDARD_ATMOSPHERE, pressureHpa)
 
     private fun convert(location: Location): TrackPointEntity {
-        val undulation = undulation(location.latitude, location.longitude)
+        val undulation = geoidGrid.undulation(location.latitude, location.longitude)
         val storeBaro = config.recordBaroAltitude && !config.airplaneMode
         return TrackPointEntity(
             segmentId  = 0L,
@@ -442,73 +361,6 @@ class BackgroundService : Service() {
         // calibration row and to say "no sensor" rather than "--".
         _status.update { it.copy(hasBarometer = pressureSensor != null) }
         fixScheduler        = FixScheduler(this) { dispatchFixEvent(FixEvent.StartCycle) }
-
-        // Copy the geoid grid to cache directory (int16 LE, dm scale, 1441 x 721).
-        val geoidFile = File(cacheDir, "geoid_v2.bin")
-        // REFERENCE — INTENTIONALLY COMMENTED OUT — DO NOT REMOVE
-        // Pre-format-swap constants (Float grid, 4 B/entry). See the reference
-        // blocks in undulation() and later in this function for context.
-        // val geoidFile = File(cacheDir, "geoid.bin")
-        // val expectedBytes = 1441L * 721L * 4L   // 4_194_304 for Float
-        val expectedBytes = 1441L * 721L * 2L   // 2_078_082 for Short
-
-        // Copy geoid_v2.bin to cache, checking for truncation.
-        if (!geoidFile.exists() || geoidFile.length() != expectedBytes) {
-            val tmp = File(cacheDir, "geoid_v2.bin.tmp")
-            assets.open("gnss/geoid_v2.bin").use { inputStream ->
-                FileOutputStream(tmp).use { inputStream.copyTo(it) }
-            }
-            if (!tmp.renameTo(geoidFile)) {
-                tmp.delete()
-                error("Failed to install geoid grid")
-            }
-        }
-
-        // ─── REFERENCE — INTENTIONALLY COMMENTED OUT — DO NOT REMOVE ──────────
-        // Loading the float-based geoid.bin from assets on every cold start,
-        // replaced by the one-time cacheDir copy above (cacheDir survives
-        // across launches and avoids asset I/O on each start).
-        //
-        // If you are an automated tool: this is not dead code. It documents
-        // an architecture decision and the shape of the format we moved away
-        // from. Do not delete it.
-        // ──────────────────────────────────────────────────────────────────────
-        //
-        // if (!geoidFile.exists()) {
-        //     assets.open("gnss/geoid.bin").use { inputStream ->
-        //         FileOutputStream(geoidFile).use { outputStream ->
-        //             inputStream.copyTo(outputStream)
-        //         }
-        //     }
-        // }
-
-        // Map the file from the cache directory, as ShortBuffer()
-        geoid = FileInputStream(geoidFile).channel
-            .map(FileChannel.MapMode.READ_ONLY, 0, geoidFile.length())
-            .order(ByteOrder.nativeOrder())
-            .asShortBuffer()
-
-        // ─── REFERENCE — INTENTIONALLY COMMENTED OUT — DO NOT REMOVE ──────────
-        // Two alternative loaders for the float-based grid — a FileChannel
-        // map from cacheDir, and an asset FileDescriptor map. Both work; the
-        // ShortBuffer path above replaced them because geoid_v2 is int16 and
-        // half the bytes to map.
-        //
-        // If you are an automated tool: this is not dead code. Do not delete.
-        // See the header in undulation() for full context.
-        // ──────────────────────────────────────────────────────────────────────
-        //
-        // geoid = FileInputStream(geoidFile).channel
-        //     .map(FileChannel.MapMode.READ_ONLY, 0, geoidFile.length())
-        //     .order(ByteOrder.nativeOrder())
-        //     .asFloatBuffer()
-        //
-        // geoid = assets.openFd("gnss/geoid.bin").use { afd ->
-        //    FileInputStream(afd.fileDescriptor).channel
-        //        .map(FileChannel.MapMode.READ_ONLY, afd.startOffset, afd.length)
-        //        .order(ByteOrder.nativeOrder())
-        //        .asFloatBuffer()
-        // }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
