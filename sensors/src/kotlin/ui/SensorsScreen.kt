@@ -9,6 +9,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -50,6 +51,28 @@ fun SensorsScreen(navController: NavController) {
     // filter, and so the debug state (mode, history) survives tab
     // switches without restarting the recording pipeline's filter.
     val kfVm: KfViewModel = hiltViewModel()
+
+    // Telephony is registered for the WHOLE Sensors screen, not just the
+    // GSM tab. Two independent reasons:
+    //
+    //  1. DisposableEffect keeps the callback registered across screen-off
+    //     and app backgrounding (composition survives lifecycle pause), so
+    //     cells that appear while the screen is dark still land in the
+    //     accumulation buffer and are visible on return. LifecycleResumeEffect
+    //     would drop them on the first onPause.
+    //  2. Registering at SensorsScreen level means the callback runs while
+    //     the user is on any tab, not just GSM. Sparse cells don't disappear
+    //     between tab switches because the buffer (on the ViewModel) keeps
+    //     accumulating.
+    //
+    // The effect fires once on composition entry. Registration is idempotent
+    // and no-ops without permission; GsmContent's RequireAccess has its own
+    // LaunchedEffect(Unit) { vm.startTelephony() } which handles the case
+    // where permission is granted while this screen is already composed.
+    DisposableEffect(Unit) {
+        vm.startTelephony()
+        onDispose { vm.stopTelephony() }
+    }
 
     val backgroundGpsEnabled by vm.backgroundGpsEnabled.collectAsStateWithLifecycle()
 

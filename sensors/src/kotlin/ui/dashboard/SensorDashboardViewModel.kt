@@ -12,6 +12,7 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.net.wifi.WifiManager
+import android.os.SystemClock
 import android.telephony.CellIdentityNr
 import android.telephony.CellInfoGsm
 import android.telephony.CellInfoLte
@@ -44,6 +45,20 @@ class SensorDashboardViewModel @Inject constructor(
     private val _gnssState = MutableStateFlow(GnssUiState())
     val gnssState: StateFlow<GnssUiState> = _gnssState.asStateFlow()
 
+    /**
+     * Cells seen recently, sorted by recency (most recent first).
+     *
+     * Backed by an accumulating map in this ViewModel. On every telephony
+     * callback, the currently-visible cells are merged into [cellObservations]
+     * and stamped with a fresh `lastSeenMs`; entries older than
+     * [CELL_TTL_MS] are pruned; the map is capped at [MAX_CELLS]. The
+     * published list is the map's values sorted by recency, so old cells
+     * sink to the bottom before disappearing entirely on the next update.
+     *
+     * The map survives tab switches and screen-off because it lives on the
+     * ViewModel. It is garbage-collected when the Sensors nav destination
+     * leaves the back stack (and its ViewModel is cleared).
+     */
     private val _cellTowers = MutableStateFlow<List<CellTowerInfo>>(emptyList())
     val cellTowers: StateFlow<List<CellTowerInfo>> = _cellTowers.asStateFlow()
 
@@ -78,6 +93,22 @@ class SensorDashboardViewModel @Inject constructor(
     private var lastMag: FloatArray? = null
 
     private val lastUpdateNs = HashMap<Int, Long>(16)
+
+    /**
+     * Accumulation buffer for cells. Key is the cell's identity (type +
+     * mcc + mnc + cid); value is the latest observation with its
+     * first/last-seen timestamps. Only ever touched from the telephony
+     * callback and the seed-in-startTelephony call, both on the main
+     * executor, so no lock is needed.
+     */
+    private val cellObservations = LinkedHashMap<CellKey, CellTowerInfo>()
+
+    private data class CellKey(
+        val type: String,
+        val mcc: String,
+        val mnc: String,
+        val cid: String,
+    )
 
     // ---- Permission helpers ----
 
@@ -259,13 +290,25 @@ class SensorDashboardViewModel @Inject constructor(
 
     // ---- Telephony ----
 
+    /**
+     * Register the telephony callback and seed from the current snapshot.
+     *
+     * Idempotent: safe to call from both SensorsScreen's DisposableEffect
+     * (fires once on destination entry, across all tabs, survives
+     * screen-off/background) and GsmContent's LaunchedEffect (the retry
+     * after an app-internal permission grant). The registration guard
+     * prevents the two from double-registering.
+     *
+     * Callbacks merge into [cellObservations]; the accumulating map is what
+     * makes cells survive tab switches and stale observations age out.
+     */
     fun startTelephony() {
         if (telephonyCallback != null || !checkTelephonyPermission()) return
 
         val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
         val callback = object : TelephonyCallback(), TelephonyCallback.CellInfoListener {
             override fun onCellInfoChanged(cellInfo: MutableList<android.telephony.CellInfo>) {
-                _cellTowers.value = cellInfo.mapNotNull { info -> info.toTower() }
+                recordCellTowers(cellInfo.mapNotNull { info -> info.toTower() })
             }
         }
         try {
@@ -275,7 +318,7 @@ class SensorDashboardViewModel @Inject constructor(
             // does not guarantee an immediate onCellInfoChanged.
             val initial = try { tm.allCellInfo } catch (e: SecurityException) { null }
             if (initial != null) {
-                _cellTowers.value = initial.mapNotNull { info -> info.toTower() }
+                recordCellTowers(initial.mapNotNull { info -> info.toTower() })
             }
         } catch (e: SecurityException) {}
     }
@@ -287,6 +330,42 @@ class SensorDashboardViewModel @Inject constructor(
             tm.unregisterTelephonyCallback(callback)
         } catch (e: Exception) {}
         telephonyCallback = null
+    }
+
+    /**
+     * Merge the currently-visible cells into the accumulation buffer, then
+     * prune and republish.
+     *
+     *  - New cells get `firstSeenMs = lastSeenMs = now`.
+     *  - Known cells get `lastSeenMs = now`; `firstSeenMs` is preserved.
+     *  - Entries whose `lastSeenMs` is older than [CELL_TTL_MS] are removed.
+     *    This is what makes a cell "fall off automatically": it sinks to
+     *    the bottom (sorted by recency on publish) and then disappears on
+     *    the first callback after the TTL boundary.
+     *  - Entries beyond [MAX_CELLS] are removed oldest-first, so dense
+     *    urban areas cannot grow the list unbounded within a single TTL
+     *    window.
+     */
+    private fun recordCellTowers(visible: List<CellTowerInfo>) {
+        val now = SystemClock.elapsedRealtime()
+        for (cell in visible) {
+            val key = CellKey(cell.type, cell.mcc, cell.mnc, cell.cid)
+            val prev = cellObservations[key]
+            cellObservations[key] = cell.copy(
+                firstSeenMs = prev?.firstSeenMs ?: now,
+                lastSeenMs = now,
+            )
+        }
+        val cutoff = now - CELL_TTL_MS
+        cellObservations.entries.removeAll { it.value.lastSeenMs < cutoff }
+        if (cellObservations.size > MAX_CELLS) {
+            cellObservations.entries
+                .sortedBy { it.value.lastSeenMs }
+                .take(cellObservations.size - MAX_CELLS)
+                .forEach { cellObservations.remove(it.key) }
+        }
+        _cellTowers.value = cellObservations.values
+            .sortedByDescending { it.lastSeenMs }
     }
 
     // ---- WiFi ----
@@ -372,6 +451,12 @@ class SensorDashboardViewModel @Inject constructor(
 
     private companion object {
         const val SENSOR_MIN_INTERVAL_NS = 100_000_000L
+
+        /** A cell not seen for this long is dropped from the buffer. */
+        const val CELL_TTL_MS = 10L * 60 * 1000L
+
+        /** Hard cap on cells held, regardless of TTL. */
+        const val MAX_CELLS = 100
     }
 }
 
@@ -389,6 +474,10 @@ class SensorDashboardViewModel @Inject constructor(
  * compile SDK in use, so the NR branch needs an explicit cast to
  * `CellIdentityNr` to reach `mccString` / `mncString` / `nci`. A safe cast
  * is used so an unexpected runtime type is skipped rather than crashing.
+ *
+ * The timestamps are deliberately left at their default (0) here; the
+ * accumulating map sets them from the observation time, not the platform
+ * callback time.
  */
 private fun android.telephony.CellInfo.toTower(): CellTowerInfo? = when (this) {
     is CellInfoGsm -> CellTowerInfo(

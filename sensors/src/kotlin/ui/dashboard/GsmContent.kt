@@ -1,5 +1,6 @@
 package de.perigon.companion.sensors.ui.dashboard
 
+import android.os.SystemClock
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,26 +14,27 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import de.perigon.companion.core.ui.access.RequireAccess
 import de.perigon.companion.sensors.SensorsRequirements
+import kotlinx.coroutines.delay
 
 @Composable
 fun GsmContent(vm: SensorDashboardViewModel) {
     val cells by vm.cellTowers.collectAsStateWithLifecycle()
 
-    // Start on resume, stop on pause/dispose. TelephonyCallback is
-    // unregistered in stopTelephony, which is what actually turns off the
-    // radio-side notification stream.
-    LifecycleResumeEffect(Unit) {
-        vm.startTelephony()
-        onPauseOrDispose { vm.stopTelephony() }
-    }
+    // No lifecycle effect here. Registration is owned by SensorsScreen's
+    // DisposableEffect so the callback runs across the whole Sensors screen
+    // and survives screen-off/background. This tab only reads the
+    // accumulation buffer. If the user grants telephony permission via the
+    // gate below while this screen is already composed, the LaunchedEffect
+    // inside RequireAccess re-registers — the idempotent guard in
+    // startTelephony() makes that a no-op when the callback is already up.
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -52,9 +54,20 @@ fun GsmContent(vm: SensorDashboardViewModel) {
 
 @Composable
 private fun CellTowerCard(cells: List<CellTowerInfo>) {
+    // UI-only ticker so the "seen Xs ago" labels don't go stale while the
+    // tab is on screen. Does not drive data collection — the telephony
+    // callback does that. 5 s is enough resolution for "recently seen" and
+    // cheap enough to be invisible.
+    val nowMs by produceState(initialValue = SystemClock.elapsedRealtime()) {
+        while (true) {
+            delay(5_000L)
+            value = SystemClock.elapsedRealtime()
+        }
+    }
+
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Visible cells", style = MaterialTheme.typography.titleMedium)
+            Text("Cells seen", style = MaterialTheme.typography.titleMedium)
             if (cells.isEmpty()) {
                 Text(
                     "Waiting for telephony update…",
@@ -74,7 +87,7 @@ private fun CellTowerCard(cells: List<CellTowerInfo>) {
                             fontWeight = FontWeight.Bold,
                         )
                         Text(
-                            "MCC ${cell.mcc} · MNC ${cell.mnc}",
+                            "MCC ${cell.mcc} · MNC ${cell.mnc} · ${formatAge(nowMs - cell.lastSeenMs)}",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -86,4 +99,11 @@ private fun CellTowerCard(cells: List<CellTowerInfo>) {
             }
         }
     }
+}
+
+private fun formatAge(ageMs: Long): String = when {
+    ageMs < 1_000L -> "just now"
+    ageMs < 60_000L -> "${ageMs / 1_000L}s ago"
+    ageMs < 3_600_000L -> "${ageMs / 60_000L}m ago"
+    else -> "${ageMs / 3_600_000L}h ago"
 }

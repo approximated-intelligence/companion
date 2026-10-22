@@ -23,13 +23,27 @@ data class GnssUiState(
     val lastFixTimeMs: Long? = null,
 )
 
+/**
+ * A cell observed by the telephony callback.
+ *
+ * [firstSeenMs] and [lastSeenMs] are `SystemClock.elapsedRealtime()` values,
+ * not wall clock: they are used only to age cells out of the accumulation
+ * buffer and to compute "seen Xs ago" labels, both of which are monotonic
+ * durations and immune to clock adjustments.
+ *
+ * Both are zero for a fresh [toTower] result; [SensorDashboardViewModel]'s
+ * accumulation step fills them via `copy`. Anything downstream reading these
+ * fields should treat zero as "unknown" rather than "seen at boot".
+ */
 @Immutable
 data class CellTowerInfo(
     val type: String,
     val mcc: String,
     val mnc: String,
     val cid: String,
-    val signalDbm: Int
+    val signalDbm: Int,
+    val firstSeenMs: Long = 0L,
+    val lastSeenMs: Long = 0L,
 )
 
 @Immutable
