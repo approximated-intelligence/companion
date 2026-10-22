@@ -15,6 +15,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import de.perigon.companion.sensors.data.GeoidGrid
 import de.perigon.companion.sensors.domain.AltitudeKalmanFilter
 import de.perigon.companion.sensors.domain.KalmanMode
 import de.perigon.companion.sensors.domain.UpdateSource
@@ -40,6 +41,18 @@ data class KfSample(
 data class KfUiState(
     val mode: KalmanMode = KalmanMode.GAUSSIAN,
     val gnssEnabled: Boolean = true,
+    // Tab-local: whether the baro measurement is fed to the filter. Defaults
+    // ON — fusing GPS + baro is the filter's intended use, and the tab is a
+    // sandbox with none of the recorder's reasons for shipping the feature
+    // off (battery, per-point DB writes, an extra GPX column). The listener
+    // stays registered regardless so the raw reading is always available;
+    // this toggle only gates filter.updateBaro().
+    val baroEnabled: Boolean = true,
+    // Tab-local. Only applied in ISKF mode; the toggle is only shown there.
+    val iskfInverseHessian: Boolean = false,
+    // Tab-local: subtract geoid undulation from GPS altitude before feeding.
+    // On by default because the recorder always applies it.
+    val geoidEnabled: Boolean = true,
     val isInitialized: Boolean = false,
     val hadGpsSeed: Boolean = false,
     val h: Float? = null,
@@ -53,6 +66,7 @@ data class KfUiState(
     val baroInput: Float? = null,
     val gpsInput: Float? = null,
     val baroPressureHpa: Float? = null,
+    val geoidUndulationM: Float? = null,
     val gpsSigmaM: Float? = null,
     val hasBarometer: Boolean = false,
     val huberWeight: Float? = null,
@@ -66,22 +80,33 @@ data class KfUiState(
 /**
  * Runs a standalone AltitudeKalmanFilter for the KF debug tab.
  *
- * Owns its own baro listener and (optional) GPS listener. These are
- * independent from BackgroundService's feeds and from the GNSS tab's
- * listener — Android coalesces GPS requests at the provider level, so
- * there is no battery cost to having more than one.
+ * TRUE SANDBOX. Own filter instance, own listeners, own toggles. Nothing here
+ * reads or writes TrackConfigPrefs, and no state is shared with the recording
+ * pipeline. Changing a chip in this tab changes only this filter's update
+ * rule; the recorder's filter is untouched until the same setting is changed
+ * on the Track tab. The point of the tab is to answer "what would the filter
+ * do with these inputs?" without altering — or being altered by — the session
+ * you are trying to inspect.
  *
- * GNSS toggle: when off, we stop feeding GPS but keep feeding baro. The
- * filter continues from its converged state, and the tab shows how h and
- * b respond to baro-only input. This is the useful "watch it drift"
- * case. The toggle cannot help before the filter has been seeded by GPS:
- * the filter refuses baro updates until initialized, by design. Seeding
- * from baro would lock the bias and give a physically wrong h on
- * re-fusion. The UI shows that hint when applicable.
+ * Defaults are the filter's INTENDED configuration (Gaussian mode, GPS + baro
+ * fused, geoid applied), which is what the tab exists to show. They
+ * deliberately do not mirror the recorder's shipped defaults: the recorder
+ * ships baro off because enabling it has downstream costs a user should opt
+ * into (battery, per-point DB writes, GPX size), none of which apply to the
+ * sandbox.
+ *
+ * The raw baro reading is shown whether or not it is fused: the question
+ * "how far is the sensor from the filter's altitude?" is exactly what the
+ * tab exists to answer, and it is independent of the fusion toggle.
+ *
+ * Toggling geoid mid-session is not reset by design: watching the filter
+ * absorb the step between ellipsoidal and orthometric altitude is more
+ * informative than a blank chart.
  */
 @HiltViewModel
 class KfViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val geoidGrid: GeoidGrid,
 ) : ViewModel() {
 
     private val filter = AltitudeKalmanFilter(
@@ -101,15 +126,25 @@ class KfViewModel @Inject constructor(
     private var lastHistoryMs = 0L
     private val history = ArrayDeque<KfSample>(HISTORY_SIZE + 1)
 
-    private companion object {
+    companion object {
         const val HISTORY_SIZE = 180
         const val HISTORY_INTERVAL_MS = 500L
-        const val BARO_SIGMA_M = 1.0f
-        const val GPS_VERTICAL_DEFAULT_M = 15f
-        const val GPS_VERTICAL_FALLBACK_FACTOR = 3f
+        private const val BARO_SIGMA_M = 1.0f
+        private const val GPS_VERTICAL_DEFAULT_M = 15f
+        private const val GPS_VERTICAL_FALLBACK_FACTOR = 3f
     }
 
     fun start() {
+        // Hardware detection, independent of the fusion toggle: the switch
+        // must be disabled on phones without a pressure sensor.
+        val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        _state.update { it.copy(hasBarometer = sm.getDefaultSensor(Sensor.TYPE_PRESSURE) != null) }
+
+        // Always start both listeners. The baro listener is what feeds the
+        // raw pressure readout; whether its measurement is FUSED is the
+        // separate baroEnabled toggle. Starting/stopping the listener on a
+        // toggle would give the tab two different "baro is off" states that
+        // look the same in the UI but read differently in diagnostics.
         startBaro()
         if (_state.value.gnssEnabled) startGnss()
     }
@@ -119,9 +154,28 @@ class KfViewModel @Inject constructor(
         stopBaro()
     }
 
+    // ---- Toggles (all tab-local, none writes to config) ----
+
     fun setMode(mode: KalmanMode) {
+        if (_state.value.mode == mode) return
         filter.setMode(mode)
         _state.update { it.copy(mode = mode) }
+    }
+
+    fun setIskfInverseHessian(enabled: Boolean) {
+        if (_state.value.iskfInverseHessian == enabled) return
+        filter.setIskfInverseHessian(enabled)
+        _state.update { it.copy(iskfInverseHessian = enabled) }
+    }
+
+    fun setBaroEnabled(enabled: Boolean) {
+        if (_state.value.baroEnabled == enabled) return
+        _state.update { it.copy(baroEnabled = enabled) }
+    }
+
+    fun setGeoidEnabled(enabled: Boolean) {
+        if (_state.value.geoidEnabled == enabled) return
+        _state.update { it.copy(geoidEnabled = enabled) }
     }
 
     fun setGnssEnabled(enabled: Boolean) {
@@ -143,6 +197,7 @@ class KfViewModel @Inject constructor(
                 deltaGps = null, deltaBaro = null,
                 baroInput = null, gpsInput = null,
                 baroPressureHpa = null,
+                geoidUndulationM = null,
                 gpsSigmaM = null,
                 huberWeight = null,
                 vbEstimatedR = null,
@@ -159,17 +214,24 @@ class KfViewModel @Inject constructor(
     private fun startBaro() {
         if (baroActive) return
         val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        val pressure = sm.getDefaultSensor(Sensor.TYPE_PRESSURE)
-        _state.update { it.copy(hasBarometer = pressure != null) }
-        if (pressure == null) return
+        val pressure = sm.getDefaultSensor(Sensor.TYPE_PRESSURE) ?: return
 
         val listener = object : SensorEventListener {
             override fun onSensorChanged(event: SensorEvent) {
                 if (event.sensor.type != Sensor.TYPE_PRESSURE) return
                 val p = event.values[0]
                 val z = SensorManager.getAltitude(SensorManager.PRESSURE_STANDARD_ATMOSPHERE, p)
-                filter.updateBaro(z, BARO_SIGMA_M)
-                publish(baroPressureHpa = p, baroInput = z)
+                // Fusion is the toggle; the reading is always published so
+                // the numeric and chart output show "what baro says" even
+                // while it is not being fed to the filter. That is the
+                // question the tab exists to answer.
+                if (_state.value.baroEnabled) {
+                    filter.updateBaro(z, BARO_SIGMA_M)
+                }
+                publish(
+                    baroPressureHpa = p,
+                    baroInput = z,
+                )
             }
             override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
         }
@@ -205,8 +267,19 @@ class KfViewModel @Inject constructor(
                     location.hasAccuracy() -> location.accuracy * GPS_VERTICAL_FALLBACK_FACTOR
                     else -> GPS_VERTICAL_DEFAULT_M
                 }
-                filter.updateGps(location.altitude.toFloat(), vAcc)
-                publish(gpsInput = location.altitude.toFloat(), gpsSigmaM = vAcc)
+                // Geoid is read unconditionally so the numeric grid can show
+                // the undulation even when the toggle is off.
+                val geoidM = geoidGrid.undulation(location.latitude, location.longitude)
+                val fedAlt = if (_state.value.geoidEnabled)
+                    (location.altitude - geoidM).toFloat()
+                else
+                    location.altitude.toFloat()
+                filter.updateGps(fedAlt, vAcc)
+                publish(
+                    gpsInput = fedAlt,
+                    gpsSigmaM = vAcc,
+                    geoidUndulationM = geoidM,
+                )
             }
             override fun onProviderEnabled(provider: String) {}
             override fun onProviderDisabled(provider: String) {}
@@ -239,6 +312,7 @@ class KfViewModel @Inject constructor(
         baroInput: Float? = _state.value.baroInput,
         gpsInput: Float? = _state.value.gpsInput,
         gpsSigmaM: Float? = _state.value.gpsSigmaM,
+        geoidUndulationM: Float? = _state.value.geoidUndulationM,
     ) {
         val h = filter.altitude()
         val v = filter.verticalSpeed()
@@ -275,6 +349,7 @@ class KfViewModel @Inject constructor(
                 baroInput = baroInput,
                 gpsInput = gpsInput,
                 baroPressureHpa = baroPressureHpa,
+                geoidUndulationM = geoidUndulationM,
                 gpsSigmaM = gpsSigmaM,
                 huberWeight = filter.lastHuberWeightValue(),
                 vbEstimatedR = filter.lastVbEstimatedRValue(),
@@ -287,7 +362,6 @@ class KfViewModel @Inject constructor(
     }
 
     override fun onCleared() {
-        stopGnss()
-        stopBaro()
+        stop()
     }
 }
