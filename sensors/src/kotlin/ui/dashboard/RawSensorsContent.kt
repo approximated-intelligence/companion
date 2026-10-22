@@ -33,6 +33,8 @@ fun RawSensorsContent(vm: SensorDashboardViewModel) {
     // they were registered unconditionally in the ViewModel's init block
     // and kept firing (throttled to 10 Hz) for the whole lifetime of the
     // Sensors nav entry — even when only the Track tab was ever shown.
+    // GNSS (needed for the declination row below) is hoisted to
+    // SensorsScreen and so is live on every tab.
     LifecycleResumeEffect(Unit) {
         vm.startRawSensors()
         onPauseOrDispose { vm.stopRawSensors() }
@@ -100,10 +102,31 @@ fun RawSensorsContent(vm: SensorDashboardViewModel) {
             SensorGroupCard("Orientation") {
                 SensorRow3(
                     listOf(
-                        Triple("Azimuth", "", raw.azimuth?.let { "${it.toInt()}° ${cardinal(it)}" }),
-                        Triple("Pitch",   "", raw.pitch?.let   { "%.0f°".format(it) }),
-                        Triple("Roll",    "", raw.roll?.let    { "%.0f°".format(it) }),
+                        Triple("Azimuth (magnetic)", "", raw.azimuth?.let { "${it.toInt()}° ${cardinal(it)}" }),
+                        Triple("Pitch",            "", raw.pitch?.let   { "%.0f°".format(it) }),
+                        Triple("Roll",             "", raw.roll?.let    { "%.0f°".format(it) }),
                     )
+                )
+                Spacer(Modifier.height(8.dp))
+                SensorRow3(
+                    listOf(
+                        Triple(
+                            "Declination",
+                            "",
+                            raw.declinationDeg?.let { "%+.1f°".format(it) } ?: "--",
+                        ),
+                        Triple(
+                            "Azimuth (true)",
+                            "",
+                            raw.trueAzimuthDeg?.let { "${it.toInt()}° ${cardinal(it)}" } ?: "--",
+                        ),
+                    )
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Declination: WMM2025 at the current GPS position. Positive = magnetic north east of true north.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }

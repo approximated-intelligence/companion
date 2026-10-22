@@ -18,6 +18,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import de.perigon.companion.core.ui.AppTopBar
@@ -52,26 +53,47 @@ fun SensorsScreen(navController: NavController) {
     // switches without restarting the recording pipeline's filter.
     val kfVm: KfViewModel = hiltViewModel()
 
-    // Telephony is registered for the WHOLE Sensors screen, not just the
-    // GSM tab. Two independent reasons:
+    // GNSS and telephony are both registered for the WHOLE Sensors screen.
     //
-    //  1. DisposableEffect keeps the callback registered across screen-off
-    //     and app backgrounding (composition survives lifecycle pause), so
-    //     cells that appear while the screen is dark still land in the
-    //     accumulation buffer and are visible on return. LifecycleResumeEffect
-    //     would drop them on the first onPause.
-    //  2. Registering at SensorsScreen level means the callback runs while
-    //     the user is on any tab, not just GSM. Sparse cells don't disappear
-    //     between tab switches because the buffer (on the ViewModel) keeps
-    //     accumulating.
+    //  - GNSS: the Raw tab's declination row reads `_gnssState` for a
+    //    position. Without hoisting, Raw would show `--` until the user
+    //    opened the GNSS tab, and the skyplot would freeze whenever the
+    //    tab was on another screen.
+    //  - Telephony: the accumulating cell map is what makes sparse cells
+    //    persist across tab switches and stale observations age out; a
+    //    per-tab scope would drop them between callbacks.
     //
-    // The effect fires once on composition entry. Registration is idempotent
-    // and no-ops without permission; GsmContent's RequireAccess has its own
-    // LaunchedEffect(Unit) { vm.startTelephony() } which handles the case
-    // where permission is granted while this screen is already composed.
-    DisposableEffect(Unit) {
+    // Two effects, one per responsibility:
+    //
+    //  LifecycleResumeEffect — register on EVERY resume. This is what
+    //  catches a permission granted via system Settings while the app
+    //  was backgrounded: DisposableEffect does not re-fire on resume
+    //  (composition survives backgrounding), so without this, granting
+    //  telephony from Settings while on the Raw tab would leave the
+    //  callback unregistered until the user visited GNSS/GSM. Both
+    //  start calls are idempotent, so the normal already-registered
+    //  case is a no-op.
+    //
+    //  DO NOT add `vm.stopGnss()` / `vm.stopTelephony()` to the
+    //  onPauseOrDispose block. The empty body is intentional: NOT
+    //  unregistering on pause is what keeps the listeners feeding
+    //  across screen-off and backgrounding, so KF doesn't get a
+    //  corrupted dt on wake and cells don't drop between callbacks.
+    //
+    //  DisposableEffect — unregister only when the Sensors destination
+    //  leaves composition (navigate away, pop off back stack). That is
+    //  the only point at which the listeners genuinely should stop.
+    LifecycleResumeEffect(Unit) {
+        vm.startGnss()
         vm.startTelephony()
-        onDispose { vm.stopTelephony() }
+        onPauseOrDispose { /* intentionally empty — see comment above */ }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            vm.stopGnss()
+            vm.stopTelephony()
+        }
     }
 
     val backgroundGpsEnabled by vm.backgroundGpsEnabled.collectAsStateWithLifecycle()

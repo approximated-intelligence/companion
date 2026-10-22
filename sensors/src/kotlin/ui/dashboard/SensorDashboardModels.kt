@@ -60,6 +60,14 @@ data class RawSensorValues(
     val gyroX: Float? = null, val gyroY: Float? = null, val gyroZ: Float? = null,
     val magX: Float? = null, val magY: Float? = null, val magZ: Float? = null,
     val azimuth: Float? = null, val pitch: Float? = null, val roll: Float? = null,
+    // Magnetic → true-north correction, positive = magnetic north east of
+    // true north. Null until a GNSS fix is available (declination is a
+    // function of position and time, via WMM2025). Computed for the
+    // current position, not stored — the value changes as you move.
+    val declinationDeg: Float? = null,
+    // Magnetic azimuth + declination, normalised to [0, 360). Null when
+    // [declinationDeg] is null (no position).
+    val trueAzimuthDeg: Float? = null,
     val light: Float? = null, val pressure: Float? = null, val proximity: Float? = null,
     val humidity: Float? = null, val temp: Float? = null,
 )

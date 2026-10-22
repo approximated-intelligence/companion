@@ -55,7 +55,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import de.perigon.companion.core.geo.CoordFormat
 import de.perigon.companion.core.geo.formatDd
@@ -115,10 +114,12 @@ fun GnssContent(vm: SensorDashboardViewModel) {
     val gnss by vm.gnssState.collectAsStateWithLifecycle()
     val format by vm.coordFormat.collectAsStateWithLifecycle()
 
-    LifecycleResumeEffect(Unit) {
-        vm.startGnss()
-        onPauseOrDispose { vm.stopGnss() }
-    }
+    // No lifecycle effect here: GNSS registration is hoisted to
+    // SensorsScreen's DisposableEffect so the listener feeds every tab
+    // (needed by the Raw tab's declination) and survives screen-off.
+    // The LaunchedEffect inside RequireAccess is the retry after an
+    // app-internal permission grant — startGnss() is idempotent, so the
+    // already-running case is a no-op.
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),

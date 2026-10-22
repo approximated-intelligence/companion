@@ -23,6 +23,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -38,7 +39,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import de.perigon.companion.core.ui.ToggleRow
 import de.perigon.companion.core.ui.access.RequireAccess
@@ -66,9 +66,15 @@ data class ChartSeries(
 fun KfContent(vm: KfViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
 
-    LifecycleResumeEffect(Unit) {
+    // DisposableEffect, not LifecycleResumeEffect: the filter accumulates
+    // state across samples, and a gap in the input stream (screen-off,
+    // brief backgrounding) corrupts it via an oversized dt on the next
+    // predict(). Composition survives lifecycle pause but is disposed on
+    // tab switch, so this runs exactly while the KF tab is the selected
+    // content — which is the semantics we want.
+    DisposableEffect(Unit) {
         vm.start()
-        onPauseOrDispose { vm.stop() }
+        onDispose { vm.stop() }
     }
 
     // Gate sits at the content level, not inside an item: the LazyColumn

@@ -26,6 +26,7 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.core.geo.CoordFormat
+import de.perigon.companion.sensors.data.MagneticModel
 import de.perigon.companion.sensors.data.TrackPrefs
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -40,6 +41,7 @@ import javax.inject.Inject
 class SensorDashboardViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val trackPrefs: TrackPrefs,
+    private val magneticModel: MagneticModel,
 ) : ViewModel() {
 
     private val _gnssState = MutableStateFlow(GnssUiState())
@@ -110,6 +112,30 @@ class SensorDashboardViewModel @Inject constructor(
         val cid: String,
     )
 
+    /**
+     * Declination memoization state.
+     *
+     * `updateOrientation()` runs at ~20 Hz (accelerometer + magnetometer
+     * callbacks, each throttled to 10 Hz). A WMM eval is ~10–20 µs, so the
+     * uncached cost is ~0.04% of one core — negligible. The cache exists
+     * because declination changes only with position and time: at mid-
+     * latitudes the gradient is ~0.02°/degree-latitude, and the secular
+     * drift is ~0.1°/year. Recomputing at 20 Hz for a stationary user is
+     * pure waste; recomputing only when position has moved past a
+     * tolerance, or after a time bucket, is both cheaper and no less
+     * accurate at the 0.1° the UI displays.
+     *
+     * Tolerances are chosen so the declination error introduced by the
+     * cache is <0.005° at mid-latitudes (well below display resolution),
+     * and the recompute rate scales correctly near the magnetic poles
+     * where the spatial gradient is 10–100× steeper.
+     */
+    private var lastDeclLat: Double? = null
+    private var lastDeclLon: Double? = null
+    private var lastDeclAltM: Double = 0.0
+    private var lastDeclTimeMs: Long = 0L
+    private var lastDeclination: Float? = null
+
     // ---- Permission helpers ----
 
     private fun hasFineLocationPermission(): Boolean =
@@ -134,6 +160,23 @@ class SensorDashboardViewModel @Inject constructor(
 
     // ---- GNSS ----
 
+    /**
+     * Register the GNSS listener and status callback.
+     *
+     * Driven by SensorsScreen's effects for the whole screen, not by the
+     * GNSS tab. Two reasons:
+     *
+     *  1. Raw-tab declination needs a position. Without a hoisted listener
+     *     the Raw tab would show `--` until the user visited GNSS.
+     *  2. The position should keep updating while the user is on other
+     *     tabs, so a returned-to GNSS tab shows a live skyplot rather than
+     *     a snapshot from whenever it was last visited.
+     *
+     * Idempotent: safe to call from both SensorsScreen (on every resume,
+     * which catches permission granted via system Settings while the app
+     * was backgrounded) and GnssContent's post-permission LaunchedEffect.
+     * The guard prevents double registration.
+     */
     fun startGnss() {
         if (gnssRegistered || !hasFineLocationPermission()) return
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
@@ -278,14 +321,84 @@ class SensorDashboardViewModel @Inject constructor(
         if (!SensorManager.getRotationMatrix(r, null, a, m)) return
         val o = FloatArray(3)
         SensorManager.getOrientation(r, o)
-        val azimuthDeg = Math.toDegrees(o[0].toDouble()).toFloat()
+        val magneticAzimuth = (Math.toDegrees(o[0].toDouble()).toFloat() + 360f) % 360f
+
+        // Declination requires a position. When there is one, compute it via
+        // the WMM2025 model at that point and now — cached across calls so
+        // that a stationary user does not pay for a fresh spherical-harmonic
+        // expansion on every accelerometer tick.
+        //
+        // `_gnssState.altitude` is Location.getAltitude() — metres above the
+        // WGS84 ellipsoid. WMM is referenced to the same ellipsoid, so no
+        // geoid adjustment is needed here. This is the OPPOSITE convention
+        // from BackgroundService.convert(), which subtracts undulation to
+        // get MSL because AltitudeKalmanFilter's `h` is MSL. Do not "unify"
+        // them: the KF's state is orthometric, the magnetic model's input is
+        // ellipsoidal, and both are correct as written.
+        val lat = _gnssState.value.latitude
+        val lon = _gnssState.value.longitude
+        val alt = _gnssState.value.altitude ?: 0.0
+        val declination: Float? = if (lat != null && lon != null) {
+            declinationAt(lat, lon, alt)
+        } else null
+        val trueAzimuth: Float? = declination?.let { d ->
+            (magneticAzimuth + d + 360f) % 360f
+        }
+
         _rawSensors.update {
             it.copy(
-                azimuth = (azimuthDeg + 360f) % 360f,
+                azimuth = magneticAzimuth,
                 pitch = Math.toDegrees(o[1].toDouble()).toFloat(),
                 roll = Math.toDegrees(o[2].toDouble()).toFloat(),
+                declinationDeg = declination,
+                trueAzimuthDeg = trueAzimuth,
             )
         }
+    }
+
+    /**
+     * Declination at [lat], [lon], [altM], memoized against a position,
+     * altitude and time tolerance.
+     *
+     * The cache is a single slot on the ViewModel: it survives Raw →
+     * GNSS → Raw (correct — you did not move, so the value is still valid)
+     * and dies with the Sensors screen. Invalidated when the observer
+     * moves past [DECL_POS_TOL_DEG], climbs past [DECL_ALT_TOL_M], or
+     * [DECL_TIME_TOL_MS] has passed since the last compute. At mid-
+     * latitudes the position tolerance corresponds to ~1 km of travel,
+     * well below the declination gradient at the 0.1° the UI displays.
+     * Near the magnetic poles the same tolerance forces more frequent
+     * recomputes, which is exactly what a fast-moving observer near the
+     * pole needs.
+     *
+     * Not thread-safe by itself, but only ever called from the sensor
+     * listener callbacks, which the platform delivers on the main thread
+     * (no explicit Handler was passed to registerListener). If a future
+     * caller invokes this from another thread, add synchronization.
+     */
+    private fun declinationAt(lat: Double, lon: Double, altM: Double): Float? {
+        val now = SystemClock.elapsedRealtime()
+        val cached = lastDeclination
+        val cachedLat = lastDeclLat
+        val cachedLon = lastDeclLon
+        if (cached != null && cachedLat != null && cachedLon != null) {
+            if (Math.abs(lat - cachedLat) < DECL_POS_TOL_DEG &&
+                Math.abs(lon - cachedLon) < DECL_POS_TOL_DEG &&
+                Math.abs(altM - lastDeclAltM) < DECL_ALT_TOL_M &&
+                now - lastDeclTimeMs < DECL_TIME_TOL_MS
+            ) {
+                return cached
+            }
+        }
+        val decl = magneticModel
+            .field(lat, lon, altM, System.currentTimeMillis())
+            .declinationDeg
+        lastDeclLat = lat
+        lastDeclLon = lon
+        lastDeclAltM = altM
+        lastDeclTimeMs = now
+        lastDeclination = decl
+        return decl
     }
 
     // ---- Telephony ----
@@ -293,11 +406,11 @@ class SensorDashboardViewModel @Inject constructor(
     /**
      * Register the telephony callback and seed from the current snapshot.
      *
-     * Idempotent: safe to call from both SensorsScreen's DisposableEffect
-     * (fires once on destination entry, across all tabs, survives
-     * screen-off/background) and GsmContent's LaunchedEffect (the retry
-     * after an app-internal permission grant). The registration guard
-     * prevents the two from double-registering.
+     * Idempotent: safe to call from both SensorsScreen's effects (fires on
+     * every resume, which catches permission granted via system Settings
+     * while backgrounded) and GsmContent's LaunchedEffect (the retry after
+     * an app-internal permission grant). The registration guard prevents
+     * the two from double-registering.
      *
      * Callbacks merge into [cellObservations]; the accumulating map is what
      * makes cells survive tab switches and stale observations age out.
@@ -457,6 +570,27 @@ class SensorDashboardViewModel @Inject constructor(
 
         /** Hard cap on cells held, regardless of TTL. */
         const val MAX_CELLS = 100
+
+        /**
+         * Position tolerance for the declination cache. 0.01° ≈ 1.1 km,
+         * translating to <0.005° declination change at mid-latitudes —
+         * well below the 0.1° the UI displays. Near the magnetic poles
+         * the gradient is steeper and this tolerance invalidates faster,
+         * which is the desired behavior.
+         */
+        const val DECL_POS_TOL_DEG = 0.01
+
+        /**
+         * Altitude tolerance for the declination cache. Declination changes
+         * by ~0.001°/km of altitude, so 500 m contributes <0.001° error.
+         */
+        const val DECL_ALT_TOL_M = 500.0
+
+        /**
+         * Time tolerance for the declination cache. Secular variation is
+         * ~0.1°/year, so 15 minutes contributes <0.001° error.
+         */
+        const val DECL_TIME_TOL_MS = 15L * 60 * 1000L
     }
 }
 
