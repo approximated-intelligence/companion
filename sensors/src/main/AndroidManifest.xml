@@ -22,6 +22,13 @@
             android:exported="false"
             android:foregroundServiceType="location" />
 
+        <!-- Diagnostic sandbox's foreground service. Keeps the filter running
+             with the screen off so it can converge; see KfSandboxService. -->
+        <service
+            android:name="de.perigon.companion.sensors.service.KfSandboxService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
         <receiver
             android:name="de.perigon.companion.sensors.service.FixAlarmReceiver"
             android:exported="false" />

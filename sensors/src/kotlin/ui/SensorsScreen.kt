@@ -40,9 +40,19 @@ private enum class SensorsTab(val label: String) {
     Kf("KF"),
 }
 
+/**
+ * [initialTabId] names a [SensorsTab] entry ("Kf" for the KF sandbox). Used
+ * by the KfSandboxService notification to deep-link past the default tab.
+ * Null for ordinary navigation. See SensorsRoute.Recording.
+ *
+ * Read as a rememberSaveable key: when the route's initialTab changes (a
+ * KF notification tap while already on Sensors with launchSingleTop), the
+ * state re-initializes to the requested tab. User tab taps within the same
+ * composition do not change the key, so they survive save/restore.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SensorsScreen(navController: NavController) {
+fun SensorsScreen(navController: NavController, initialTabId: String? = null) {
     // Shared across GNSS / Raw / Wifi / GSM so the hardware listeners
     // (GNSS, sensors, telephony, wifi) survive tab switches.
     val vm: SensorDashboardViewModel = hiltViewModel()
@@ -98,9 +108,17 @@ fun SensorsScreen(navController: NavController) {
 
     val backgroundGpsEnabled by vm.backgroundGpsEnabled.collectAsStateWithLifecycle()
 
-    // Default to GNSS when background GPS is off, Track otherwise.
-    var selectedTab by rememberSaveable {
-        mutableStateOf(if (backgroundGpsEnabled) SensorsTab.Track else SensorsTab.Gnss)
+    // Route-provided tab wins on first composition of this back-stack entry
+    // (and re-initializes when initialTabId changes, e.g. tapping the KF
+    // notification while already on Sensors with launchSingleTop). Otherwise
+    // falls back to the natural default. If the route-selected tab is not in
+    // visibleTabs (e.g. "Track" when background GPS is off), the
+    // LaunchedEffect(visibleTabs) below corrects it to the first visible one.
+    var selectedTab by rememberSaveable(initialTabId) {
+        val routed = initialTabId?.let { id ->
+            SensorsTab.entries.firstOrNull { it.name == id }
+        }
+        mutableStateOf(routed ?: if (backgroundGpsEnabled) SensorsTab.Track else SensorsTab.Gnss)
     }
 
     val visibleTabs = buildList {

@@ -14,6 +14,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.composable
+import androidx.navigation.toRoute
 import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.core.feature.AccessRequirement
 import de.perigon.companion.core.feature.AppInitializer
@@ -34,17 +35,39 @@ import kotlinx.serialization.Serializable
 import javax.inject.Inject
 
 object SensorsRoute {
-    @Serializable data object Recording
+    /**
+     * The Sensors destination. [initialTab] names a SensorsTab enum entry
+     * (e.g. "Kf") to select on first composition of this back-stack entry.
+     * When null (the natural navigation case), SensorsScreen falls back to
+     * its standard "Track if GPS enabled, GNSS otherwise" default.
+     *
+     * A data class, not a data object, so the FGS notification (and any
+     * future deep link) can request a specific tab. The screen reads
+     * [initialTab] once as a rememberSaveable key; subsequent user tab taps
+     * override it without changing the route, so re-entering the same entry
+     * (e.g. back then forward through another tab) preserves the user's
+     * last choice.
+     */
+    @Serializable data class Recording(val initialTab: String? = null)
 }
 
 object SensorsChannels {
-    const val RECORDER = "track_recorder"
-    const val EXPORT = "track_export"
+    const val RECORDER   = "track_recorder"
+    const val EXPORT     = "track_export"
+    const val KF_SANDBOX = "kf_sandbox"
 }
 
-/** "navigate_to" values; RECORDING matches BackgroundService.NAV_RECORDING. */
+/**
+ * "navigate_to" values; RECORDING matches BackgroundService.NAV_RECORDING.
+ *
+ * KF_SANDBOX is used by the KF sandbox's FGS notification (see
+ * KfSandboxService) to land the user directly on the KF tab instead of the
+ * Sensors screen's default. Resolves through SensorsFeature.routeFor() to
+ * SensorsRoute.Recording(initialTab = "Kf").
+ */
 object SensorsTargets {
-    const val RECORDING = BackgroundService.NAV_RECORDING
+    const val RECORDING  = BackgroundService.NAV_RECORDING
+    const val KF_SANDBOX = "KfSandbox"
 }
 
 object SensorsRequirements {
@@ -105,7 +128,7 @@ object SensorsRequirements {
 class SensorsFeature @Inject constructor() : FeatureEntry {
     override val id = "sensors"
     override val order = 300
-    override val startRoute: Any = SensorsRoute.Recording
+    override val startRoute: Any = SensorsRoute.Recording()
 
     /**
      * Always visible: only the Track tab needs background GPS, and the other
@@ -113,7 +136,7 @@ class SensorsFeature @Inject constructor() : FeatureEntry {
      * hides the Track tab itself when background GPS is off.
      */
     override val menuItems = listOf(
-        MenuItem("Sensors", SensorsRoute.Recording, order = 70),
+        MenuItem("Sensors", SensorsRoute.Recording(), order = 70),
     )
 
     override val requirements = listOf(
@@ -126,16 +149,25 @@ class SensorsFeature @Inject constructor() : FeatureEntry {
     )
 
     override fun register(graph: NavGraphBuilder, nav: NavHostController) {
-        graph.composable<SensorsRoute.Recording> { SensorsScreen(navController = nav) }
+        graph.composable<SensorsRoute.Recording> { entry ->
+            val route = entry.toRoute<SensorsRoute.Recording>()
+            SensorsScreen(navController = nav, initialTabId = route.initialTab)
+        }
     }
 
     override fun titleFor(route: String): String? = when {
-        route.endsWith("SensorsRoute.Recording") -> "Sensors"
+        // Data class with optional arg: the serialized route pattern is
+        // "SensorsRoute.Recording?initialTab=..." or "SensorsRoute.Recording"
+        // depending on whether the arg is present. contains() matches both.
+        route.contains("SensorsRoute.Recording") -> "Sensors"
         else -> null
     }
 
-    override fun routeFor(navigateTo: String): Any? =
-        if (navigateTo == SensorsTargets.RECORDING) SensorsRoute.Recording else null
+    override fun routeFor(navigateTo: String): Any? = when (navigateTo) {
+        SensorsTargets.RECORDING  -> SensorsRoute.Recording()
+        SensorsTargets.KF_SANDBOX -> SensorsRoute.Recording(initialTab = "Kf")
+        else -> null
+    }
 }
 
 class SensorsSettingsSection @Inject constructor(
