@@ -13,7 +13,6 @@ import de.perigon.companion.backup.data.HashFailure
 import de.perigon.companion.backup.data.userMessage
 import de.perigon.companion.backup.domain.BackupFileSource
 import de.perigon.companion.backup.domain.BackupOrchestrator
-import de.perigon.companion.backup.domain.DriveEjectedException
 import de.perigon.companion.backup.domain.EjectGuard
 import de.perigon.companion.backup.domain.ThumbDriveBackend
 import de.perigon.companion.backup.data.FileHasher
@@ -23,6 +22,7 @@ import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.data.UserNotifications
 import de.perigon.companion.backup.data.BackupPrefs
 import de.perigon.companion.backup.data.BackupSecrets
+import de.perigon.companion.core.saf.DriveEjectedException
 import de.perigon.companion.core.saf.ExternalDriveEjectBus
 import de.perigon.companion.core.saf.driveUuidOf
 import de.perigon.companion.core.saf.folderLabel

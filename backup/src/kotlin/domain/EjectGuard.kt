@@ -1,5 +1,6 @@
 package de.perigon.companion.backup.domain
 
+import de.perigon.companion.core.saf.DriveEjectedException
 import de.perigon.companion.core.saf.ExternalDriveEjectBus
 
 /**

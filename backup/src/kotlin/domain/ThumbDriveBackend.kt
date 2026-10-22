@@ -5,6 +5,7 @@ import android.net.Uri
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import de.perigon.companion.core.network.S3Backend
+import de.perigon.companion.core.saf.DriveEjectedException
 import de.perigon.companion.core.saf.navigateOrCreate
 import de.perigon.companion.core.saf.navigateTo
 import kotlinx.coroutines.Dispatchers

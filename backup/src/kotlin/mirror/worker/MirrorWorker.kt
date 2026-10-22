@@ -11,10 +11,10 @@ import dagger.assisted.AssistedInject
 import de.perigon.companion.backup.data.HashFailure
 import de.perigon.companion.backup.data.HashKey
 import de.perigon.companion.backup.data.userMessage
-import de.perigon.companion.backup.domain.DriveEjectedException
 import de.perigon.companion.backup.mirror.domain.MirrorEngine
 import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.data.UserNotifications
+import de.perigon.companion.core.saf.DriveEjectedException
 import de.perigon.companion.core.saf.DriveInfo
 import de.perigon.companion.core.saf.ExternalDriveEjectBus
 import de.perigon.companion.core.saf.driveUuidOf

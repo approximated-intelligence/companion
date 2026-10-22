@@ -7,8 +7,8 @@ import de.perigon.companion.backup.data.BackupScannedFile
 import de.perigon.companion.backup.data.BackupSourceScanner
 import de.perigon.companion.backup.data.HashFailure
 import de.perigon.companion.backup.data.HashKey
-import de.perigon.companion.backup.domain.DriveEjectedException
 import de.perigon.companion.backup.mirror.data.MirrorRepository
+import de.perigon.companion.core.saf.DriveEjectedException
 import de.perigon.companion.core.saf.ExternalDriveEjectBus
 import de.perigon.companion.core.saf.driveUuidOf
 import javax.inject.Inject
