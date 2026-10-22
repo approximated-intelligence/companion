@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import de.perigon.companion.core.di.ApplicationScope
 import de.perigon.companion.sensors.domain.KalmanMode
+import de.perigon.companion.sensors.domain.KalmanModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -37,8 +38,27 @@ private object Keys {
     val AUTO_STOP_SECONDS       = longPreferencesKey("auto_stop_seconds")
     val AUTO_SPLIT_DAY_ROLLOVER = booleanPreferencesKey("auto_split_day_rollover")
     val AUTO_SEGMENT_GAP_MS     = longPreferencesKey("auto_segment_gap_ms")
+    val KALMAN_MODEL            = stringPreferencesKey("kalman_model")
     val KALMAN_MODE             = stringPreferencesKey("kalman_mode")
     val ISKF_INVERSE_HESSIAN    = booleanPreferencesKey("iskf_inverse_hessian")
+
+    // Advanced tuning overrides. Absent key = "use the built-in default";
+    // present key = user-tuned value. Never write a default here.
+    //
+    // Process-noise fields store the variance rate (m²/s or m²/s³) directly,
+    // not σ. Same convention across models — see KalmanTuning docs.
+    val KALMAN_ACCEL_Q          = floatPreferencesKey("kalman_accel_q")     // q_v, m²/s³
+    val KALMAN_BIAS_Q           = floatPreferencesKey("kalman_bias_q")      // q_b, m²/s
+    val KALMAN_QH               = floatPreferencesKey("kalman_qh")          // q_h, m²/s
+    val KALMAN_DERIVED_VEL      = floatPreferencesKey("kalman_derived_vel_noise")
+    val BARO_SIGMA_M            = floatPreferencesKey("baro_sigma_m")
+    val KALMAN_GPS_VERTICAL_MIN = floatPreferencesKey("kalman_gps_vertical_min_m")
+
+    // Legacy σ-scale keys from before the unification. Read for migration;
+    // removed on any write. Never written again.
+    val LEGACY_KALMAN_ACCEL_NOISE = floatPreferencesKey("kalman_accel_noise_mps2")
+    val LEGACY_KALMAN_BIAS_NOISE  = floatPreferencesKey("kalman_bias_noise_mps")
+    val LEGACY_KALMAN_QB          = floatPreferencesKey("kalman_qb")
 }
 
 private fun Preferences.toTrackConfig() = TrackConfigEntity(
@@ -56,13 +76,32 @@ private fun Preferences.toTrackConfig() = TrackConfigEntity(
     autoStopSeconds        = this[Keys.AUTO_STOP_SECONDS]       ?: TrackConfigEntity.DEFAULT.autoStopSeconds,
     autoSplitOnDayRollover = this[Keys.AUTO_SPLIT_DAY_ROLLOVER] ?: TrackConfigEntity.DEFAULT.autoSplitOnDayRollover,
     autoSegmentGapMs       = this[Keys.AUTO_SEGMENT_GAP_MS]     ?: TrackConfigEntity.DEFAULT.autoSegmentGapMs,
+    kalmanModel            = parseKalmanModel(this[Keys.KALMAN_MODEL]),
     kalmanMode             = parseKalmanMode(this[Keys.KALMAN_MODE]),
     iskfInverseHessian     = this[Keys.ISKF_INVERSE_HESSIAN]    ?: TrackConfigEntity.DEFAULT.iskfInverseHessian,
+
+    // Process noise: prefer the current key. If absent, migrate from the
+    // legacy σ-scale key (square it), or the legacy 2-state qB key (use
+    // directly). Migration runs on read; the next write moves the value
+    // into the current key and removes the legacy ones.
+    kalmanAccelNoiseQ = this[Keys.KALMAN_ACCEL_Q]?.toDouble()
+        ?: this[Keys.LEGACY_KALMAN_ACCEL_NOISE]?.toDouble()?.let { it * it },
+    kalmanBiasNoiseQ = this[Keys.KALMAN_BIAS_Q]?.toDouble()
+        ?: this[Keys.LEGACY_KALMAN_BIAS_NOISE]?.toDouble()?.let { it * it }
+        ?: this[Keys.LEGACY_KALMAN_QB]?.toDouble(),
+    kalmanQH              = this[Keys.KALMAN_QH]?.toDouble(),
+    kalmanDerivedVelNoise = this[Keys.KALMAN_DERIVED_VEL]?.toDouble(),
+    baroSigmaM            = this[Keys.BARO_SIGMA_M],
+    kalmanGpsVerticalMinM = this[Keys.KALMAN_GPS_VERTICAL_MIN],
 )
 
 private fun parseKalmanMode(raw: String?): KalmanMode =
     if (raw == null) KalmanMode.GAUSSIAN
     else runCatching { KalmanMode.valueOf(raw) }.getOrDefault(KalmanMode.GAUSSIAN)
+
+private fun parseKalmanModel(raw: String?): KalmanModel =
+    if (raw == null) KalmanModel.THREE_STATE
+    else runCatching { KalmanModel.valueOf(raw) }.getOrDefault(KalmanModel.THREE_STATE)
 
 /**
  * Sync-read facade over the track-config DataStore.
@@ -73,6 +112,12 @@ private fun parseKalmanMode(raw: String?): KalmanMode =
  * synchronous signature for existing callers; it only blocks in the unlikely
  * window before the warm-up lands, and never returns defaults for stored
  * values, so [update]'s read-modify-write cannot clobber persisted config.
+ *
+ * Process-noise migration: any [update] removes the legacy σ-scale keys
+ * and writes the current q-scale keys from the input config. Because
+ * [toTrackConfig] already migrated the values on read, the user's tuned
+ * values survive across the rename; the legacy keys are deleted on first
+ * write so subsequent reads use the fast path.
  */
 @Singleton
 class TrackConfigPrefs @Inject constructor(
@@ -120,8 +165,37 @@ class TrackConfigPrefs @Inject constructor(
             set(Keys.AUTO_STOP_SECONDS,       updated.autoStopSeconds)
             set(Keys.AUTO_SPLIT_DAY_ROLLOVER, updated.autoSplitOnDayRollover)
             set(Keys.AUTO_SEGMENT_GAP_MS,     updated.autoSegmentGapMs)
+            set(Keys.KALMAN_MODEL,            updated.kalmanModel.name)
             set(Keys.KALMAN_MODE,             updated.kalmanMode.name)
             set(Keys.ISKF_INVERSE_HESSIAN,    updated.iskfInverseHessian)
+            // Advanced tuning overrides: null means "clear the override,
+            // fall back to the built-in default". Never write a default
+            // value here — otherwise the two copies of "0.04 is the default"
+            // drift the first time either is tuned.
+            updated.kalmanAccelNoiseQ
+                ?.let { set(Keys.KALMAN_ACCEL_Q, it.toFloat()) }
+                ?: remove(Keys.KALMAN_ACCEL_Q)
+            updated.kalmanBiasNoiseQ
+                ?.let { set(Keys.KALMAN_BIAS_Q, it.toFloat()) }
+                ?: remove(Keys.KALMAN_BIAS_Q)
+            updated.kalmanQH
+                ?.let { set(Keys.KALMAN_QH, it.toFloat()) }
+                ?: remove(Keys.KALMAN_QH)
+            updated.kalmanDerivedVelNoise
+                ?.let { set(Keys.KALMAN_DERIVED_VEL, it.toFloat()) }
+                ?: remove(Keys.KALMAN_DERIVED_VEL)
+            updated.baroSigmaM
+                ?.let { set(Keys.BARO_SIGMA_M, it) }
+                ?: remove(Keys.BARO_SIGMA_M)
+            updated.kalmanGpsVerticalMinM
+                ?.let { set(Keys.KALMAN_GPS_VERTICAL_MIN, it) }
+                ?: remove(Keys.KALMAN_GPS_VERTICAL_MIN)
+            // Drop legacy σ-scale keys. They were read for migration above;
+            // any subsequent write supersedes them, so they must not linger
+            // and shadow a future read.
+            remove(Keys.LEGACY_KALMAN_ACCEL_NOISE)
+            remove(Keys.LEGACY_KALMAN_BIAS_NOISE)
+            remove(Keys.LEGACY_KALMAN_QB)
         }
     }
 }

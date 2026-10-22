@@ -1,6 +1,8 @@
 package de.perigon.companion.sensors.data
 
 import de.perigon.companion.sensors.domain.KalmanMode
+import de.perigon.companion.sensors.domain.KalmanModel
+import de.perigon.companion.sensors.domain.KalmanTuning
 
 object RecordingMode {
     const val CONTINUOUS = "CONTINUOUS"
@@ -27,8 +29,25 @@ data class TrackConfigEntity(
     val autoStopSeconds: Long            = 75600L,
     val autoSplitOnDayRollover: Boolean  = true,
     val autoSegmentGapMs: Long           = DEFAULT_AUTO_SEGMENT_GAP_MS,
+    // Model axis (state dimension / dynamics). Independent of kalmanMode.
+    val kalmanModel: KalmanModel         = KalmanModel.THREE_STATE,
+    // Method axis (update rule). Independent of kalmanModel.
     val kalmanMode: KalmanMode           = KalmanMode.GAUSSIAN,
     val iskfInverseHessian: Boolean      = false,
+    // Advanced altitude-filter tuning overrides. Null = use the built-in
+    // default from KalmanTuning's companion. Non-null only when the user has
+    // touched a slider in the Track or KF tab's "Advanced tuning" expander.
+    //
+    // PROCESS NOISE FIELDS ARE THE PROCESS NOISE ITSELF (variance rate),
+    // not σ. Same convention across models — see KalmanTuning docs. The
+    // `biasNoiseQ` field is shared by 2-state and 3-state (both model b
+    // as a random walk); the other fields are model-specific.
+    val kalmanAccelNoiseQ: Double?       = null,   // 3-state only, q_v, m²/s³
+    val kalmanBiasNoiseQ: Double?        = null,   // both models, q_b, m²/s
+    val kalmanQH: Double?                = null,   // 2-state only, q_h, m²/s
+    val kalmanDerivedVelNoise: Double?   = null,   // 2-state only, q_v (cascade)
+    val baroSigmaM: Float?               = null,   // both, R_baro = σ²
+    val kalmanGpsVerticalMinM: Float?    = null,   // both, σ floor on GPS
 ) {
     val autoStartTime: java.time.LocalTime get() = java.time.LocalTime.ofSecondOfDay(autoStartSeconds)
     val autoStopTime: java.time.LocalTime  get() = java.time.LocalTime.ofSecondOfDay(autoStopSeconds)
@@ -63,6 +82,16 @@ data class TrackConfigEntity(
         val DEFAULT = TrackConfigEntity()
     }
 }
+
+/** Compose the current tuning overrides for the filter. */
+fun TrackConfigEntity.toKalmanTuning(): KalmanTuning = KalmanTuning(
+    accelNoiseQ     = kalmanAccelNoiseQ,
+    biasNoiseQ      = kalmanBiasNoiseQ,
+    qH              = kalmanQH,
+    derivedVelNoise = kalmanDerivedVelNoise,
+    baroSigmaM      = baroSigmaM,
+    gpsVerticalMinM = kalmanGpsVerticalMinM,
+)
 
 fun isValidLoggingRate(loggingMs: Long, hardwareMs: Long): Boolean =
     hardwareMs > 0L && loggingMs >= hardwareMs && loggingMs % hardwareMs == 0L
