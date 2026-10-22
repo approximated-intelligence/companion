@@ -18,18 +18,18 @@ import de.perigon.companion.archive.consolidate.data.ConsolidationPrefs
 import de.perigon.companion.archive.consolidate.data.SafeToDeleteView
 import de.perigon.companion.archive.consolidate.domain.consolidateTarget
 import de.perigon.companion.archive.consolidate.worker.ConsolidateWorker
-import de.perigon.companion.archive.data.BackupStateRepository
+import de.perigon.companion.archive.data.ArchiveStateRepository
 import de.perigon.companion.archive.data.FileHasher
 import de.perigon.companion.archive.data.HashFailure
 import de.perigon.companion.archive.data.HashKey
 import de.perigon.companion.archive.data.userMessage
-import de.perigon.companion.archive.ui.BackupDestinationSelection
-import de.perigon.companion.archive.ui.BackupProgress
-import de.perigon.companion.archive.ui.currentInfo
-import de.perigon.companion.archive.ui.toBackupProgress
-import de.perigon.companion.archive.worker.BackupRequests
-import de.perigon.companion.archive.worker.BackupWorker
-import de.perigon.companion.archive.worker.enqueueBackup
+import de.perigon.companion.archive.backup.ui.BackupDestinationSelection
+import de.perigon.companion.archive.backup.ui.BackupProgress
+import de.perigon.companion.archive.backup.ui.currentInfo
+import de.perigon.companion.archive.backup.ui.toBackupProgress
+import de.perigon.companion.archive.backup.worker.BackupRequests
+import de.perigon.companion.archive.backup.worker.BackupWorker
+import de.perigon.companion.archive.backup.worker.enqueueBackup
 import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.di.ApplicationScope
 import de.perigon.companion.core.prefs.FolderGrants
@@ -51,7 +51,7 @@ import javax.inject.Inject
 private const val TAG = "ConsolidateViewModel"
 
 // Sentinel size for files the SAF provider reported no size for. Matches
-// BackupSourceScanner.UNKNOWN_SIZE so userMessage() classification works.
+// ArchiveSourceScanner.UNKNOWN_SIZE so userMessage() classification works.
 private const val UNKNOWN_SIZE = -1L
 
 enum class SortField { NAME, MODIFIED, SIZE, TYPE }
@@ -110,7 +110,7 @@ class ConsolidateViewModel @Inject constructor(
     @param:ApplicationContext private val ctx: Context,
     private val workManager: WorkManager,
     private val consolidateRepo: ConsolidateRepository,
-    private val backupStateRepo: BackupStateRepository,
+    private val backupStateRepo: ArchiveStateRepository,
     private val notificationDao: UserNotificationDao,
     private val folderGrants: FolderGrants,
     private val hasher: FileHasher,

@@ -244,6 +244,7 @@ class PostsSettingsSection @Inject constructor(
     private val config: PostsConfig,
 ) : SettingsSection {
 
+    override val id = "posts"
     override val order = 200
 
     @Composable

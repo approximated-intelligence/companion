@@ -141,6 +141,7 @@ class SensorsFeature @Inject constructor() : FeatureEntry {
 class SensorsSettingsSection @Inject constructor(
     private val prefs: TrackPrefs,
 ) : SettingsSection {
+    override val id = "sensors"
     override val order = 300
 
     @Composable

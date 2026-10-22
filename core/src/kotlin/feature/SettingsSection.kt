@@ -11,8 +11,15 @@ fun interface QrScan {
 /**
  * One feature's block on the settings screen plus its part of the bootstrap
  * QR. Bound with @IntoSet; the core settings host renders sections by [order].
+ *
+ * [id] is a stable string used for deep-link anchors: navigating to
+ * `SettingsRoute(anchor = "backup_sources")` scrolls the settings screen to
+ * the section with that id. Distinct from [order] because orders are dense
+ * integers that can be reordered; the anchor string is a user-facing
+ * contract.
  */
 interface SettingsSection {
+    val id: String
     val order: Int
 
     @Composable

@@ -15,4 +15,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "Companion"
-include(":app", ":core", ":media", ":backup", ":posts", ":sensors", ":audio")
+include(":app", ":core", ":media", ":archive", ":posts", ":sensors", ":audio")

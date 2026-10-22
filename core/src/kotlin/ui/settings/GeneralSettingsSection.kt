@@ -22,6 +22,7 @@ class GeneralSettingsSection @Inject constructor(
     private val prefs: CorePrefs,
     private val features: Set<@JvmSuppressWildcards FeatureEntry>,
 ) : SettingsSection {
+    override val id = "general"
     override val order: Int = -1
 
     @Composable

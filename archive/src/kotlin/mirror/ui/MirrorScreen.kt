@@ -48,7 +48,9 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import de.perigon.companion.archive.ArchiveRoute
 import de.perigon.companion.archive.mirror.worker.MirrorWorker
+import de.perigon.companion.archive.ui.ArchiveTopBar
 import de.perigon.companion.core.data.NotificationType
 import de.perigon.companion.core.data.UserNotificationEntity
 import de.perigon.companion.core.feature.CommonRequirements
@@ -56,7 +58,6 @@ import de.perigon.companion.core.feature.isSatisfied
 import de.perigon.companion.core.prefs.FolderKeys
 import de.perigon.companion.core.saf.driveUuidOf
 import de.perigon.companion.core.saf.isExternalVolume
-import de.perigon.companion.core.ui.AppTopBar
 import de.perigon.companion.core.ui.DriveEjectButton
 import de.perigon.companion.core.ui.NotificationObserver
 import de.perigon.companion.core.ui.SectionHeader
@@ -120,8 +121,8 @@ fun MirrorScreen(
         }
     }
 
-    // Live: volume callback + resume + 3 s poll. The bump key is for the
-    // picker grant path — granting a tree does not fire a volume callback.
+    // Live: volume callback + resume. The bump key is for the picker grant
+    // path — granting a tree does not fire a volume callback.
     var drivesRefreshKey by remember { mutableIntStateOf(0) }
     val drives = rememberConnectedDrives(drivesRefreshKey)
 
@@ -152,7 +153,7 @@ fun MirrorScreen(
     val busy = syncRunning || verifyRunning
 
     Scaffold(
-        topBar = { AppTopBar(navController) },
+        topBar = { ArchiveTopBar(navController = navController, current = ArchiveRoute.Mirror) },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         Column(

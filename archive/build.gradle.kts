@@ -3,7 +3,7 @@ plugins {
 }
 
 android {
-    namespace = "de.perigon.companion.backup"
+    namespace = "de.perigon.companion.archive"
 }
 
 dependencies {

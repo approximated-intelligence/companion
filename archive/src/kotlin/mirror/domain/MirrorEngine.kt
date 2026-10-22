@@ -3,8 +3,8 @@ package de.perigon.companion.archive.mirror.domain
 import android.net.Uri
 import android.util.Log
 import androidx.core.net.toUri
-import de.perigon.companion.archive.data.BackupScannedFile
-import de.perigon.companion.archive.data.BackupSourceScanner
+import de.perigon.companion.archive.data.ArchiveScannedFile
+import de.perigon.companion.archive.data.ArchiveSourceScanner
 import de.perigon.companion.archive.data.HashFailure
 import de.perigon.companion.archive.data.HashKey
 import de.perigon.companion.archive.mirror.data.MirrorRepository
@@ -19,7 +19,7 @@ private const val MISMATCH_LOG_CAP = 20
 
 /**
  * The mirror's decision logic: what to copy, what to verify, how to
- * classify each result. Depends on [BackupSourceScanner] for the source side
+ * classify each result. Depends on [ArchiveSourceScanner] for the source side
  * (shared with the backup pipeline, including the EXIF dance and hashing)
  * and on [MirrorRepository] for the drive side.
  *
@@ -37,7 +37,7 @@ private const val MISMATCH_LOG_CAP = 20
  * filesystem that is being torn down.
  */
 class MirrorEngine @Inject constructor(
-    private val scanner: BackupSourceScanner,
+    private val scanner: ArchiveSourceScanner,
     private val repo: MirrorRepository,
     private val ejectBus: ExternalDriveEjectBus,
 ) {
@@ -100,7 +100,7 @@ class MirrorEngine @Inject constructor(
             .associateBy { it.path }
         val shaSums = repo.readAllSums(driveRoot, mirrorDocId)
 
-        val toCopy = mutableListOf<BackupScannedFile>()
+        val toCopy = mutableListOf<ArchiveScannedFile>()
         val toAppend = mutableListOf<Pair<String, String>>()
         for (sf in sourceFiles) {
             val drive = driveFiles[sf.path]

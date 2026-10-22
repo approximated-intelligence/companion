@@ -2,6 +2,7 @@ package de.perigon.companion.core.ui.settings
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -29,8 +30,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -43,6 +47,7 @@ import de.perigon.companion.core.ui.SecureWindow
 import de.perigon.companion.core.ui.SectionHeader
 import de.perigon.companion.core.ui.access.AccessPanel
 import de.perigon.companion.core.ui.access.AccessViewModel
+import kotlinx.coroutines.launch
 
 private class ActiveScan(val prompt: String, val onResult: (String) -> Unit)
 
@@ -50,10 +55,15 @@ private class ActiveScan(val prompt: String, val onResult: (String) -> Unit)
  * Access (all permissions and folders), bootstrap scan, then every feature's
  * section in order, then the clear actions. Any scan that turns out to be a
  * bootstrap payload is staged, whichever button started it.
+ *
+ * [anchor] deep-links to a section by its [SettingsSection.id]: after the
+ * first layout pass, the screen scrolls to whichever section carries that id.
+ * Null means "top of the screen", the same as opening from the menu.
  */
 @Composable
 fun SettingsScreen(
     navController: NavController,
+    anchor: String? = null,
     vm: SettingsViewModel = hiltViewModel(),
     access: AccessViewModel = hiltViewModel(),
 ) {
@@ -86,6 +96,15 @@ fun SettingsScreen(
         return
     }
 
+    // Anchor scroll: the Column measures every child's position on the first
+    // layout pass, so a section's y-offset is available immediately. Setting
+    // `scrolledToAnchor` once prevents the onGloballyPositioned callback from
+    // re-triggering on every subsequent layout (which would loop with the
+    // scroll itself).
+    val scrollState = rememberScrollState()
+    val scope = rememberCoroutineScope()
+    var scrolledToAnchor by remember(anchor) { mutableStateOf(false) }
+
     Scaffold(
         topBar = { AppTopBar(navController) },
         snackbarHost = { SnackbarHost(snackbarHost) },
@@ -95,7 +114,7 @@ fun SettingsScreen(
                 .padding(padding)
                 .padding(16.dp)
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(scrollState),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             SectionHeader("Access", "Permissions and folders the app works with.")
@@ -118,7 +137,17 @@ fun SettingsScreen(
 
             for (section in vm.sections) {
                 HorizontalDivider()
-                section.Content(scan)
+                Box(
+                    Modifier.onGloballyPositioned { coords ->
+                        if (!scrolledToAnchor && section.id == anchor) {
+                            scrolledToAnchor = true
+                            val y = coords.positionInParent().y.toInt()
+                            scope.launch { scrollState.animateScrollTo(y) }
+                        }
+                    }
+                ) {
+                    section.Content(scan)
+                }
             }
 
             HorizontalDivider()

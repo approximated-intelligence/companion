@@ -29,12 +29,14 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import coil3.compose.AsyncImage
+import de.perigon.companion.archive.ArchiveRoute
 import de.perigon.companion.archive.consolidate.data.SafeToDeleteView
-import de.perigon.companion.archive.ui.BackupDestinationSection
-import de.perigon.companion.archive.ui.backupErrorLabel
-import de.perigon.companion.archive.ui.backupStateLabel
-import de.perigon.companion.archive.worker.BackupWorker
-import de.perigon.companion.core.ui.AppTopBar
+import de.perigon.companion.archive.ui.ArchiveTopBar
+import de.perigon.companion.archive.backup.ui.BackupDestinationSection
+import de.perigon.companion.archive.backup.ui.BackupSourcesCard
+import de.perigon.companion.archive.backup.ui.backupErrorLabel
+import de.perigon.companion.archive.backup.ui.backupStateLabel
+import de.perigon.companion.archive.backup.worker.BackupWorker
 import de.perigon.companion.core.ui.NotificationLogDialog
 import de.perigon.companion.core.ui.NotificationObserver
 import de.perigon.companion.core.ui.formatBytes
@@ -126,17 +128,20 @@ fun ConsolidateScreen(
     // this screen already implies a writable DCIM grant.
     Scaffold(
         topBar = {
-            if (state.selectionMode) {
-                SelectionTopBar(
-                    selectedCount = state.selectedCount,
-                    onSelectAll = vm::selectAll,
-                    onExit = vm::exitSelectionMode,
-                    onDelete = vm::requestDelete,
-                    deleteEnabled = !state.isDeleting,
-                )
-            } else {
-                AppTopBar(navController)
-            }
+            ArchiveTopBar(
+                navController = navController,
+                current = ArchiveRoute.Consolidate,
+                selectionMode = state.selectionMode,
+                selectionBar = {
+                    SelectionTopBar(
+                        selectedCount = state.selectedCount,
+                        onSelectAll = vm::selectAll,
+                        onExit = vm::exitSelectionMode,
+                        onDelete = vm::requestDelete,
+                        deleteEnabled = !state.isDeleting,
+                    )
+                },
+            )
         },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
@@ -145,6 +150,7 @@ fun ConsolidateScreen(
                 ViewMode.LIST -> ListContent(
                     padding              = PaddingValues(),
                     state                = state,
+                    navController        = navController,
                     snackbarHost         = snackbar,
                     onOpenLog            = { showLog = true },
                     onStartConsolidate   = vm::startConsolidate,
@@ -164,6 +170,7 @@ fun ConsolidateScreen(
                 ViewMode.GRID -> GridContent(
                     padding              = PaddingValues(),
                     state                = state,
+                    navController        = navController,
                     snackbarHost         = snackbar,
                     onOpenLog            = { showLog = true },
                     onStartConsolidate   = vm::startConsolidate,
@@ -216,6 +223,7 @@ private fun SelectionTopBar(
 private fun ListContent(
     padding: PaddingValues,
     state: ConsolidateUiState,
+    navController: NavController,
     snackbarHost: SnackbarHostState,
     onOpenLog: () -> Unit,
     onStartConsolidate: () -> Unit,
@@ -251,6 +259,8 @@ private fun ListContent(
         }
 
         item { StatusCard(state, onOpenLog) }
+
+        item { BackupSourcesCard(navController = navController) }
 
         item {
             BackupDestinationSection(
@@ -300,6 +310,7 @@ private fun ListContent(
 private fun GridContent(
     padding: PaddingValues,
     state: ConsolidateUiState,
+    navController: NavController,
     snackbarHost: SnackbarHostState,
     onOpenLog: () -> Unit,
     onStartConsolidate: () -> Unit,
@@ -343,6 +354,8 @@ private fun GridContent(
         }
 
         item(span = fullSpan) { StatusCard(state, onOpenLog) }
+
+        item(span = fullSpan) { BackupSourcesCard(navController = navController) }
 
         item(span = fullSpan) {
             BackupDestinationSection(
@@ -445,8 +458,6 @@ private fun BackupProgressCard(state: ConsolidateUiState) {
 private fun BackupErrorCard(state: ConsolidateUiState) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            // Human label, not the raw ERR_ constant the sibling Backup screen
-            // already translates.
             Text(backupErrorLabel(state.backup.errorType), color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.titleSmall)
             if (state.backup.errorDetail.isNotEmpty()) { Text(state.backup.errorDetail, color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis) }
         }

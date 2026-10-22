@@ -6,8 +6,8 @@ import android.util.Log
 import androidx.core.net.toUri
 import androidx.hilt.work.HiltWorker
 import androidx.work.*
-import de.perigon.companion.archive.BackupChannels
-import de.perigon.companion.archive.BackupTargets
+import de.perigon.companion.archive.ArchiveChannels
+import de.perigon.companion.archive.ArchiveTargets
 import de.perigon.companion.archive.data.HashFailure
 import de.perigon.companion.archive.data.userMessage
 import de.perigon.companion.core.data.UserNotificationDao
@@ -52,7 +52,7 @@ private const val CONTENT_REQUEST_CODE = RequestCodes.BACKUP + 2
 private const val CALLER_TAG = "consolidate"
 
 // Sentinel size for files the SAF provider reported no size for. Matches
-// BackupSourceScanner.UNKNOWN_SIZE so userMessage() classification works.
+// ArchiveSourceScanner.UNKNOWN_SIZE so userMessage() classification works.
 private const val UNKNOWN_SIZE = -1L
 
 /**
@@ -445,8 +445,8 @@ class ConsolidateWorker @AssistedInject constructor(
     private val notifier = WorkNotifier(
         context = ctx,
         notificationId = NOTIF_ID,
-        channelId = BackupChannels.CONSOLIDATE,
-        navigateTo = BackupTargets.CONSOLIDATE,
+        channelId = ArchiveChannels.CONSOLIDATE,
+        navigateTo = ArchiveTargets.CONSOLIDATE,
         requestCode = CONTENT_REQUEST_CODE,
     )
 

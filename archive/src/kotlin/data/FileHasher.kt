@@ -54,7 +54,7 @@ data class HashKey(
 /**
  * A file the pipeline could not include in this run. Carried out of
  * [FileHasher] (and, for pre-hash skips, constructed by the scanner) and out
- * of [de.perigon.companion.archive.domain.BackupOrchestrator] (for upload-time
+ * of [de.perigon.companion.archive.backup.domain.BackupOrchestrator] (for upload-time
  * skips), so callers can surface them — the failure is usually
  * user-actionable (a .nomedia folder keeping a media file out of the
  * MediaStore index, a revoked ACCESS_MEDIA_LOCATION grant, a file whose size

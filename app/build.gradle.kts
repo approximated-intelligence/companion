@@ -68,7 +68,7 @@ dependencies {
     // The app shell: features chosen here are the features of this app.
     implementation(project(":core"))
     implementation(project(":media"))
-    implementation(project(":backup"))
+    implementation(project(":archive"))
     implementation(project(":posts"))
     implementation(project(":sensors"))
     implementation(project(":audio"))
