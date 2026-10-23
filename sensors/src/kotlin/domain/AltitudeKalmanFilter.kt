@@ -645,9 +645,16 @@ class AltitudeKalmanFilter(
             // P11 as the cascade's initial covariance. Re-anchor the h-
             // difference baseline so the first post-swap sample computes
             // v_z from the transplanted height, not a stale pre-swap one.
+            //
+            // The takeIf guard mirrors seedFrom: a non-positive or
+            // non-finite variance is treated as "no estimate" and falls
+            // back to the cascade's default. The invariant holds today
+            // (Joseph-form updates keep P[v_z,v_z] strictly positive),
+            // but the two directions of a transition should defend
+            // identically so a future invariant break fails safe.
             if (oldModel.hasVelocity) {
                 derivedVz = compatible.vZ
-                derivedVzCov = compatible.vZVar ?: 1.0
+                derivedVzCov = compatible.vZVar?.takeIf { it > 0.0 && it.isFinite() } ?: 1.0
             }
             lastH = newX[0]
             lastHTime = oldLastMs
@@ -660,10 +667,11 @@ class AltitudeKalmanFilter(
             // dormant. Clear its stale values.
             clearDerivedBiasRate()
         } else {
-            // 4→2/3: hand the old state's v_b to the cascade.
+            // 4→2/3: hand the old state's v_b to the cascade. Same
+            // takeIf defence as the velocity hand-off above.
             if (oldModel.hasBiasRate) {
                 derivedVb = compatible.vB
-                derivedVbCov = compatible.vBVar ?: 1.0
+                derivedVbCov = compatible.vBVar?.takeIf { it > 0.0 && it.isFinite() } ?: 1.0
             }
             lastB = newX[model.biasIndex]
             lastBTime = oldLastMs
