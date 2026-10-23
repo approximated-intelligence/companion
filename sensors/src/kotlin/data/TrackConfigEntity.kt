@@ -40,12 +40,15 @@ data class TrackConfigEntity(
     //
     // PROCESS NOISE FIELDS ARE THE PROCESS NOISE ITSELF (variance rate),
     // not σ. Same convention across models — see KalmanTuning docs. The
-    // `biasNoiseQ` field is shared by 2-state and 3-state (both model b
-    // as a random walk); the other fields are model-specific.
-    val kalmanAccelNoiseQ: Double?       = null,   // 3-state only, q_v, m²/s³
-    val kalmanBiasNoiseQ: Double?        = null,   // both models, q_b, m²/s
+    // `biasNoiseQ` field is shared by 2-state and 3-state (both model b as
+    // a random walk); `biasRateQ` is 4-state only (CV on b); the other
+    // fields are model-specific.
+    val kalmanAccelNoiseQ: Double?       = null,   // 3/4-state only, q_v, m²/s³
+    val kalmanBiasNoiseQ: Double?        = null,   // 2/3-state only, q_b, m²/s
     val kalmanQH: Double?                = null,   // 2-state only, q_h, m²/s
     val kalmanDerivedVelNoise: Double?   = null,   // 2-state only, q_v (cascade)
+    val kalmanBiasRateQ: Double?         = null,   // 4-state only, q_vb, m²/s³
+    val kalmanDerivedBiasRateNoise: Double? = null, // 2/3-state only, q_vb (cascade)
     val baroSigmaM: Float?               = null,   // both, R_baro = σ²
     val kalmanGpsVerticalMinM: Float?    = null,   // both, σ floor on GPS
 ) {
@@ -89,6 +92,8 @@ fun TrackConfigEntity.toKalmanTuning(): KalmanTuning = KalmanTuning(
     biasNoiseQ      = kalmanBiasNoiseQ,
     qH              = kalmanQH,
     derivedVelNoise = kalmanDerivedVelNoise,
+    biasRateQ       = kalmanBiasRateQ,
+    derivedBiasRateNoise = kalmanDerivedBiasRateNoise,
     baroSigmaM      = baroSigmaM,
     gpsVerticalMinM = kalmanGpsVerticalMinM,
 )

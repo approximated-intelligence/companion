@@ -51,6 +51,8 @@ private object Keys {
     val KALMAN_BIAS_Q           = floatPreferencesKey("kalman_bias_q")      // q_b, m²/s
     val KALMAN_QH               = floatPreferencesKey("kalman_qh")          // q_h, m²/s
     val KALMAN_DERIVED_VEL      = floatPreferencesKey("kalman_derived_vel_noise")
+    val KALMAN_BIAS_RATE_Q      = floatPreferencesKey("kalman_bias_rate_q") // q_vb, m²/s³
+    val KALMAN_DERIVED_BIAS_RATE = floatPreferencesKey("kalman_derived_bias_rate_noise")
     val BARO_SIGMA_M            = floatPreferencesKey("baro_sigma_m")
     val KALMAN_GPS_VERTICAL_MIN = floatPreferencesKey("kalman_gps_vertical_min_m")
 
@@ -91,6 +93,8 @@ private fun Preferences.toTrackConfig() = TrackConfigEntity(
         ?: this[Keys.LEGACY_KALMAN_QB]?.toDouble(),
     kalmanQH              = this[Keys.KALMAN_QH]?.toDouble(),
     kalmanDerivedVelNoise = this[Keys.KALMAN_DERIVED_VEL]?.toDouble(),
+    kalmanBiasRateQ       = this[Keys.KALMAN_BIAS_RATE_Q]?.toDouble(),
+    kalmanDerivedBiasRateNoise = this[Keys.KALMAN_DERIVED_BIAS_RATE]?.toDouble(),
     baroSigmaM            = this[Keys.BARO_SIGMA_M],
     kalmanGpsVerticalMinM = this[Keys.KALMAN_GPS_VERTICAL_MIN],
 )
@@ -184,6 +188,12 @@ class TrackConfigPrefs @Inject constructor(
             updated.kalmanDerivedVelNoise
                 ?.let { set(Keys.KALMAN_DERIVED_VEL, it.toFloat()) }
                 ?: remove(Keys.KALMAN_DERIVED_VEL)
+            updated.kalmanBiasRateQ
+                ?.let { set(Keys.KALMAN_BIAS_RATE_Q, it.toFloat()) }
+                ?: remove(Keys.KALMAN_BIAS_RATE_Q)
+            updated.kalmanDerivedBiasRateNoise
+                ?.let { set(Keys.KALMAN_DERIVED_BIAS_RATE, it.toFloat()) }
+                ?: remove(Keys.KALMAN_DERIVED_BIAS_RATE)
             updated.baroSigmaM
                 ?.let { set(Keys.BARO_SIGMA_M, it) }
                 ?: remove(Keys.BARO_SIGMA_M)
