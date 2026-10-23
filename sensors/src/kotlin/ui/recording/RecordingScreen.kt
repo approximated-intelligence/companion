@@ -47,6 +47,7 @@ import de.perigon.companion.sensors.domain.KalmanModel
 import de.perigon.companion.sensors.domain.formatIntervalLabel
 import de.perigon.companion.sensors.domain.formatModeLabel
 import de.perigon.companion.sensors.service.GnssInfo
+import de.perigon.companion.sensors.ui.BaroCalibrationDialog
 import de.perigon.companion.sensors.ui.KalmanAdvancedPanel
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -201,10 +202,12 @@ fun RecordingScreenContent(
                         verticalSpeedMps     = state.verticalSpeedMps,
                         slopePercent         = state.slopePercent,
                         kalmanBiasM          = state.kalmanBiasM,
+                        kalmanBiasRateMps    = state.kalmanBiasRateMps,
                         kalmanAltitudeSigmaM = state.kalmanAltitudeSigmaM,
                         kalmanBiasSigmaM     = state.kalmanBiasSigmaM,
                         lastGpsInnovationM   = state.lastGpsInnovationM,
                         lastBaroInnovationM  = state.lastBaroInnovationM,
+                        airconDetected       = state.airconDetected,
                         baroEnabled          = state.config.recordBaroAltitude,
                         hasBarometer         = state.hasBarometer,
                         airplaneMode         = state.config.airplaneMode,
@@ -494,6 +497,8 @@ private fun KalmanModelSelector(currentModel: KalmanModel, onModelSelected: (Kal
                 "h, v_z, b. v_z is a proper KF state; velocity observable from GPS but weakly, so σ_h grows as t^{3/2} during outages. Better for short outages with well-tracked velocity; worse for long ones."
             KalmanModel.TWO_STATE ->
                 "h, b. Baro drives h at full bandwidth; no velocity state steals baro information. v_z is derived by a cascade position-difference filter (leaf; no feedback). σ_h grows as t^{1/2} during outages. Better for long outages; worse for short ones on a moving vehicle."
+            KalmanModel.FOUR_STATE ->
+                "h, v_z, b, v_b. CV on both h and b; v_b absorbs aircon and weather drift as a rate. Tight q_vb makes aircon a step violation detectable by the CUSUM on baro innovations. Slightly more confident about b during long outages than 3-state (t³ vs t growth on σ_b²)."
         },
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -668,6 +673,7 @@ private fun StatValueWithUnit(
  *   [altitude]           [slope]           [v_z]
  *     heights (one line): GPS · geoid · WGS84 · baro
  *     KF diagnostics (one line): b · σ(h) · σ(b) · Δgps · Δbaro
+ *     bias-rate line: db/dt · "aircon" when the CUSUM fires
  *     Q-values (one line, right-aligned "recalibrate" link when live)
  *   fix chain (each line clickable → share via map)
  *   GNSS · airplane toggle
@@ -681,19 +687,24 @@ private fun StatValueWithUnit(
  * used to sit on the provided-fix line enforced a Row height that pushed
  * the three lines apart. Every fix is shareable, not just the most recent.
  *
- * Airplane-mode hides the baro-derived values (b, σ(b), Δbaro, Q-line,
- * recalibrate) — cabin pressure is not valid baro input.
+ * Airplane-mode hides the baro-derived values (b, σ(b), Δbaro, bias-rate,
+ * Q-line, recalibrate) — cabin pressure is not valid baro input.
  *
  * No-barometer hides baro from the heights line and the Q-line/recalibrate
  * entirely.
  *
- * slope and v_z are populated in BOTH models. 3-state: v_z is the KF's own
- * velocity state. 2-state: v_z comes from the filter's cascade
+ * slope and v_z are populated in EVERY model. 3/4-state: v_z is the KF's
+ * own velocity state. 2-state: v_z comes from the filter's cascade
  * position-difference estimator (a leaf — no feedback into h or b), so the
  * live card shows climb rate and slope in the 2-state too. The "--" case
  * for slope remains valid: it also covers v_h < 0.5 m/s, and the first
  * fraction of a second after seed when the cascade has not produced its
  * first sample yet.
+ *
+ * The bias-rate line is new (4-state feature surfaced in every model). It
+ * is a diagnostic, shown only when baro is in the pipeline. It prefixes
+ * "aircon" when the CUSUM fires — a subtle marker, not a chip, so it adds
+ * no visual noise under normal operation.
  */
 @Composable
 private fun LiveCard(
@@ -712,10 +723,12 @@ private fun LiveCard(
     verticalSpeedMps: Float?,
     slopePercent: Float?,
     kalmanBiasM: Float?,
+    kalmanBiasRateMps: Float?,
     kalmanAltitudeSigmaM: Float?,
     kalmanBiasSigmaM: Float?,
     lastGpsInnovationM: Float?,
     lastBaroInnovationM: Float?,
+    airconDetected: Boolean,
     baroEnabled: Boolean,
     hasBarometer: Boolean,
     airplaneMode: Boolean,
@@ -799,6 +812,16 @@ private fun LiveCard(
             if (baroInPipeline) {
                 append(" · Δbaro ").append(lastBaroInnovationM?.let { "%+.1f".format(it) } ?: "--")
             }
+        }
+    } else null
+
+    // Bias-rate line: shown whenever baro is in the pipeline (v_b is
+    // baro-derived). Prefixes "aircon" when the CUSUM has fired.
+    val biasRateLine: String? = if (baroInPipeline && kalmanBiasRateMps != null) {
+        buildString {
+            append("db/dt ")
+            append("%+.2f mm/s".format(kalmanBiasRateMps * 1000f))
+            if (airconDetected) append(" · aircon")
         }
     } else null
 
@@ -904,6 +927,13 @@ private fun LiveCard(
                         kfLine,
                         style = debugStyle,
                         color = contentColor.copy(alpha = 0.6f),
+                    )
+                }
+                if (biasRateLine != null) {
+                    Text(
+                        biasRateLine,
+                        style = debugStyle,
+                        color = contentColor.copy(alpha = 0.7f),
                     )
                 }
                 if (qLine != null) {
@@ -1043,63 +1073,6 @@ private fun FixLine(
             .clickable { onShareFix(fix) },
         style = style,
         color = contentColor.copy(alpha = 0.7f),
-    )
-}
-
-@Composable
-private fun BaroCalibrationDialog(
-    currentBaro: Float,
-    gpsOrthoAlt: Float?,
-    kfAlt: Float?,
-    onCalibrate: (Float) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    var manualInput by remember { mutableStateOf("") }
-    val manualValue = manualInput.toFloatOrNull()
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Initial barometric calibration") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Raw ISA baro: %.1f m".format(currentBaro))
-                if (kfAlt != null) {
-                    Text("KF altitude: %.1f m".format(kfAlt),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Text(
-                    "This seeds the Kalman filter once so it converges immediately " +
-                        "instead of over several minutes. It does not store a persistent " +
-                        "offset — the filter's bias state absorbs any remaining weather drift.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (gpsOrthoAlt != null) {
-                    OutlinedButton(
-                        onClick = { onCalibrate(gpsOrthoAlt) },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("Use GPS height (%.1f m)".format(gpsOrthoAlt))
-                    }
-                }
-                OutlinedTextField(
-                    value = manualInput,
-                    onValueChange = { manualInput = it.filter { c -> c.isDigit() || c == '.' || c == '-' } },
-                    label = { Text("Manual altitude (m)") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = { manualValue?.let(onCalibrate) },
-                enabled = manualValue != null,
-            ) { Text("Seed") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 
