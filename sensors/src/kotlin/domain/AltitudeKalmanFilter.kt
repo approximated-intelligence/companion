@@ -9,82 +9,75 @@ enum class KalmanMode { GAUSSIAN, HUBER, VBAKF, ISKF }
 enum class UpdateSource { GPS, BARO }
 
 /**
- * Altitude Kalman filter. Two orthogonal axes:
+ * Altitude Kalman filter. Three orthogonal axes:
  *
- *   [KalmanModel] — state dimension and dynamics (3-state CV / 2-state RW).
- *                   See [ThreeStateModel] and [TwoStateModel] for the
- *                   state / process / measurement definitions.
- *   [KalmanMode]  — update rule. The prediction step is identical for all
- *                   modes; only the measurement update differs:
- *                    - GAUSSIAN: standard Riccati.
- *                    - HUBER: Huber M-estimation with effective covariance
- *                      and Joseph form.
- *                    - VBAKF: variational Bayes estimation of the scalar
- *                      measurement noise.
- *                    - ISKF: Iteratively Saturated KF (Yang & Boyd 2025),
- *                      convex robust MAP with separate process and
- *                      measurement outlier terms.
+ *   [KalmanModel] — state dimension and dynamics (2-, 3-, 4-state).
+ *   [KalmanMode]  — update rule (GAUSSIAN / HUBER / VBAKF / ISKF).
+ *   KalmanTuning  — process/measurement noise overrides.
  *
  * [setMode] and [setIskfInverseHessian] mutate the filter in place; state
- * and covariance survive. This is important when the user switches update
- * rules mid-recording — the state representation is the same for all modes,
- * only the update rule changes, so there is no reason to reset.
+ * and covariance survive.
  *
  * [setModel] and [setTuning] PRESERVE state:
- *   - Tuning change: the model object is reinstantiated under the new
- *     process noise; x, P, initialized, lastMs and cascade state all
- *     survive. The accumulated b estimate — the parameter most directly
- *     about the q_b slider being tuned — is retained.
- *   - Model change: the compatible state is transplanted across the
- *     dimension swap — h (index 0), b (index n-1), and their covariance
- *     block are copied through; v_z is handed across (state ↔ cascade).
- *     Per-update diagnostics are cleared (they belong to the old model's H
- *     and dims) and repopulate on the next measurement. The RTS smoother's
- *     step-record buffer is owned by the caller ([KfViewModel]) and is
- *     cleared there; the filter does not own it.
- *   - A change to [KalmanTuning.baroSigmaM] or [KalmanTuning.gpsVerticalMinM]
- *     alone touches neither model nor state — both live at the caller
- *     (sigma arguments to [updateBaro] and [updateGps]).
+ *   - Tuning-only change: model object reinstantiated under new process
+ *     noise; x, P, initialized, lastMs, cascades, diagnostics survive.
+ *   - Model change: the filter assembles a [CompatibleState] snapshot
+ *     from x/P and the cascades, then asks the new model's
+ *     [AltitudeStateModel.seedFrom] to build x/P from it. The destination
+ *     model ignores fields it doesn't use; the filter does not carry any
+ *     per-transition code. Diagnostics are cleared (per-update).
+ *   - A change to [KalmanTuning.baroSigmaM] or
+ *     [KalmanTuning.gpsVerticalMinM] alone touches neither model nor
+ *     state — both live at the caller.
  * [reset] remains the explicit cold start; its callers are the gap timeout
  * in [predict], the airplane-mode flip in [BackgroundService], and the KF
  * tab's "Reset filter".
  *
- * Velocity:
+ * Velocity and bias rate:
  *
- *   When the model has a velocity state (3-state), [verticalSpeed] returns
- *   that state directly, and [velocitySigma] returns σ(v_z) from the main
- *   covariance.
+ *   `verticalSpeed()` returns the v_z state (3/4-state) or cascade output
+ *   (2-state). `biasRate()` returns the v_b state (4-state) or cascade
+ *   output (2/3-state). Both cascades are leaves — they never feed back.
  *
- *   When it does not (2-state), [verticalSpeed] returns the output of a
- *   scalar cascade Kalman filter that treats (Δh / Δt) between successive
- *   main-filter updates as a noisy measurement of v_z. The measurement
- *   noise covariance is derived from the main filter's own altitude
- *   covariance: R_v = (P_hh(k) + P_hh(k−1)) / Δt². This is the discrete
- *   position-difference velocity estimator used in GPS/INS integration and
- *   is the discrete analogue of the Kalman observer for derivatives
- *   (Martin 1970): the gain minimises velocity error covariance rather
- *   than state error covariance. It is a leaf — v_z never feeds back into
- *   h or b, and the cascade runs only when the model has no velocity
- *   state. Across a model swap the cascade and the 3-state v_z hand off
- *   to each other, so [verticalSpeed] is continuous through the swap.
+ *   The v_z cascade (2-state) and v_b cascade (2/3-state) are discrete
+ *   position-difference estimators, the Kalman analogue of Martin's
+ *   observer-for-derivatives: measurement z = Δx/Δt, noise derived from
+ *   the main filter's covariance, gain minimises the derivative error.
+ *   They are noisier than state-bearing velocities because differentiation
+ *   amplifies noise; the KF tab charts both so the difference is visible.
+ *
+ * Aircon detector (CUSUM):
+ *
+ *   The principled detector is CUSUM on the *normalized baro innovation*,
+ *   extracted into [BaroInnovationCusum] so the detector is orthogonal to
+ *   the state model. It tests "are the filter's predictions consistent
+ *   with the data?". Under H0 (any slowly varying v_b), z_k = ν_k/√S_k is
+ *   N(0,1) and CUSUM stays below threshold. Under H1 (a step in v_b), z_k
+ *   has a sustained bias and CUSUM fires.
+ *
+ *   Crucially, z_k is N(0,1) under H0 for ANY well-specified model, so
+ *   the CUSUM statistic survives model swaps. It is only reset on cold
+ *   start (`reset`), recalibration (`resetWithAltitude`), and fresh seed
+ *   (`seed`) — NOT on `transitionModel`. The pre-swap and post-swap
+ *   innovations are both about the same physical baro signal; the
+ *   accumulated evidence remains valid.
+ *
+ *   Observability limit: b is observable only via baro − GPS divergence,
+ *   and GPS vertical σ (~10 m) dominates. Detection latency for a 1e-2
+ *   m/s aircon step is ~1–2 minutes regardless of implementation. The
+ *   4-state's tight q_vb prior is what makes the ratio of innovation to
+ *   √S rise cleanly; a different filter would show the same latency with
+ *   a noisier threshold.
  *
  * Diagnostics ([lastGpsInnovationM], [lastGpsInnovationS], [lastGpsNis],
  * and the baro equivalents) are exposed for the KF debug tab. NIS is the
- * normalized innovation squared: ν²/S, where S is the *effective* innovation
- * covariance the update actually used (after Huber/VBAKF inflation for
- * outlier rejection). Under a well-specified model, NIS samples are χ²(1)
- * distributed with mean 1.0 and 95% below 3.84; robust methods will show
- * NIS < 1 on rejected samples (inflated S). This is the calibration check:
- * if the running mean drifts above 1.0, the filter is overconfident
- * (typically R_gps underreported, or P too small); below 1.0, underconfident.
+ * normalized innovation squared: ν²/S, where S is the *effective*
+ * innovation covariance the update actually used. Under a well-specified
+ * model, NIS samples are χ²(1) distributed with mean 1.0 and 95% below
+ * 3.84.
  *
  * [captureStepRecord] and [smoothBackward] implement a Rauch-Tung-Striebel
- * smoother for the debug tab. Capture a snapshot after each measurement;
- * pass the buffered list to [smoothBackward] to produce an h trajectory
- * conditioned on all measurements in the window. Divergence between
- * filtered h and smoothed h beyond sqrt(P_filtered + P_smoothed) is a
- * second calibration signal (the filter's posterior differs from what a
- * hindsight-optimal estimator would produce).
+ * smoother for the debug tab.
  *
  * Gaps > 60 s reset the filter: either the caller paused or the phone was
  * off long enough that carrying stale state is worse than restarting. The
@@ -93,8 +86,7 @@ enum class UpdateSource { GPS, BARO }
  * state. The 60 s threshold is deliberately longer than typical FGS-
  * tolerated screen-off gaps (a couple of seconds), so those do *not*
  * reset; the filter predicts through them with real `dt` and produces
- * honest (larger) P afterward. A genuine reset only happens after a
- * minute of silence, where the state really is worthless.
+ * honest (larger) P afterward.
  *
  * All internal math is Double; public surface is Float to match the rest
  * of the track module.
@@ -123,10 +115,18 @@ class AltitudeKalmanFilter(
      * [KalmanTuning.derivedVelNoise]. Kept as a plain field, independent of
      * the model object: a `derivedVelNoise`-only change updates it without
      * reinstantiating the model, because neither ThreeStateModel nor
-     * TwoStateModel depends on it.
+     * FourStateModel depends on it.
      */
     private var derivedVelNoise: Double =
         initialTuning.derivedVelNoise ?: KalmanTuning.DEFAULT_DERIVED_VEL_NOISE
+
+    /**
+     * Cascade bias-rate random-walk process noise q_vb, m²/s³. Used only
+     * when the model has no bias-rate state (2/3-state). Same
+     * independence-from-model argument as [derivedVelNoise].
+     */
+    private var derivedBiasRateNoise: Double =
+        initialTuning.derivedBiasRateNoise ?: KalmanTuning.DEFAULT_DERIVED_BIAS_RATE_NOISE
 
     private var x: DoubleArray = DoubleArray(model.n)
     private var P: DoubleArray = DoubleArray(model.n * model.n)
@@ -144,6 +144,18 @@ class AltitudeKalmanFilter(
     private var lastH: Double? = null
     private var lastHTime: Long = 0L
     private var lastP00: Double = 0.0
+
+    // ---- Cascade bias-rate estimator (2/3-state only) ----
+    private var derivedVb: Double? = null
+    private var derivedVbCov: Double = 1.0
+    private var lastB: Double? = null
+    private var lastBTime: Long = 0L
+    private var lastPbb: Double = 0.0
+
+    // ---- Aircon detector (CUSUM on normalized baro innovation) ----
+    // Deliberately external: the detector has no knowledge of AltitudeStateModel.
+    // It survives model swaps — see transitionModel's doc.
+    private val cusum = BaroInnovationCusum()
 
     // ---- Forward-pass snapshot for the RTS smoother ----
     private var lastPriorX: DoubleArray = DoubleArray(model.n)
@@ -167,12 +179,10 @@ class AltitudeKalmanFilter(
     fun setIskfInverseHessian(enabled: Boolean) { iskfInverseHessian = enabled }
 
     /**
-     * Swap model. Carries compatible state across the dimension change:
-     * h, b, and their covariance block are transplanted; v_z is handed
-     * between the 3-state's state vector and the 2-state's cascade.
-     * Diagnostics are cleared (per-update, tied to the old H/dims);
-     * history, NIS windows and the step-record buffer are the caller's
-     * to manage.
+     * Swap model. Carries compatible state across the dimension change
+     * via a [CompatibleState] snapshot consumed by the destination model's
+     * [AltitudeStateModel.seedFrom]. Diagnostics are cleared (per-update,
+     * tied to the old H/dims). The CUSUM is NOT reset — see class doc.
      */
     fun setModel(newModel: KalmanModel) {
         if (modelEnum == newModel) return
@@ -182,12 +192,13 @@ class AltitudeKalmanFilter(
     /**
      * Update tuning overrides.
      *
-     * The [KalmanTuning.derivedVelNoise] field is a plain field of this
-     * filter, not a constructor argument of either model, so it is updated
+     * `derivedVelNoise` and `derivedBiasRateNoise` are plain fields of this
+     * filter, not constructor arguments of any model, so they are updated
      * unconditionally here. The model object is reinstantiated only when a
-     * constructor argument changed — `accelNoiseQ`/`biasNoiseQ` for 3-state,
-     * `qH`/`biasNoiseQ` for 2-state — and when it does, x, P, initialized,
-     * lastMs, cascade state and diagnostics all survive.
+     * constructor argument changed — `accelNoiseQ`/`biasNoiseQ` for
+     * 3-state, `qH`/`biasNoiseQ` for 2-state, `accelNoiseQ`/`biasRateQ`
+     * for 4-state — and when it does, x, P, initialized, lastMs, both
+     * cascades and diagnostics all survive.
      *
      * A [KalmanTuning.baroSigmaM]- or [KalmanTuning.gpsVerticalMinM]-only
      * change touches neither model nor state: both live at the caller and
@@ -198,12 +209,12 @@ class AltitudeKalmanFilter(
         val relevant = relevantTuningChange(tuning, newTuning)
         tuning = newTuning
         derivedVelNoise = newTuning.derivedVelNoise ?: KalmanTuning.DEFAULT_DERIVED_VEL_NOISE
+        derivedBiasRateNoise = newTuning.derivedBiasRateNoise ?: KalmanTuning.DEFAULT_DERIVED_BIAS_RATE_NOISE
         if (relevant) reinstantiateModel()
     }
 
     /**
-     * Swap model AND tuning in one call. Used by callers that detect both
-     * changed at once (the config observer). When the model is unchanged,
+     * Swap model AND tuning in one call. When the model is unchanged,
      * this routes through the tuning-only path — same cost as [setTuning],
      * same state preservation, no state transplant.
      */
@@ -213,6 +224,7 @@ class AltitudeKalmanFilter(
             val relevant = relevantTuningChange(tuning, newTuning)
             tuning = newTuning
             derivedVelNoise = newTuning.derivedVelNoise ?: KalmanTuning.DEFAULT_DERIVED_VEL_NOISE
+            derivedBiasRateNoise = newTuning.derivedBiasRateNoise ?: KalmanTuning.DEFAULT_DERIVED_BIAS_RATE_NOISE
             if (relevant) reinstantiateModel()
         } else {
             transitionModel(newModel, newTuning)
@@ -226,9 +238,9 @@ class AltitudeKalmanFilter(
     /**
      * Best vertical-speed estimate available:
      *
-     *  - 3-state: the KF's v_z state (proper uncertainty via [velocitySigma]).
-     *  - 2-state: the cascade scalar KF described in the class doc. Non-null
-     *    once two altitude samples have been differenced.
+     *  - 3/4-state: the KF's v_z state (proper uncertainty via
+     *    [velocitySigma]).
+     *  - 2-state: the cascade scalar KF described in the class doc.
      *
      * Null before initialization, or in 2-state for the interval between
      * seed and the first real update.
@@ -239,27 +251,60 @@ class AltitudeKalmanFilter(
     }
 
     fun bias(): Float? =
-        if (initialized) x[model.n - 1].toFloat() else null
+        if (initialized) x[model.biasIndex].toFloat() else null
+
+    /**
+     * Bias rate (db/dt, m/s). 4-state: the v_b state. 2/3-state: the
+     * cascade output — same semantic, lower quality (differentiation
+     * amplifies noise).
+     */
+    fun biasRate(): Float? {
+        if (!initialized) return null
+        return if (model.hasBiasRate) x[model.n - 1].toFloat() else derivedVb?.toFloat()
+    }
 
     fun altitudeSigma(): Float? =
         if (initialized) sqrt(max(P[0], 0.0)).toFloat() else null
 
     /**
-     * σ(v) from the 3-state covariance when v_z is a state, or from the
+     * σ(v) from the 3/4-state covariance when v_z is a state, or from the
      * cascade filter's scalar covariance when it is not. Null when no
      * velocity estimate exists yet.
      */
     fun velocitySigma(): Float? {
         if (!initialized) return null
-        return if (model.hasVelocity) sqrt(max(P[4], 0.0)).toFloat()
-        else derivedVz?.let { sqrt(max(derivedVzCov, 0.0)).toFloat() }
+        return if (model.hasVelocity) {
+            val i = 1
+            sqrt(max(P[i * model.n + i], 0.0)).toFloat()
+        } else {
+            derivedVz?.let { sqrt(max(derivedVzCov, 0.0)).toFloat() }
+        }
     }
 
     fun biasSigma(): Float? {
         if (!initialized) return null
-        val i = model.n - 1
+        val i = model.biasIndex
         return sqrt(max(P[i * model.n + i], 0.0)).toFloat()
     }
+
+    fun biasRateSigma(): Float? {
+        if (!initialized) return null
+        return if (model.hasBiasRate) {
+            val i = model.n - 1
+            sqrt(max(P[i * model.n + i], 0.0)).toFloat()
+        } else {
+            derivedVb?.let { sqrt(max(derivedVbCov, 0.0)).toFloat() }
+        }
+    }
+
+    /**
+     * CUSUM statistics (g⁺, g⁻) on the normalized baro innovation. Either
+     * crossing the CUSUM threshold is the detector firing.
+     */
+    fun airconCusum(): Pair<Float, Float> = cusum.stats()
+
+    /** True when either CUSUM accumulator has crossed the threshold. */
+    fun airconDetected(): Boolean = cusum.detected()
 
     fun lastGpsInnovationM(): Float? = lastGpsInnovation?.toFloat()
     fun lastBaroInnovationM(): Float? = lastBaroInnovation?.toFloat()
@@ -288,15 +333,17 @@ class AltitudeKalmanFilter(
 
     /**
      * Explicit cold start. Readers all gate on [initialized], and [seed]
-     * reassigns x, P, lastPriorX, lastPriorP before anything observes them,
-     * so there is no need to zero the raw buffers here — a reset is a
-     * logical reset, not a memory wipe.
+     * reassigns x, P, lastPriorX, lastPriorP before anything observes them.
+     * CUSUM is reset here — cold start is one of its two legitimate reset
+     * points (the other being [resetWithAltitude]).
      */
     fun reset() {
         initialized = false
         lastMs = 0L
         clearDiagnostics()
         clearDerivedVelocity()
+        clearDerivedBiasRate()
+        cusum.reset()
     }
 
     /**
@@ -304,27 +351,36 @@ class AltitudeKalmanFilter(
      * calibration dialog.
      *
      * Already initialized: h snaps to [altM] and b to (baroZ − altM). What
-     * else survives is the model's decision — the 3-state keeps P11 so a
+     * else survives is the model's decision — the 3/4-state keep P11 so a
      * mid-recording recalibrate does not blank out the velocity estimate;
      * the 2-state's cascade velocity estimator is reset (the snap is a
      * discontinuity, and pre-snap Δh would corrupt the first velocity
-     * sample). See [AltitudeStateModel.calibrateCovariance].
+     * sample). The v_b cascade is reset for the same reason. CUSUM is
+     * reset — pre-calibration data was collected with a wrong b.
      *
      * Not initialized: the model's seedState / seedCovariance set up all
      * states from scratch.
+     *
+     * This is the public seed path; the user-facing entry points are the
+     * live card's "recalibrate" link on the Track tab and the Seed button
+     * in the KF sandbox. Both go through [BaroCalibrationDialog] with
+     * GPS-height or manual entry.
      */
     fun resetWithAltitude(altM: Float, baroZ: Float?) {
         val newX = if (initialized) x.copyOf() else model.seedState(altM.toDouble())
         newX[0] = altM.toDouble()
-        if (baroZ != null) newX[model.n - 1] = (baroZ - altM).toDouble()
+        if (baroZ != null) newX[model.biasIndex] = (baroZ - altM).toDouble()
         x = newX
         P = model.calibrateCovariance(if (initialized) P else null)
         clearDiagnostics()
         clearDerivedVelocity()
+        clearDerivedBiasRate()
+        cusum.reset()
         initialized = true
         lastMs = System.currentTimeMillis()
         capturePrior()
         recordDerivedVelocity()
+        recordDerivedBiasRate()
     }
 
     /** GNSS altitude measurement. Seeds the filter on first call. */
@@ -336,6 +392,12 @@ class AltitudeKalmanFilter(
         if (!initialized) { seed(altM.toDouble()); lastSource = UpdateSource.GPS; return }
         applyMeasurement(model.gpsH(), altM.toDouble(), sigmaM.toDouble().let { it * it }, isBaro = false)
         recordDerivedVelocity()
+        // The v_b cascade is deliberately NOT updated here: in 2/3-state,
+        // b is not observable from GPS (H=[1,0,0] or [1,0]), so a GPS-only
+        // measurement leaves b unchanged and z_vb = 0. Feeding that into
+        // the cascade pulls v_b toward 0 and corrupts the diagnostic.
+        // Cascade updates happen only on baro updates, where b actually
+        // moves.
     }
 
     /** Baro altitude measurement. No-op until GNSS has seeded the filter. */
@@ -348,6 +410,8 @@ class AltitudeKalmanFilter(
         if (!initialized) return
         applyMeasurement(model.baroH(), altM.toDouble(), sigmaM.toDouble().let { it * it }, isBaro = true)
         recordDerivedVelocity()
+        recordDerivedBiasRate()
+        feedCusum()
     }
 
     /**
@@ -467,64 +531,87 @@ class AltitudeKalmanFilter(
         lastP00 = 0.0
     }
 
+    private fun clearDerivedBiasRate() {
+        derivedVb = null
+        derivedVbCov = 1.0
+        lastB = null
+        lastBTime = 0L
+        lastPbb = 0.0
+    }
+
     /**
      * Rebuild the model OBJECT under the current tuning, leaving state
-     * untouched. This is the lossless half of what used to be rebuild():
-     * ThreeStateModel/TwoStateModel capture q in their constructors, so a
+     * untouched. Every model captures q in its constructor, so a
      * process-noise change requires a fresh instance — but x, P, initialized,
-     * lastMs, cascade state and diagnostics are independent of the model
-     * object and survive. derivedVelNoise is a filter field, not a model
-     * constructor argument, and is updated by [setTuning] / [setModelAndTuning]
-     * directly.
+     * lastMs, both cascades and diagnostics are independent of the model
+     * object and survive. `derivedVelNoise` / `derivedBiasRateNoise` are
+     * filter fields, not model constructor arguments, and are updated by
+     * [setTuning] / [setModelAndTuning] directly.
      */
     private fun reinstantiateModel() {
         model = modelEnum.create(tuning)
     }
 
     /**
-     * Move to [newModel] / [newTuning], carrying every state component that
-     * is compatible across the dimension change:
+     * Move to [newModel] / [newTuning], carrying compatible state.
      *
-     *   h   — index 0 in both models, copied directly.
-     *   b   — index n-1 in both models, copied directly.
-     *   v_z — 3-state keeps its own; 3→2 hands the state's v_z to the
-     *         cascade; 2→3 hands the cascade's v_z to the state (or the
-     *         seed covariance if the cascade never ran).
+     * Mechanics:
      *
-     * P is transplanted for the {h, b} submatrix; cross-terms with v_z are
-     * preserved on 3→3 (impossible via setModel's guard) and zeroed on 2→3
-     * (no a priori knowledge of the correlation across the swap). 3→2 keeps
-     * the h-h, h-b, b-h, b-b submatrix and discards the v_z row/col, which
-     * the cascade then re-initialises from the discarded P11.
+     *   1. Snapshot [CompatibleState] from x/P and the cascades. Every
+     *      component that MIGHT be transferable is captured here, whether
+     *      it lives in a state vector or in a cascade. Nulls mean "source
+     *      doesn't have it" — the destination model interprets null as
+     *      "use my seed default".
+     *   2. Swap the model object.
+     *   3. Ask the new model's [AltitudeStateModel.seedFrom] to build
+     *      x/P. The destination model uses only the fields it knows how
+     *      to receive, ignoring the rest. There is no per-transition
+     *      code in the filter.
+     *   4. Filter-level cascade housekeeping: a cascade is dormant when
+     *      the new model has the corresponding state (its estimate lives
+     *      in x now), and active otherwise. When it becomes active
+     *      (state → cascade hand-off), the CompatibleState seeds it from
+     *      the old state. When it stays dormant, it's cleared so a future
+     *      swap back starts from the state, not a stale cascade sample.
      *
-     * Diagnostics (per-measurement) are cleared — they describe the last
-     * measurement under the old model and would be misleading. They
-     * repopulate on the next update. Cascade state, NIS running windows
-     * and the RTS step-record buffer are the caller's to manage (see
-     * KfViewModel.setModel / BackgroundService.applyConfigChange).
+     * Diagnostics are cleared (per-measurement, tied to the old H/dims).
+     * CUSUM is NOT cleared — see class doc for the invariance argument.
      *
      * Called only from setModel and setModelAndTuning, both of which guard
-     * on `modelEnum != newModel`; the 3→3 and 2→2 cases never reach here.
+     * on `modelEnum != newModel`; the 2→2, 3→3 and 4→4 cases go through
+     * reinstantiateModel instead.
      */
     private fun transitionModel(newModel: KalmanModel, newTuning: KalmanTuning) {
-        val oldModel     = model
-        val oldN         = oldModel.n
-        val oldX         = x
-        val oldP         = P
-        val wasInit      = initialized
-        val oldLastMs    = lastMs
-        val cascadeVz    = derivedVz
-        val cascadeVzCov = derivedVzCov
+        val oldModel = model
+        val oldN = oldModel.n
+        val wasInit = initialized
+        val oldLastMs = lastMs
+        val oldX = x
+        val oldP = P
 
-        modelEnum       = newModel
-        tuning          = newTuning
-        model           = newModel.create(newTuning)
+        val compatible: CompatibleState? = if (wasInit) CompatibleState(
+            h = oldX[0],
+            hVar = oldP[0 * oldN + 0],
+            b = oldX[oldModel.biasIndex],
+            bVar = oldP[oldModel.biasIndex * oldN + oldModel.biasIndex],
+            hbCov = oldP[0 * oldN + oldModel.biasIndex],
+            vZ = if (oldModel.hasVelocity) oldX[1] else derivedVz,
+            vZVar = if (oldModel.hasVelocity) oldP[1 * oldN + 1]
+                    else derivedVzCov.takeIf { derivedVz != null },
+            vB = if (oldModel.hasBiasRate) oldX[oldN - 1] else derivedVb,
+            vBVar = if (oldModel.hasBiasRate) oldP[(oldN - 1) * oldN + (oldN - 1)]
+                    else derivedVbCov.takeIf { derivedVb != null },
+        ) else null
+
+        modelEnum = newModel
+        tuning = newTuning
+        model = newModel.create(newTuning)
         derivedVelNoise = newTuning.derivedVelNoise ?: KalmanTuning.DEFAULT_DERIVED_VEL_NOISE
+        derivedBiasRateNoise = newTuning.derivedBiasRateNoise ?: KalmanTuning.DEFAULT_DERIVED_BIAS_RATE_NOISE
 
-        if (!wasInit) {
-            // Unseeded: nothing to preserve. Arrays may also be the wrong
-            // size for the new model; resize them to the new dimension so
-            // subsequent seed()/predict() operate on the right shape.
+        if (compatible == null) {
+            // Unseeded: nothing to preserve. Resize arrays and clear
+            // diagnostics.
             x = DoubleArray(model.n)
             P = DoubleArray(model.n * model.n)
             lastPriorX = DoubleArray(model.n)
@@ -533,71 +620,54 @@ class AltitudeKalmanFilter(
             lastMs = 0L
             clearDiagnostics()
             clearDerivedVelocity()
+            clearDerivedBiasRate()
             return
         }
 
-        val bNew = model.n - 1
-        val bOld = oldN - 1
-
-        val newX = DoubleArray(model.n)
-        newX[0]    = oldX[0]
-        newX[bNew] = oldX[bOld]
-        if (model.hasVelocity) {
-            newX[1] = if (oldModel.hasVelocity) oldX[1]
-                      else cascadeVz ?: 0.0
-        }
-
-        val newP = DoubleArray(model.n * model.n)
-        newP[0]                             = oldP[0]
-        newP[0            * model.n + bNew] = oldP[0    * oldN + bOld]
-        newP[bNew         * model.n + 0]    = oldP[bOld * oldN + 0]
-        newP[bNew         * model.n + bNew] = oldP[bOld * oldN + bOld]
-        if (model.hasVelocity) {
-            // P[1,1] for v_z. 2→3 has no state v_z to inherit: if the cascade
-            // ran, its covariance carries over; if it never ran (no sample
-            // pair differenced yet), fall back to the model's seed covariance
-            // so the estimate (0) and its uncertainty (σ_v = 2 m/s) stay
-            // consistent with seedCovariance().
-            newP[1 * model.n + 1] = when {
-                oldModel.hasVelocity -> oldP[1 * oldN + 1]
-                cascadeVz == null    -> ThreeStateModel.SEED_VELOCITY_VARIANCE
-                else -> cascadeVzCov.takeIf { it > 0.0 && it.isFinite() }
-                    ?: ThreeStateModel.SEED_VELOCITY_VARIANCE
-            }
-            if (oldModel.hasVelocity) {
-                // 3→3 would preserve cross-terms, but setModel's guard
-                // prevents it from reaching here; kept for symmetry and in
-                // case setModelAndTuning is ever relaxed.
-                newP[0            * model.n + 1]    = oldP[0    * oldN + 1]
-                newP[1            * model.n + 0]    = oldP[1    * oldN + 0]
-                newP[1            * model.n + bNew] = oldP[1    * oldN + bOld]
-                newP[bNew         * model.n + 1]    = oldP[bOld * oldN + 1]
-            }
-        }
-
-        x           = newX
-        P           = newP
+        // Hand the compatible state to the new model; it decides what to use.
+        val (newX, newP) = model.seedFrom(compatible)
+        x = newX
+        P = newP
+        lastPriorX = newX.copyOf()
+        lastPriorP = newP.copyOf()
         initialized = true
-        lastMs      = oldLastMs
+        lastMs = oldLastMs
         clearDiagnostics()
 
+        // Cascade housekeeping. Velocity:
         if (model.hasVelocity) {
-            // 2→3: v_z now lives in the state vector; the cascade is
-            // dormant. Clear its stale values so a future 3→2 swap starts
-            // from the state's v_z, not from a leftover cascade sample.
+            // 2→3/4: v_z now lives in the state vector; the cascade is
+            // dormant. Clear its stale values so a future 3/4→2 swap
+            // starts from the state's v_z, not a leftover cascade sample.
             clearDerivedVelocity()
         } else {
-            // 3→2: hand the old state's v_z to the cascade, with its P11
-            // as the cascade's initial covariance. Re-anchor the h-
+            // 3/4→2: hand the old state's v_z to the cascade, with its
+            // P11 as the cascade's initial covariance. Re-anchor the h-
             // difference baseline so the first post-swap sample computes
             // v_z from the transplanted height, not a stale pre-swap one.
             if (oldModel.hasVelocity) {
-                derivedVz    = oldX[1]
-                derivedVzCov = oldP[1 * oldN + 1]
+                derivedVz = compatible.vZ
+                derivedVzCov = compatible.vZVar ?: 1.0
             }
-            lastH     = newX[0]
+            lastH = newX[0]
             lastHTime = oldLastMs
-            lastP00   = newP[0]
+            lastP00 = newP[0 * model.n + 0]
+        }
+
+        // Bias rate:
+        if (model.hasBiasRate) {
+            // 2/3→4: v_b now lives in the state vector; the cascade is
+            // dormant. Clear its stale values.
+            clearDerivedBiasRate()
+        } else {
+            // 4→2/3: hand the old state's v_b to the cascade.
+            if (oldModel.hasBiasRate) {
+                derivedVb = compatible.vB
+                derivedVbCov = compatible.vBVar ?: 1.0
+            }
+            lastB = newX[model.biasIndex]
+            lastBTime = oldLastMs
+            lastPbb = newP[model.biasIndex * model.n + model.biasIndex]
         }
     }
 
@@ -605,7 +675,8 @@ class AltitudeKalmanFilter(
      * Whether the tuning change requires reinstantiating the model object.
      * This depends only on the model's constructor arguments — the process
      * noise that gets baked into the model. It is deliberately independent
-     * of [derivedVelNoise], which lives on the filter, not the model.
+     * of `derivedVelNoise` / `derivedBiasRateNoise`, which live on the
+     * filter, not on any model.
      */
     private fun relevantTuningChange(old: KalmanTuning, new: KalmanTuning): Boolean =
         when (modelEnum) {
@@ -615,6 +686,9 @@ class AltitudeKalmanFilter(
             KalmanModel.TWO_STATE ->
                 old.qH != new.qH ||
                 old.biasNoiseQ != new.biasNoiseQ
+            KalmanModel.FOUR_STATE ->
+                old.accelNoiseQ != new.accelNoiseQ ||
+                old.biasRateQ != new.biasRateQ
         }
 
     private fun seed(altM: Double) {
@@ -622,10 +696,13 @@ class AltitudeKalmanFilter(
         P = model.seedCovariance()
         clearDiagnostics()
         clearDerivedVelocity()
+        clearDerivedBiasRate()
+        cusum.reset()
         initialized = true
         lastMs = System.currentTimeMillis()
         capturePrior()
         recordDerivedVelocity()
+        recordDerivedBiasRate()
     }
 
     private fun predict() {
@@ -652,14 +729,6 @@ class AltitudeKalmanFilter(
      * estimator: the gain minimises velocity error covariance (the
      * discrete analogue of Martin's Kalman observer for derivatives). It
      * is a leaf — v_z never feeds back into h or b.
-     *
-     * Because R_v is derived from the main filter's own covariance, the
-     * cascade is automatically less confident when the main filter is
-     * uncertain (e.g. right after seed, or during a long baro-only stretch
-     * where h has drifted), and more confident as the main filter
-     * converges. Outlier rejection is inherited too: a rejected measurement
-     * barely moves x[0], so the cascade sees only a small Δh — the robust
-     * update rule acts as the outlier gate for v_z as well.
      */
     private fun recordDerivedVelocity() {
         if (model.hasVelocity) return
@@ -689,6 +758,57 @@ class AltitudeKalmanFilter(
         lastH = h
         lastHTime = now
         lastP00 = p00
+    }
+
+    /**
+     * Cascade v_b update (2/3-state only). Measurement z_vb = Δb/Δt with
+     * R_vb = (P_bb(k) + P_bb(k−1)) / Δt². Leaf — v_b never feeds back.
+     * Noisier than the 4-state's v_b state (differentiation amplifies
+     * noise), but model-robust and useful for visual comparison on the KF
+     * tab. Only called from [updateBaro] — GPS-only updates leave b
+     * unchanged, so z_vb would be spuriously zero.
+     */
+    private fun recordDerivedBiasRate() {
+        if (model.hasBiasRate) return
+        val bIdx = model.biasIndex
+        val b = x[bIdx]
+        val pbb = P[bIdx * model.n + bIdx]
+        val now = lastMs
+
+        if (lastB == null) {
+            lastB = b
+            lastBTime = now
+            lastPbb = pbb
+            return
+        }
+
+        val dt = (now - lastBTime) / 1000.0
+        if (dt <= 1e-6) return
+
+        val zvb = (b - lastB!!) / dt
+        val rvb = (pbb + lastPbb) / (dt * dt)
+
+        val vPrior = derivedVb ?: 0.0
+        val covPrior = derivedVbCov + derivedBiasRateNoise * dt
+        val k = covPrior / (covPrior + rvb)
+        derivedVb = vPrior + k * (zvb - vPrior)
+        derivedVbCov = (1.0 - k) * covPrior
+
+        lastB = b
+        lastBTime = now
+        lastPbb = pbb
+    }
+
+    /**
+     * Feed CUSUM with the normalized baro innovation just observed.
+     * Extraction of z (and its clamp) is inside [BaroInnovationCusum]; the
+     * filter just hands it the normalized value.
+     */
+    private fun feedCusum() {
+        val nu = lastBaroInnovation ?: return
+        val s = lastBaroInnovationS ?: return
+        if (s < 1e-12) return
+        cusum.feed(nu / sqrt(s))
     }
 
     private fun applyMeasurement(c: DoubleArray, y: Double, r: Double, isBaro: Boolean) {

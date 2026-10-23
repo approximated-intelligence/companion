@@ -6,28 +6,55 @@ package de.perigon.companion.sensors.domain
  *   [KalmanModel] (this file)  — state dimension, dynamics, measurement maps
  *   [KalmanMode]               — update rule (GAUSSIAN / HUBER / VBAKF / ISKF)
  *
- * Both are selectable at runtime. The filter delegates predict/seed/recalibrate
- * to the model and iterates its update rules to `model.n`. Gap-reset (dt > 60 s)
- * is filter-level, not model-level: both models share the "uninitialized"
- * semantics, so the §3 fix — re-check `initialized` after `predict()` — lives
- * in `updateGps`/`updateBaro`, not here.
+ * Three models:
+ *   [TwoStateModel]   [h, b]           — random walk on h, no velocity
+ *   [ThreeStateModel] [h, v_z, b]      — CV on h, v_z as state
+ *   [FourStateModel]  [h, v_z, b, v_b] — CV on both h and b
+ *
+ * `v_b = db/dt` is the bias rate. In the 4-state it's a state; in the 2/3-
+ * state it's exposed via a cascade estimator on b (see
+ * AltitudeKalmanFilter.biasRate / recordDerivedBiasRate). The 4-state is
+ * the tracking form; the cascade is the diagnostic form. `v_b` absorbs
+ * aircon, weather drift, and thermal effects as a rate rather than as
+ * process noise on b.
+ *
+ * Both axes are selectable at runtime. The filter delegates
+ * predict/seed/recalibrate to the model and iterates its update rules to
+ * `model.n`. Gap-reset (dt > 60 s) is filter-level, not model-level: every
+ * model shares the "uninitialized" semantics, so the §3 fix — re-check
+ * `initialized` after `predict()` — lives in `updateGps`/`updateBaro`, not
+ * here.
  *
  * Models must be small, stateless-after-construction objects. The filter
  * swaps them by reinstantiation (constructing under new tuning is lossless
- * for the state; a model-dimension change is bridged by
- * [AltitudeKalmanFilter]'s transitionModel, not by the model itself).
+ * for the state) or by [seedFrom] (carries compatible state across a
+ * dimension change — see [CompatibleState]).
  */
 interface AltitudeStateModel {
     val n: Int
 
     /**
-     * True when v_z is a state variable of this model (3-state). False
-     * means the filter still exposes v_z — through the cascade estimator
-     * in [AltitudeKalmanFilter] — but not as a state. Callers that want
-     * the velocity estimate should use [AltitudeKalmanFilter.verticalSpeed]
-     * and not branch on this flag.
+     * True when v_z is a state variable of this model (3-state, 4-state).
+     * False means the filter still exposes v_z — through the cascade
+     * estimator in [AltitudeKalmanFilter] — but not as a state. Callers
+     * that want the velocity estimate should use
+     * [AltitudeKalmanFilter.verticalSpeed] and not branch on this flag.
      */
     val hasVelocity: Boolean
+
+    /**
+     * True when v_b is a state variable (4-state only). When false, the
+     * filter exposes v_b through a cascade estimator on b — same call
+     * pattern, lower quality (differentiation amplifies noise).
+     */
+    val hasBiasRate: Boolean get() = false
+
+    /**
+     * Index of `b` in the state vector. Default `n-1` is correct for
+     * 2-state and 3-state. [FourStateModel] overrides to `n-2` because
+     * `v_b` occupies the last slot.
+     */
+    val biasIndex: Int get() = n - 1
 
     fun gpsH(): DoubleArray
     fun baroH(): DoubleArray
@@ -44,21 +71,95 @@ interface AltitudeStateModel {
     /**
      * Covariance at recalibration (`resetWithAltitude`). [oldP] is null when
      * the filter was not yet initialized; non-null when it was and the model
-     * should preserve what remains meaningful (the 3-state keeps P11 so a
+     * should preserve what remains meaningful (the 3/4-state keep P11 so a
      * mid-recording recalibrate does not blank out the velocity estimate).
      */
     fun calibrateCovariance(oldP: DoubleArray?): DoubleArray
 
     /**
-     * The state transition matrix F used by [predict] over [dtSec]. Row-major,
-     * n×n. Used by the RTS smoother to reconstruct the backward-pass
-     * cross-covariance `C_k = P_{k|k} Fᵀ P_{k+1|k}⁻¹`. Must match what
-     * [predict] uses internally — the smoother and the forward filter must
-     * agree about F or the smoothed trajectory will not be consistent with
-     * the filtered one.
+     * The state transition matrix F used by [predict] over [dtSec].
+     * Row-major, n×n. Used by the RTS smoother to reconstruct the
+     * backward-pass cross-covariance `C_k = P_{k|k} Fᵀ P_{k+1|k}⁻¹`. Must
+     * match what [predict] uses internally — the smoother and the forward
+     * filter must agree about F or the smoothed trajectory will not be
+     * consistent with the filtered one.
      */
     fun transitionMatrix(dtSec: Double): DoubleArray
+
+    /**
+     * Seed this model's state and covariance from a compatible snapshot
+     * of another model's state. Used by [AltitudeKalmanFilter]'s
+     * transitionModel on a dimension change.
+     *
+     * The default implementation is universal: h lives at index 0 in
+     * every model, b at [biasIndex], and v_z / v_b (when present as
+     * states) at indices 1 and n-1. A model that ever needed a different
+     * layout would override this; none do today.
+     *
+     * Null velocity / bias-rate fields in [src] mean "no estimate
+     * available from the source" (either the source model did not have
+     * the component as a state, or the cascade had not produced one yet).
+     * The destination uses its own seed default for those slots.
+     */
+    fun seedFrom(src: CompatibleState): Pair<DoubleArray, DoubleArray> {
+        val x = DoubleArray(n)
+        val P = DoubleArray(n * n)
+
+        x[0] = src.h
+        x[biasIndex] = src.b
+        P[0 * n + 0] = src.hVar
+        P[0 * n + biasIndex] = src.hbCov
+        P[biasIndex * n + 0] = src.hbCov
+        P[biasIndex * n + biasIndex] = src.bVar
+
+        if (hasVelocity) {
+            x[1] = src.vZ ?: 0.0
+            P[1 * n + 1] = src.vZVar?.takeIf { it > 0.0 && it.isFinite() }
+                ?: KalmanModel.SEED_VELOCITY_VARIANCE
+        }
+        if (hasBiasRate) {
+            val vb = n - 1
+            x[vb] = src.vB ?: 0.0
+            P[vb * n + vb] = src.vBVar?.takeIf { it > 0.0 && it.isFinite() }
+                ?: KalmanModel.SEED_BIAS_RATE_VARIANCE
+        }
+        return x to P
+    }
 }
+
+/**
+ * Snapshot of the state components that are compatible across model
+ * transitions. Assembled by [AltitudeKalmanFilter] from its x/P (and its
+ * cascade estimators where a component is not a state), consumed by the
+ * destination model's [AltitudeStateModel.seedFrom].
+ *
+ * Every velocity / bias-rate field is nullable: null means "no estimate
+ * available from the source" (either the source model did not have the
+ * component as a state, or the corresponding cascade had not run yet).
+ * Models that don't use a field ignore it; models that do use a field
+ * fall back to their seed default when it is null.
+ *
+ * h and b are always available: every model has them.
+ *
+ * Why this shape rather than per-transition code: six model transitions
+ * (2↔3, 2↔4, 3↔4) all want the same thing — carry whatever is compatible
+ * across the dimension change. Enumerating them individually invites
+ * one of them being wrong; a shared snapshot that each model consumes
+ * selectively keeps every transition on the same path and pushes the
+ * "what do I know how to receive?" decision into the destination model,
+ * which is the only place that knows it.
+ */
+data class CompatibleState(
+    val h: Double,
+    val hVar: Double,
+    val b: Double,
+    val bVar: Double,
+    val hbCov: Double,
+    val vZ: Double?,
+    val vZVar: Double?,
+    val vB: Double?,
+    val vBVar: Double?,
+)
 
 /**
  * 3-state `[h, v_z, b]ᵀ`:
@@ -147,7 +248,7 @@ class ThreeStateModel(
 
     override fun seedCovariance(): DoubleArray = doubleArrayOf(
         100.0, 0.0, 0.0,
-        0.0, SEED_VELOCITY_VARIANCE, 0.0,
+        0.0, KalmanModel.SEED_VELOCITY_VARIANCE, 0.0,
         0.0, 0.0, 10000.0,
     )
 
@@ -161,15 +262,6 @@ class ThreeStateModel(
             0.0, p11, 0.0,
             0.0, 0.0, 0.25,
         )
-    }
-
-    companion object {
-        /**
-         * P[1,1] at seed: σ_v = 2 m/s, so var = 4.0 (m/s)². Referenced by
-         * [AltitudeKalmanFilter]'s transitionModel when a 2→3 swap has no
-         * cascade velocity to inherit.
-         */
-        const val SEED_VELOCITY_VARIANCE = 4.0
     }
 }
 
@@ -238,18 +330,136 @@ class TwoStateModel(
     )
 }
 
+/**
+ * 4-state `[h, v_z, b, v_b]ᵀ`. Block-diagonal CV:
+ *
+ *   - (h, v_z) block: constant-velocity with accel noise q_a (same as 3-state)
+ *   - (b, v_b) block: constant-velocity with bias-rate jerk noise q_vb
+ *
+ * No random walk on b — all bias motion goes through v_b. This is the
+ * key structural difference from 3-state. Consequences:
+ *
+ *   - Steady-state b is smoother (v_b absorbs rate-of-change, so q_vb can
+ *     be tight).
+ *   - Aircon's step change in v_b is a *model violation* under the tight
+ *     q_vb prior: the filter's predictions stay on the old rate, the baro
+ *     innovation accumulates, and the CUSUM detector fires. The 3-state's
+ *     q_b would just absorb the step as noise.
+ *   - During a long GPS outage, Var(b) grows as q_vb·t³/3 (integrated
+ *     random walk), not linearly as in 3-state. The 4-state is more
+ *     confident about b during outages than 3-state — correct only if
+ *     v_b is really constant. This is the tracking cost of the extra state;
+ *     it is not paid under fused GPS+baro, which is the designed use case.
+ *
+ * F = [[1, dt, 0, 0], [0, 1, 0, 0], [0, 0, 1, dt], [0, 0, 0, 1]]
+ *
+ *   GPS:  H = [1, 0, 0, 0]
+ *   Baro: H = [1, 0, 1, 0]
+ *
+ * v_b is unobservable in baro-only stretches (no independent altitude
+ * reference to difference against). During a long outage, v_b diffuses
+ * forward and h extrapolates along the last known rate — the same
+ * tradeoff noted above.
+ */
+class FourStateModel(
+    accelQ: Double? = null,
+    biasRateQ: Double? = null,
+) : AltitudeStateModel {
+    private val qAccel: Double = accelQ ?: KalmanTuning.DEFAULT_ACCEL_NOISE_Q
+    private val qBiasRate: Double = biasRateQ ?: KalmanTuning.DEFAULT_BIAS_RATE_Q
+
+    override val n = 4
+    override val hasVelocity = true
+    override val hasBiasRate = true
+    override val biasIndex = 2
+
+    override fun gpsH(): DoubleArray = doubleArrayOf(1.0, 0.0, 0.0, 0.0)
+    override fun baroH(): DoubleArray = doubleArrayOf(1.0, 0.0, 1.0, 0.0)
+
+    override fun predict(x: DoubleArray, P: DoubleArray, dtSec: Double) {
+        x[0] += x[1] * dtSec
+        x[2] += x[3] * dtSec
+
+        // P' = F P Fᵀ, applied as row then column transform (F is sparse).
+        val fp = DoubleArray(16)
+        for (j in 0 until 4) {
+            fp[0 * 4 + j] = P[0 * 4 + j] + dtSec * P[1 * 4 + j]
+            fp[1 * 4 + j] = P[1 * 4 + j]
+            fp[2 * 4 + j] = P[2 * 4 + j] + dtSec * P[3 * 4 + j]
+            fp[3 * 4 + j] = P[3 * 4 + j]
+        }
+        for (i in 0 until 4) {
+            P[i * 4 + 0] = fp[i * 4 + 0] + dtSec * fp[i * 4 + 1]
+            P[i * 4 + 1] = fp[i * 4 + 1]
+            P[i * 4 + 2] = fp[i * 4 + 2] + dtSec * fp[i * 4 + 3]
+            P[i * 4 + 3] = fp[i * 4 + 3]
+        }
+
+        // Q: accel noise on (h, v_z); bias-rate jerk on (b, v_b).
+        val qa3 = qAccel * dtSec * dtSec * dtSec / 3.0
+        val qa2 = qAccel * dtSec * dtSec / 2.0
+        val qa1 = qAccel * dtSec
+        P[0 * 4 + 0] += qa3
+        P[0 * 4 + 1] += qa2
+        P[1 * 4 + 0] += qa2
+        P[1 * 4 + 1] += qa1
+
+        val qb3 = qBiasRate * dtSec * dtSec * dtSec / 3.0
+        val qb2 = qBiasRate * dtSec * dtSec / 2.0
+        val qb1 = qBiasRate * dtSec
+        P[2 * 4 + 2] += qb3
+        P[2 * 4 + 3] += qb2
+        P[3 * 4 + 2] += qb2
+        P[3 * 4 + 3] += qb1
+    }
+
+    override fun transitionMatrix(dtSec: Double): DoubleArray = doubleArrayOf(
+        1.0, dtSec, 0.0, 0.0,
+        0.0, 1.0,   0.0, 0.0,
+        0.0, 0.0,   1.0, dtSec,
+        0.0, 0.0,   0.0, 1.0,
+    )
+
+    override fun seedState(altM: Double): DoubleArray =
+        doubleArrayOf(altM, 0.0, 0.0, 0.0)
+
+    override fun seedCovariance(): DoubleArray = doubleArrayOf(
+        100.0, 0.0,                                    0.0,    0.0,
+        0.0,   KalmanModel.SEED_VELOCITY_VARIANCE,     0.0,    0.0,
+        0.0,   0.0,                                    10000.0, 0.0,
+        0.0,   0.0,                                    0.0,    KalmanModel.SEED_BIAS_RATE_VARIANCE,
+    )
+
+    override fun calibrateCovariance(oldP: DoubleArray?): DoubleArray {
+        val pVz = oldP?.get(1 * 4 + 1)?.takeIf { it > 0.0 } ?: 1.0
+        val pVb = oldP?.get(3 * 4 + 3)?.takeIf { it > 0.0 } ?: KalmanModel.SEED_BIAS_RATE_VARIANCE
+        return doubleArrayOf(
+            1.0, 0.0, 0.0, 0.0,
+            0.0, pVz, 0.0, 0.0,
+            0.0, 0.0, 0.25, 0.0,
+            0.0, 0.0, 0.0, pVb,
+        )
+    }
+}
+
 /** Model axis. Independent of [KalmanMode] (update-rule axis). */
-enum class KalmanModel(val displayName: String, val hasVelocity: Boolean) {
-    THREE_STATE("3-state", hasVelocity = true),
-    TWO_STATE("2-state", hasVelocity = false);
+enum class KalmanModel(
+    val displayName: String,
+    val hasVelocity: Boolean,
+    val hasBiasRate: Boolean,
+) {
+    TWO_STATE("2-state", hasVelocity = false, hasBiasRate = false),
+    THREE_STATE("3-state", hasVelocity = true, hasBiasRate = false),
+    FOUR_STATE("4-state", hasVelocity = true, hasBiasRate = true);
 
     /**
      * Build this model. [tuning] supplies overrides; null fields fall back
      * to the model's built-in defaults.
      *
-     * Note: `biasNoiseQ` is passed to BOTH models — same field, same
-     * semantics, same units. The Advanced panel's "Bias process noise"
-     * slider is 1:1 with q_b in the filter regardless of active model.
+     * Note: `biasNoiseQ` is passed to BOTH 2/3-state models — same field,
+     * same semantics, same units. The Advanced panel's "Bias process noise"
+     * slider is 1:1 with q_b in the filter for either of those models.
+     * 4-state uses `biasRateQ` instead — it has no random walk on b.
      */
     fun create(tuning: KalmanTuning = KalmanTuning()): AltitudeStateModel = when (this) {
         THREE_STATE -> ThreeStateModel(
@@ -260,5 +470,25 @@ enum class KalmanModel(val displayName: String, val hasVelocity: Boolean) {
             qH = tuning.qH,
             qB = tuning.biasNoiseQ,
         )
+        FOUR_STATE -> FourStateModel(
+            accelQ    = tuning.accelNoiseQ,
+            biasRateQ = tuning.biasRateQ,
+        )
+    }
+
+    companion object {
+        /**
+         * P[v_z,v_z] at seed: σ_v = 2 m/s, so var = 4.0 (m/s)². Referenced
+         * by [AltitudeStateModel.seedFrom] when a 2→3 or 2→4 swap has no
+         * cascade velocity to inherit.
+         */
+        const val SEED_VELOCITY_VARIANCE = 4.0
+        /**
+         * P[v_b,v_b] at seed: σ_vb = 0.01 m/s = the aircon-rate magnitude.
+         * At seed we don't know whether the user is in aircon or weather,
+         * so allow up to ±3 cm/s (3σ). q_vb then decays this toward the
+         * tight prior as data accumulates.
+         */
+        const val SEED_BIAS_RATE_VARIANCE = 1e-4
     }
 }
