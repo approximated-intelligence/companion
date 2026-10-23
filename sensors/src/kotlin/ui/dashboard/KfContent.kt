@@ -478,7 +478,7 @@ fun KfContent(vm: KfViewModel) {
                             sigma = samples.map { s -> s.sigmaVB?.let { it * 1000f } },
                         ),
                     ),
-                    centerAtZero = true,
+                    centerAtZero = false,
                     windowSeconds = windowSec,
                 )
                 Text(
