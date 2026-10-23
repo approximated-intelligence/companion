@@ -42,7 +42,7 @@ import kotlin.math.ln
  * PROCESS NOISE IS EXPRESSED AS PROCESS NOISE. Every "Q" slider below shows
  * the variance rate directly (m²/s for states, m²/s³ for their derivatives).
  * The value shown IS the value the filter uses — no σ-to-variance conversion
- * needed, no square root. This matters because the two models share
+ * needed, no square root. This matters because the 2/3-state models share
  * `biasNoiseQ` (both model b as a random walk); if the slider expressed σ,
  * the 3-state's internal q_b = σ² would require a hand-computed square root
  * to compare against 2-state's q_b. Now 0.001 means 0.001 in both models.
@@ -54,12 +54,18 @@ import kotlin.math.ln
  * process noise is a filter design choice the user is tuning; measurement
  * noise is a physical property the user is estimating.
  *
- * Model-aware: 3-state knobs are "Vertical acceleration (q_v)" and "Bias
- * process noise (q_b)"; 2-state knobs are "Altitude random walk (q_h)",
- * "Bias process noise (q_b)", and "Slope smoothing (q_v cascade)". The
- * "Bias process noise" slider is IDENTICAL in both models — same field,
- * same label, same range, same units. The panel shows only the active
- * model's other knobs.
+ * Model-aware:
+ *
+ *   2-state: q_h (RW on h), q_b (RW on b), derivedVelNoise (cascade v_z),
+ *            derivedBiasRateNoise (cascade v_b)
+ *   3-state: q_v (accel on h/v_z), q_b (RW on b),
+ *            derivedBiasRateNoise (cascade v_b)
+ *   4-state: q_v (accel on h/v_z), q_vb (jerk on b/v_b) — no cascade
+ *
+ * The "Bias process noise" slider (q_b) is shared by 2-state and 3-state;
+ * the "Bias rate process noise" slider (q_vb) is 4-state only. "Bias rate
+ * smoothing" (cascade q_vb) is 2/3-state only. The panel shows only the
+ * active model's knobs.
  *
  * Not exposed: `huberDelta`, `iskfLambdaX/Y`, `vbakfPriorDof`, iteration
  * counts. These are method-internal, defaults are literature-recommended,
@@ -110,7 +116,7 @@ fun KalmanAdvancedPanel(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 when (model) {
-                    KalmanModel.THREE_STATE -> {
+                    KalmanModel.THREE_STATE, KalmanModel.FOUR_STATE -> {
                         TuningSlider(
                             title = "Vertical acceleration (q_v)",
                             explanation = "How much vertical acceleration the filter " +
@@ -140,24 +146,42 @@ fun KalmanAdvancedPanel(
                         )
                     }
                 }
-                // Shared bias process noise. Same field, same label, same
-                // range, same semantics in both models. Default is a middle
-                // ground for mixed car/bike/wild use (see KalmanTuning).
-                TuningSlider(
-                    title = "Bias process noise (q_b)",
-                    explanation = "How fast the filter lets baro bias drift. Higher: " +
-                        "tracks aircon and weather fronts faster, absorbs sensor " +
-                        "noise. Lower: smoother, slower to follow real bias changes. " +
-                        "Adjust against the b vs b* overlay: if b* stays flat while " +
-                        "b drifts, lower this; if b lags behind real aircon transitions, " +
-                        "raise it.",
-                    value = tuning.biasNoiseQ,
-                    default = KalmanTuning.DEFAULT_BIAS_NOISE_Q,
-                    units = "m²/s",
-                    range = 1e-5..3e-2,
-                    onChange = { onChange(tuning.copy(biasNoiseQ = it)) },
-                    onReset  = { onChange(tuning.copy(biasNoiseQ = null)) },
-                )
+                // Shared bias process noise (2/3-state only — 4-state has no
+                // random walk on b). Same field, same label, same semantics
+                // in 2-state and 3-state.
+                when (model) {
+                    KalmanModel.TWO_STATE, KalmanModel.THREE_STATE -> {
+                        TuningSlider(
+                            title = "Bias process noise (q_b)",
+                            explanation = "How fast the filter lets baro bias drift. Higher: " +
+                                "tracks aircon and weather fronts faster, absorbs sensor " +
+                                "noise. Lower: smoother, slower to follow real bias changes. " +
+                                "Adjust against the b vs b* overlay: if b* stays flat while " +
+                                "b drifts, lower this; if b lags behind real aircon transitions, " +
+                                "raise it.",
+                            value = tuning.biasNoiseQ,
+                            default = KalmanTuning.DEFAULT_BIAS_NOISE_Q,
+                            units = "m²/s",
+                            range = 1e-5..3e-2,
+                            onChange = { onChange(tuning.copy(biasNoiseQ = it)) },
+                            onReset  = { onChange(tuning.copy(biasNoiseQ = null)) },
+                        )
+                    }
+                    KalmanModel.FOUR_STATE -> {
+                        TuningSlider(
+                            title = "Bias rate process noise (q_vb)",
+                            explanation = "How fast the filter allows the bias *rate* to " +
+                                "change. Higher: tracks fast aircon transients, weaker " +
+                                "detector. Lower: smoother b, sharper aircon CUSUM.",
+                            value = tuning.biasRateQ,
+                            default = KalmanTuning.DEFAULT_BIAS_RATE_Q,
+                            units = "m²/s³",
+                            range = 1e-10..1e-5,
+                            onChange = { onChange(tuning.copy(biasRateQ = it)) },
+                            onReset  = { onChange(tuning.copy(biasRateQ = null)) },
+                        )
+                    }
+                }
                 if (model == KalmanModel.TWO_STATE) {
                     TuningSlider(
                         title = "Slope smoothing (q_v cascade)",
@@ -171,6 +195,21 @@ fun KalmanAdvancedPanel(
                         range = 5e-4..5e-2,
                         onChange = { onChange(tuning.copy(derivedVelNoise = it)) },
                         onReset  = { onChange(tuning.copy(derivedVelNoise = null)) },
+                    )
+                }
+                if (model == KalmanModel.TWO_STATE || model == KalmanModel.THREE_STATE) {
+                    TuningSlider(
+                        title = "Bias rate smoothing (q_vb cascade)",
+                        explanation = "How quickly the derived v_b trusts a new " +
+                            "bias difference. Higher: faster response, more jitter. " +
+                            "Lower: smoother. Cascade v_b is diagnostic only — for " +
+                            "detection, use the 4-state model's v_b state.",
+                        value = tuning.derivedBiasRateNoise,
+                        default = KalmanTuning.DEFAULT_DERIVED_BIAS_RATE_NOISE,
+                        units = "m²/s³",
+                        range = 1e-7..1e-3,
+                        onChange = { onChange(tuning.copy(derivedBiasRateNoise = it)) },
+                        onReset  = { onChange(tuning.copy(derivedBiasRateNoise = null)) },
                     )
                 }
                 // Measurement noise — shown as σ, in metres.

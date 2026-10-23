@@ -43,9 +43,11 @@ data class KfSample(
     val h: Float?,
     val v: Float?,
     val b: Float?,
+    val vB: Float?,
     val sigmaH: Float?,
     val sigmaV: Float?,
     val sigmaB: Float?,
+    val sigmaVB: Float?,
     val deltaGps: Float?,
     val deltaBaro: Float?,
     val baroInput: Float?,
@@ -53,6 +55,8 @@ data class KfSample(
     // Diagnostics (see class doc on KfUiState).
     val nisGps: Float? = null,
     val nisBaro: Float? = null,
+    val cusumPos: Float? = null,
+    val cusumNeg: Float? = null,
     // RTS-smoothed estimates of h and b for the same timestamp. Null until
     // the smoother's buffer covers this sample's time.
     val hSmoothed: Float? = null,
@@ -90,9 +94,11 @@ data class KfUiState(
     val h: Float? = null,
     val v: Float? = null,
     val b: Float? = null,
+    val vB: Float? = null,
     val sigmaH: Float? = null,
     val sigmaV: Float? = null,
     val sigmaB: Float? = null,
+    val sigmaVB: Float? = null,
     val deltaGps: Float? = null,
     val deltaBaro: Float? = null,
     val baroInput: Float? = null,
@@ -113,6 +119,9 @@ data class KfUiState(
     // showing the per-sample distribution.
     val nisGpsMean: Float? = null,
     val nisBaroMean: Float? = null,
+    val cusumPos: Float? = null,
+    val cusumNeg: Float? = null,
+    val airconDetected: Boolean = false,
     val history: List<KfSample> = emptyList(),
 )
 
@@ -147,17 +156,17 @@ data class KfUiState(
  * informative than a blank chart.
  *
  * Tuning field naming: process-noise fields use the filter's internal
- * representation directly — q_b in m²/s, q_v in m²/s³. Not σ, not squared
- * σ. See [KalmanTuning] for the convention.
+ * representation directly — q_b in m²/s, q_v in m²/s³, q_vb in m²/s³. Not
+ * σ, not squared σ. See [KalmanTuning] for the convention.
  *
  * RTS smoother buffer: bounded by TIME (BUFFER_WINDOW_MS), not by sample
  * count. A sample-count cap is coupled to sensor rate; a time window
  * guarantees the smoother always covers the chart's history.
  *
  * State preservation across model/tuning changes is a first-class
- * property here: the whole point of the sandbox is to compare 3-state vs
- * 2-state under the *same* trajectory. `setModel` carries h, b and v_z
- * across the dimension swap (see
+ * property here: the whole point of the sandbox is to compare 2-state vs
+ * 3-state vs 4-state under the *same* trajectory. `setModel` carries h, b,
+ * v_z, v_b across the dimension swap (see
  * [de.perigon.companion.sensors.domain.AltitudeKalmanFilter.transitionModel]),
  * and `setTuning` reinstantiates the model object without touching state.
  * The chart's filtered trace is continuous across both. Diagnostics that
@@ -166,6 +175,13 @@ data class KfUiState(
  * brief gap until records accumulate, and the NIS running windows (the
  * mean is a χ²(1) statistic, meaningful only under a single well-
  * specified model).
+ *
+ * Seeding: [calibrateBaro] mirrors the Track tab's calibration dialog —
+ * user-supplied reference altitude snaps h and b via
+ * AltitudeKalmanFilter.resetWithAltitude. Same dialog reused via
+ * [de.perigon.companion.sensors.ui.BaroCalibrationDialog]. The bias-rate
+ * cascade/state and the CUSUM are reset by the filter (pre-calibration
+ * data carries no information about aircon).
  *
  * [applyToTrackSettings] is the only path by which this tab writes to
  * TrackConfigPrefs. Explicit and one-way (the tab does not read config):
@@ -278,9 +294,9 @@ class KfViewModel @Inject constructor(
 
     /**
      * Model changes transplant compatible state across the dimension swap
-     * (h, b, v_z and their covariance block; see
+     * (h, b, v_z, v_b and their covariance block; see
      * AltitudeKalmanFilter.transitionModel). History survives — the chart
-     * continues across the swap, which is what makes 3↔2 comparison
+     * continues across the swap, which is what makes 2↔3↔4 comparison
      * meaningful. The RTS step-record buffer and the NIS running windows
      * are cleared: the backward chain cannot span a dimension change, and
      * a χ²(1) mean mixes two models' calibration. So `b*`/`h*` show a gap
@@ -305,7 +321,7 @@ class KfViewModel @Inject constructor(
         nisBaroWindow.clear()
         _state.update { it.copy(model = m) }
         if (wasInit) {
-            // Publish refreshes h/v/b/σ from the post-transition state;
+            // Publish refreshes h/v/b/v_b/σ from the post-transition state;
             // appends at most one new history sample if the interval has
             // elapsed, so the swap is visible as a continuous trace.
             publish()
@@ -330,15 +346,15 @@ class KfViewModel @Inject constructor(
      * Update the tab's tuning overrides. A change affecting process noise
      * for the current model re-instantiates the model object; x, P,
      * initialized, cascade state, history, NIS windows and the step-record
-     * buffer all survive. The accumulated b estimate in particular
-     * survives a q_b change — the whole point of moving from rebuild() to
-     * reinstantiateModel() in the filter.
+     * buffer all survive. The accumulated b (and v_b) estimates in
+     * particular survive a q_b/q_vb change — the whole point of moving from
+     * rebuild() to reinstantiateModel() in the filter.
      *
-     * A `baroSigmaM`-, `gpsVerticalMinM`- or `derivedVelNoise`-only change
-     * updates the record without reinstantiating the model or touching
-     * state (the first two live at the caller and take effect on the next
-     * measurement; the third is a filter field, updated unconditionally by
-     * the filter's setTuning).
+     * A `baroSigmaM`-, `gpsVerticalMinM`-, `derivedVelNoise`- or
+     * `derivedBiasRateNoise`-only change updates the record without
+     * reinstantiating the model or touching state (the first two live at
+     * the caller and take effect on the next measurement; the last two are
+     * filter fields, updated unconditionally by the filter's setTuning).
      */
     fun setTuning(newTuning: KalmanTuning) {
         if (_state.value.tuning == newTuning) return
@@ -387,6 +403,8 @@ class KfViewModel @Inject constructor(
                     kalmanBiasNoiseQ      = t.biasNoiseQ,
                     kalmanQH              = t.qH,
                     kalmanDerivedVelNoise = t.derivedVelNoise,
+                    kalmanBiasRateQ       = t.biasRateQ,
+                    kalmanDerivedBiasRateNoise = t.derivedBiasRateNoise,
                     baroSigmaM            = t.baroSigmaM,
                     kalmanGpsVerticalMinM = t.gpsVerticalMinM,
                 )
@@ -410,6 +428,27 @@ class KfViewModel @Inject constructor(
         if (enabled) startGnss() else stopGnss()
     }
 
+    /**
+     * One-shot filter seed, identical to Track tab's calibration dialog.
+     *
+     * [refAltM] is the reference orthometric altitude (GPS height from the
+     * last fix, or a manual value). [baroInput] is the current raw ISA
+     * barometric altitude; the filter snaps b to baro − refAlt so any
+     * remaining weather bias is absorbed immediately. If no baro reading
+     * is available, only h is snapped (b is left where it was, or 0 if
+     * not previously seeded) — same behavior as resetWithAltitude(null).
+     *
+     * Clears the CUSUM and the derived bias-rate baseline: pre-calibration
+     * data was collected with a wrong b, so its rate and innovation bias
+     * carry no information about aircon. The 3/4-state's v_z/v_b states
+     * survive via calibrateCovariance.
+     */
+    fun calibrateBaro(refAltM: Float) {
+        val baroZ = _state.value.baroInput
+        filter.resetWithAltitude(refAltM, baroZ)
+        publish()
+    }
+
     fun resetFilter() {
         filter.reset()
         history.clear()
@@ -419,8 +458,8 @@ class KfViewModel @Inject constructor(
             it.copy(
                 isInitialized = false,
                 hadGpsSeed = false,
-                h = null, v = null, b = null,
-                sigmaH = null, sigmaV = null, sigmaB = null,
+                h = null, v = null, b = null, vB = null,
+                sigmaH = null, sigmaV = null, sigmaB = null, sigmaVB = null,
                 deltaGps = null, deltaBaro = null,
                 baroInput = null, gpsInput = null,
                 baroPressureHpa = null,
@@ -433,6 +472,8 @@ class KfViewModel @Inject constructor(
                 lastUpdateSource = null,
                 nisGpsMean = null,
                 nisBaroMean = null,
+                cusumPos = null, cusumNeg = null,
+                airconDetected = false,
                 history = emptyList(),
             )
         }
@@ -461,8 +502,8 @@ class KfViewModel @Inject constructor(
                 model = model,
                 isInitialized = false,
                 hadGpsSeed = false,
-                h = null, v = null, b = null,
-                sigmaH = null, sigmaV = null, sigmaB = null,
+                h = null, v = null, b = null, vB = null,
+                sigmaH = null, sigmaV = null, sigmaB = null, sigmaVB = null,
                 deltaGps = null, deltaBaro = null,
                 baroInput = null, gpsInput = null,
                 baroPressureHpa = null,
@@ -475,6 +516,8 @@ class KfViewModel @Inject constructor(
                 lastUpdateSource = null,
                 nisGpsMean = null,
                 nisBaroMean = null,
+                cusumPos = null, cusumNeg = null,
+                airconDetected = false,
                 history = emptyList(),
             )
         }
@@ -743,12 +786,16 @@ class KfViewModel @Inject constructor(
         val h = filter.altitude()
         val v = filter.verticalSpeed()
         val b = filter.bias()
+        val vb = filter.biasRate()
         val sh = filter.altitudeSigma()
         val sv = filter.velocitySigma()
         val sb = filter.biasSigma()
+        val svb = filter.biasRateSigma()
         val dg = filter.lastGpsInnovationM()
         val db = filter.lastBaroInnovationM()
         val initialized = filter.isInitialized()
+        val cusum = filter.airconCusum()
+        val aircon = filter.airconDetected()
 
         val now = SystemClock.elapsedRealtime()
         val push = initialized && (now - lastHistoryMs) >= HISTORY_INTERVAL_MS
@@ -761,12 +808,14 @@ class KfViewModel @Inject constructor(
             history.addLast(
                 KfSample(
                     timeMs = now,
-                    h = h, v = v, b = b,
-                    sigmaH = sh, sigmaV = sv, sigmaB = sb,
+                    h = h, v = v, b = b, vB = vb,
+                    sigmaH = sh, sigmaV = sv, sigmaB = sb, sigmaVB = svb,
                     deltaGps = dg, deltaBaro = db,
                     baroInput = baroInput, gpsInput = gpsInput,
                     nisGps = filter.lastGpsNis(),
                     nisBaro = filter.lastBaroNis(),
+                    cusumPos = cusum.first,
+                    cusumNeg = cusum.second,
                 )
             )
             newHistory = smoothHistory()
@@ -776,8 +825,8 @@ class KfViewModel @Inject constructor(
             it.copy(
                 isInitialized = initialized,
                 hadGpsSeed = it.hadGpsSeed || (dg != null || (initialized && filter.lastUpdateSource() == UpdateSource.GPS)),
-                h = h, v = v, b = b,
-                sigmaH = sh, sigmaV = sv, sigmaB = sb,
+                h = h, v = v, b = b, vB = vb,
+                sigmaH = sh, sigmaV = sv, sigmaB = sb, sigmaVB = svb,
                 deltaGps = dg, deltaBaro = db,
                 baroInput = baroInput,
                 gpsInput = gpsInput,
@@ -791,6 +840,9 @@ class KfViewModel @Inject constructor(
                 lastUpdateSource = filter.lastUpdateSource(),
                 nisGpsMean = if (nisGpsWindow.isEmpty()) null else nisGpsWindow.average().toFloat(),
                 nisBaroMean = if (nisBaroWindow.isEmpty()) null else nisBaroWindow.average().toFloat(),
+                cusumPos = cusum.first,
+                cusumNeg = cusum.second,
+                airconDetected = aircon,
                 history = newHistory,
             )
         }

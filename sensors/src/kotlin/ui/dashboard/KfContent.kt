@@ -21,11 +21,15 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -46,6 +50,7 @@ import de.perigon.companion.core.ui.access.RequireAccess
 import de.perigon.companion.sensors.SensorsRequirements
 import de.perigon.companion.sensors.domain.KalmanMode
 import de.perigon.companion.sensors.domain.KalmanModel
+import de.perigon.companion.sensors.ui.BaroCalibrationDialog
 import de.perigon.companion.sensors.ui.KalmanAdvancedPanel
 import kotlin.math.abs
 import kotlin.math.max
@@ -60,16 +65,28 @@ private val COLOR_B = Color(0xFF9C27B0)
 // tuned filter they will, and cyan-vs-purple is unambiguous.
 private val COLOR_B_SMOOTH = Color(0xFF00BCD4)
 private val COLOR_VZ = Color(0xFF00838F)
+private val COLOR_VB = Color(0xFFE91E63)
 private val COLOR_SIGMA_H = Color(0xFF1976D2)
 private val COLOR_SIGMA_B = Color(0xFFC2185B)
 private val COLOR_DGPS = Color(0xFFEF6C00)
 private val COLOR_DBARO = Color(0xFF00897B)
+private val COLOR_CUSUM_POS = Color(0xFFD32F2F)
+private val COLOR_CUSUM_NEG = Color(0xFF1976D2)
 private val COLOR_REF = Color(0xFFB00020)
 
 data class ChartSeries(
     val label: String,
     val color: Color,
     val values: List<Float?>,
+    /**
+     * Optional per-sample σ. When non-null, dashed ±σ bands are drawn
+     * around the main series in a lighter tint of its color. The bands
+     * are visual decorations of the primary series (they don't get their
+     * own legend entry). Null elements (including a null element in a
+     * non-null [sigma] list) mean "no band at this sample" and leave a
+     * gap.
+     */
+    val sigma: List<Float?>? = null,
 )
 
 @Composable
@@ -108,6 +125,8 @@ fun KfContent(vm: KfViewModel) {
         val samples = state.history
         val windowSec =
             (KfViewModel.HISTORY_SIZE * KfViewModel.HISTORY_INTERVAL_MS / 1000).toInt()
+
+        var showCalibrate by remember { mutableStateOf(false) }
 
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
@@ -229,6 +248,24 @@ fun KfContent(vm: KfViewModel) {
                     onCheckedChange = vm::setWakeLockEnabled,
                 )
             }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    OutlinedButton(
+                        onClick = { showCalibrate = true },
+                        enabled = state.baroInput != null,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Seed altitude…")
+                    }
+                    Text(
+                        if (state.baroInput == null)
+                            "Enable the barometer and wait for a reading to seed."
+                        else "Snap h to a known altitude; b is set to baro − h. No persistent offset is stored.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
 
             item { HorizontalDivider() }
             // Advanced tuning expander. Model-aware: shows only the active
@@ -256,7 +293,10 @@ fun KfContent(vm: KfViewModel) {
                 // filter derives them with a cascade position-difference
                 // estimator — a leaf of the main filter, no feedback into h
                 // or b — so the debug tab shows the same velocity quantities
-                // for both models, just sourced differently.
+                // for every model, just sourced differently.
+                //
+                // v_b and σ(v_b) follow the same pattern: 4-state exposes
+                // them as states; 2/3-state exposes them via the cascade.
                 //
                 // NIS² means are the calibration check: expected ≈ 1.0 under
                 // a well-specified model. Drift above 1 indicates the filter
@@ -278,6 +318,20 @@ fun KfContent(vm: KfViewModel) {
                             "σ(h) (m)" to fmtM(state.sigmaH, 2),
                             "σ(v) (m/s)" to fmtM(state.sigmaV, 2),
                             "σ(b) (m)" to fmtM(state.sigmaB, 2),
+                        )
+                    )
+                    NumericRow(
+                        listOf(
+                            "v_b (mm/s)" to (state.vB?.let { "%+.2f".format(it * 1000f) } ?: "--"),
+                            "σ(v_b) (mm/s)" to (state.sigmaVB?.let { "%.2f".format(it * 1000f) } ?: "--"),
+                            "aircon" to if (state.airconDetected) "yes" else "--",
+                        )
+                    )
+                    NumericRow(
+                        listOf(
+                            "CUSUM+" to (state.cusumPos?.let { "%.2f".format(it) } ?: "--"),
+                            "CUSUM−" to (state.cusumNeg?.let { "%.2f".format(it) } ?: "--"),
+                            "thr" to "8.0",
                         )
                     )
                     NumericRow(
@@ -348,10 +402,21 @@ fun KfContent(vm: KfViewModel) {
                 )
             }
             item {
+                // v_z with its ±σ band. The band visualizes the filter's
+                // own confidence in the velocity estimate: a band much wider
+                // than the trace means the estimate is loose, which is
+                // normal right after seed or during a GPS-only stretch.
+                // In the 2-state the same series is the cascade output with
+                // its own scalar covariance.
                 KfChart(
                     title = "Vertical speed (m/s)",
                     series = listOf(
-                        ChartSeries("v_z", COLOR_VZ, samples.map { it.v }),
+                        ChartSeries(
+                            "v_z",
+                            COLOR_VZ,
+                            samples.map { it.v },
+                            sigma = samples.map { it.sigmaV },
+                        ),
                     ),
                     centerAtZero = true,
                     windowSeconds = windowSec,
@@ -377,6 +442,11 @@ fun KfContent(vm: KfViewModel) {
                 // the gap growing backward in time*, qB is too high — the
                 // filter is chasing noise that hindsight rejects. This is the
                 // direct visual comparison the difference chart obscured.
+                //
+                // Not centered at zero: b is a signed offset, not a residual.
+                // Forcing a symmetric axis doubles the visible span when b is
+                // parked at, say, +40 m and compresses the b-vs-b* gap that
+                // the chart exists to show.
                 KfChart(
                     title = "Bias b (m)",
                     series = listOf(
@@ -385,6 +455,60 @@ fun KfContent(vm: KfViewModel) {
                     ),
                     centerAtZero = false,
                     windowSeconds = windowSec,
+                )
+            }
+            item {
+                // v_b with its ±σ band, same convention as v_z above. In
+                // the 4-state this is a state and σ(v_b) comes from P[3,3];
+                // in 2/3-state it's the cascade output with its own scalar
+                // covariance. Cascade is visibly noisier; swap models to
+                // compare the same trajectory under both.
+                //
+                // Reading: a trace that stays well inside the band means
+                // v_b is poorly determined (typical right after seed). A
+                // trace that pins the band — |v_b| ≳ 2σ — is the CUSUM's
+                // raw signal, even before the accumulator crosses threshold.
+                KfChart(
+                    title = "Bias rate v_b (mm/s)",
+                    series = listOf(
+                        ChartSeries(
+                            "v_b",
+                            COLOR_VB,
+                            samples.map { s -> s.vB?.let { it * 1000f } },
+                            sigma = samples.map { s -> s.sigmaVB?.let { it * 1000f } },
+                        ),
+                    ),
+                    centerAtZero = true,
+                    windowSeconds = windowSec,
+                )
+                Text(
+                    "Cascade v_b (2/3-state) is noisier than the 4-state's v_b state. " +
+                        "Swap models to compare the same trajectory under both.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                )
+            }
+            item {
+                // CUSUM on the normalized baro innovation. Two accumulators
+                // (positive and negative drift) share a threshold line. A
+                // crossing is the detector firing — aircon step in v_b.
+                // Dashed reference line at 8 (the threshold).
+                KfChart(
+                    title = "Aircon CUSUM",
+                    series = listOf(
+                        ChartSeries("g⁺", COLOR_CUSUM_POS, samples.map { it.cusumPos }),
+                        ChartSeries("g⁻", COLOR_CUSUM_NEG, samples.map { it.cusumNeg }),
+                    ),
+                    referenceLines = listOf(8f),
+                    windowSeconds = windowSec,
+                )
+                Text(
+                    "Dashed line: CUSUM threshold h = 8. Crossing = aircon-like step in v_b. " +
+                        "Tests model consistency, not |v_b| — weather (any magnitude) stays below.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
                 )
             }
             item {
@@ -440,6 +564,19 @@ fun KfContent(vm: KfViewModel) {
                 }
             }
         }
+
+        if (showCalibrate) {
+            BaroCalibrationDialog(
+                currentBaro = state.baroInput ?: 0f,
+                gpsOrthoAlt = state.gpsInput,
+                kfAlt       = state.h,
+                onCalibrate = { ref ->
+                    vm.calibrateBaro(ref)
+                    showCalibrate = false
+                },
+                onDismiss   = { showCalibrate = false },
+            )
+        }
     }
 }
 
@@ -478,14 +615,22 @@ private fun NumericRow(items: List<Pair<String, String>>) {
  * tenths.
  *
  * [referenceLines] draws dashed horizontal lines at the given y-values; used
- * by the NIS² chart for the χ²(1, 0.95) threshold. Values above the threshold
- * are the ~5% tail on a calibrated model.
+ * by the NIS² chart for the χ²(1, 0.95) threshold and by the CUSUM chart for
+ * the detection threshold. Values above the reference line are the tail of
+ * interest (α-sized, in the calibrated-model case).
  *
  * [yClampMax], when set, clips the visible y range to [min, yClampMax] and
  * clamps plotted values to that range. Without it, a single NIS² spike of
  * 100 would compress the ~1 values near zero, making the chart unreadable.
  * The clamp is a display-only operation; the underlying samples are not
  * truncated.
+ *
+ * Per-series σ bands (see [ChartSeries.sigma]): when present, dashed ±σ
+ * lines are drawn in a lighter tint of the series color, before the main
+ * line so the latter is on top. The axis range is extended to cover the
+ * band, so the trace is never clipped by its own uncertainty. The bands
+ * are visual decorations of the primary series and don't get their own
+ * legend entries.
  */
 @Composable
 private fun KfChart(
@@ -529,7 +674,18 @@ private fun KfChart(
             val plotWidth = size.width - labelColWidth
             val plotHeight = size.height
 
-            val all = series.flatMap { it.values }.filterNotNull()
+            // Axis range covers the main series AND any sigma bands; without
+            // this the band lines would be clipped at the plot edges when
+            // the estimate is tight but the band is wide (post-seed, post-swap).
+            val all = series.flatMap { s ->
+                val main = s.values.filterNotNull()
+                val band = s.sigma?.let { sigmas ->
+                    s.values.zip(sigmas).flatMap { (v, sigma) ->
+                        if (v != null && sigma != null) listOf(v - sigma, v + sigma) else emptyList()
+                    }
+                } ?: emptyList()
+                main + band
+            }
             if (all.size < 2) {
                 drawCenteredText(
                     textMeasurer, "no data yet",
@@ -596,7 +752,8 @@ private fun KfChart(
             }
 
             // User-supplied reference lines (dashed). Used for statistical
-            // thresholds like χ²(1, 0.95) on the NIS chart.
+            // thresholds like χ²(1, 0.95) on the NIS chart and CUSUM h on
+            // the detector chart.
             val dash = PathEffect.dashPathEffect(floatArrayOf(8f, 6f), 0f)
             for (ref in referenceLines) {
                 if (ref in yLo..yHi) {
@@ -611,7 +768,42 @@ private fun KfChart(
                 }
             }
 
-            // Series.
+            // Sigma bands (dashed), drawn BEFORE the main series so the
+            // series is on top. Two lines per series (±σ), lighter tint of
+            // the series color.
+            val bandDash = PathEffect.dashPathEffect(floatArrayOf(4f, 4f), 0f)
+            for (s in series) {
+                val sigmas = s.sigma ?: continue
+                val bandColor = s.color.copy(alpha = 0.45f)
+                for (sign in intArrayOf(-1, 1)) {
+                    var prevX: Float? = null
+                    var prevY: Float? = null
+                    for (i in 0 until s.values.size) {
+                        val v = s.values[i]
+                        val sigma = sigmas.getOrNull(i)
+                        if (v == null || sigma == null) {
+                            prevX = null; prevY = null
+                            continue
+                        }
+                        val bandValue = v + sign * sigma
+                        val x = plotWidth * i / (s.values.size - 1)
+                        val y = plotHeight * (1f - (bandValue - yLo) / yRange)
+                        if (prevX != null && prevY != null) {
+                            drawLine(
+                                color = bandColor,
+                                start = Offset(prevX, prevY),
+                                end = Offset(x, y),
+                                strokeWidth = 1.dp.toPx(),
+                                pathEffect = bandDash,
+                            )
+                        }
+                        prevX = x
+                        prevY = y
+                    }
+                }
+            }
+
+            // Main series lines.
             for (s in series) {
                 val n = s.values.size
                 if (n < 2) continue
@@ -682,6 +874,8 @@ private fun modelDescription(m: KalmanModel): String = when (m) {
         "h, v_z, b. CV dynamics. v_z is a proper KF state; σ_h grows as t^{3/2} during outages. Better for short outages with well-tracked velocity."
     KalmanModel.TWO_STATE ->
         "h, b. Random walk on h; baro drives h at full bandwidth. v_z is derived by a cascade position-difference filter (no feedback). σ_h grows as t^{1/2} during outages. Better for long outages; worse for short ones on a moving vehicle."
+    KalmanModel.FOUR_STATE ->
+        "h, v_z, b, v_b. CV on both h and b. v_b absorbs aircon and weather drift as a rate; a tight q_vb turns aircon's step in v_b into a detectable CUSUM signal. b integrates v_b, no random walk. Slightly more confident about b during long outages than 3-state."
 }
 
 private fun modeSpecificLine(state: KfUiState): String = when (state.mode) {
