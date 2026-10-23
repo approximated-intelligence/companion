@@ -490,28 +490,6 @@ fun KfContent(vm: KfViewModel) {
                 )
             }
             item {
-                // CUSUM on the normalized baro innovation. Two accumulators
-                // (positive and negative drift) share a threshold line. A
-                // crossing is the detector firing — aircon step in v_b.
-                // Dashed reference line at 8 (the threshold).
-                KfChart(
-                    title = "Aircon CUSUM",
-                    series = listOf(
-                        ChartSeries("g⁺", COLOR_CUSUM_POS, samples.map { it.cusumPos }),
-                        ChartSeries("g⁻", COLOR_CUSUM_NEG, samples.map { it.cusumNeg }),
-                    ),
-                    referenceLines = listOf(8f),
-                    windowSeconds = windowSec,
-                )
-                Text(
-                    "Dashed line: CUSUM threshold h = 8. Crossing = aircon-like step in v_b. " +
-                        "Tests model consistency, not |v_b| — weather (any magnitude) stays below.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-                )
-            }
-            item {
                 KfChart(
                     title = "Uncertainty (m)",
                     series = listOf(
@@ -551,6 +529,28 @@ fun KfContent(vm: KfViewModel) {
                 Text(
                     "Dashed line: χ²(1, 0.95) = 3.84. Valid under Gaussian. " +
                         "Robust methods inflate S on rejected samples, so NIS² sits below the line by design.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                )
+            }
+            item {
+                // CUSUM on the normalized baro innovation. Two accumulators
+                // (positive and negative drift) share a threshold line. A
+                // crossing is the detector firing — aircon step in v_b.
+                // Dashed reference line at 8 (the threshold).
+                KfChart(
+                    title = "Aircon CUSUM",
+                    series = listOf(
+                        ChartSeries("g⁺", COLOR_CUSUM_POS, samples.map { it.cusumPos }),
+                        ChartSeries("g⁻", COLOR_CUSUM_NEG, samples.map { it.cusumNeg }),
+                    ),
+                    referenceLines = listOf(8f),
+                    windowSeconds = windowSec,
+                )
+                Text(
+                    "Dashed line: CUSUM threshold h = 8. Crossing = aircon-like step in v_b. " +
+                        "Tests model consistency, not |v_b| — weather (any magnitude) stays below.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
