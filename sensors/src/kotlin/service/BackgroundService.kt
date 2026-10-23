@@ -86,7 +86,7 @@ data class RecordingStatus(
     val currentPressureHpa:    Float?            = null,
     // KF-fused MSL altitude.
     val kalmanAltitudeM:       Float?            = null,
-    // KF vertical speed (m/s, positive = up). In the 3-state model this is
+    // KF vertical speed (m/s, positive = up). In the 3/4-state model this is
     // the v_z state; in the 2-state model it is derived from the cascade
     // position-difference velocity filter inside the KF. Non-null from the
     // first measurement pair after seed in either model.
@@ -104,6 +104,10 @@ data class RecordingStatus(
     // aircon on in a car). This is the calibration "offset" — not a stored
     // config value, just a live state estimate.
     val kalmanBiasM:           Float?            = null,
+    // Bias rate v_b (m/s). State in 4-state, cascade in 2/3-state. Positive
+    // means the raw baro reading is rising relative to true altitude
+    // (aircon heating up, or a high-pressure system pushing pressure up).
+    val kalmanBiasRateMps:     Float?            = null,
     // KF covariance diagonals as standard deviations, exposed for the KF
     // debug tab. σ(h) is the altitude uncertainty, σ(b) the bias uncertainty.
     val kalmanAltitudeSigmaM:  Float?            = null,
@@ -112,6 +116,15 @@ data class RecordingStatus(
     // Positive = measurement above prediction. Diagnostics only.
     val lastGpsInnovationM:    Float?            = null,
     val lastBaroInnovationM:   Float?            = null,
+    // CUSUM accumulators on the normalized baro innovation. Either crossing
+    // its threshold (~8) is the aircon detector firing.
+    val airconCusumPos:        Float?            = null,
+    val airconCusumNeg:        Float?            = null,
+    // True when either CUSUM accumulator crosses its threshold. Aircon
+    // shows up as a step in v_b (cabin HVAC), which the CUSUM on baro
+    // innovations detects as a sustained bias — a violation of the model's
+    // constant-v_b prediction.
+    val airconDetected:        Boolean           = false,
     val pendingPoints:         Int               = 0,
     val gnssInfo:              GnssInfo          = GnssInfo.EMPTY,
 )
@@ -173,6 +186,8 @@ class BackgroundService : Service() {
         val verticalSpeedMps     get() = _status.map { it.verticalSpeedMps }
         val slopePercent         get() = _status.map { it.slopePercent }
         val kalmanBiasM          get() = _status.map { it.kalmanBiasM }
+        val kalmanBiasRateMps    get() = _status.map { it.kalmanBiasRateMps }
+        val airconDetected       get() = _status.map { it.airconDetected }
         val pendingPoints        get() = _status.map { it.pendingPoints }
         val gnssInfo             get() = _status.map { it.gnssInfo }
     }
@@ -311,6 +326,7 @@ class BackgroundService : Service() {
                 val baroRaw = rawBaroAltitude(p)
                 val kfAlt = altitudeFilter.altitude()
                 val qnh = if (!config.airplaneMode) altitudeFilter.qnhHpa(p) else null
+                val cusum = altitudeFilter.airconCusum()
                 _status.update {
                     it.copy(
                         currentBaroAltitudeM = baroRaw,
@@ -321,10 +337,14 @@ class BackgroundService : Service() {
                         // airplane outside reading is the last-known-good.
                         currentQnhHpa        = qnh ?: it.currentQnhHpa,
                         kalmanBiasM          = altitudeFilter.bias(),
+                        kalmanBiasRateMps    = altitudeFilter.biasRate(),
                         kalmanAltitudeSigmaM = altitudeFilter.altitudeSigma(),
                         kalmanBiasSigmaM     = altitudeFilter.biasSigma(),
                         lastGpsInnovationM   = altitudeFilter.lastGpsInnovationM(),
                         lastBaroInnovationM  = altitudeFilter.lastBaroInnovationM(),
+                        airconCusumPos       = cusum.first,
+                        airconCusumNeg       = cusum.second,
+                        airconDetected       = altitudeFilter.airconDetected(),
                     )
                 }
                 updateSlope(_status.value.lastProvidedFix?.speedMs)
@@ -360,6 +380,7 @@ class BackgroundService : Service() {
                     kalmanAltitudeM      = altitudeFilter.altitude(),
                     verticalSpeedMps     = altitudeFilter.verticalSpeed(),
                     kalmanBiasM          = altitudeFilter.bias(),
+                    kalmanBiasRateMps    = altitudeFilter.biasRate(),
                     kalmanAltitudeSigmaM = altitudeFilter.altitudeSigma(),
                     kalmanBiasSigmaM     = altitudeFilter.biasSigma(),
                     lastGpsInnovationM   = altitudeFilter.lastGpsInnovationM(),
@@ -422,9 +443,13 @@ class BackgroundService : Service() {
     /**
      * One-shot KF seeding. Does NOT store a persistent offset anywhere —
      * the KF's `b` state absorbs any remaining weather bias. If the filter
-     * was already running, velocity and its covariance are preserved in the
-     * 3-state model; the 2-state model's cascade velocity estimator is
-     * reseeded, since the snap is a discontinuity.
+     * was already running, velocity and bias-rate covariances are preserved
+     * in the 3/4-state models; the 2/3-state cascades are reseeded (the
+     * snap is a discontinuity). CUSUM is reset by the filter itself.
+     *
+     * The user-facing entry point is the live card's "recalibrate" link on
+     * the Track tab (BaroCalibrationDialog); the KF tab's Seed button uses
+     * the same dialog and the same filter path.
      */
     private fun calibrateBaro(refAltM: Float) {
         if (config.airplaneMode) {
@@ -440,6 +465,7 @@ class BackgroundService : Service() {
         altitudeFilter.resetWithAltitude(refAltM, rawBaro)
 
         val qnh = altitudeFilter.qnhHpa(pressure)
+        val cusum = altitudeFilter.airconCusum()
         _status.update {
             it.copy(
                 currentBaroAltitudeM = rawBaro,
@@ -448,10 +474,14 @@ class BackgroundService : Service() {
                 verticalSpeedMps     = altitudeFilter.verticalSpeed(),
                 currentQnhHpa        = qnh ?: it.currentQnhHpa,
                 kalmanBiasM          = altitudeFilter.bias(),
+                kalmanBiasRateMps    = altitudeFilter.biasRate(),
                 kalmanAltitudeSigmaM = altitudeFilter.altitudeSigma(),
                 kalmanBiasSigmaM     = altitudeFilter.biasSigma(),
                 lastGpsInnovationM   = altitudeFilter.lastGpsInnovationM(),
                 lastBaroInnovationM  = altitudeFilter.lastBaroInnovationM(),
+                airconCusumPos       = cusum.first,
+                airconCusumNeg       = cusum.second,
+                airconDetected       = altitudeFilter.airconDetected(),
             )
         }
         Log.i(TAG, "Calibrated KF: ref=%.2fm rawBaro=%.2fm bias=%.2fm"
@@ -515,7 +545,7 @@ class BackgroundService : Service() {
 
     /**
      * slope = 100 · v_z / v_h. v_z is model-agnostic — the filter returns
-     * the 3-state velocity state when it exists, or the cascade
+     * the 3/4-state velocity state when it exists, or the cascade
      * position-difference filter's output in 2-state — so this function
      * does not need to know which model is active. Null when v_z is not
      * available yet, or when v_h is too small for a meaningful slope.
@@ -612,10 +642,14 @@ class BackgroundService : Service() {
                 verticalSpeedMps     = null,
                 slopePercent         = null,
                 kalmanBiasM          = null,
+                kalmanBiasRateMps    = null,
                 kalmanAltitudeSigmaM = null,
                 kalmanBiasSigmaM     = null,
                 lastGpsInnovationM   = null,
                 lastBaroInnovationM  = null,
+                airconCusumPos       = null,
+                airconCusumNeg       = null,
+                airconDetected       = false,
             )
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -769,29 +803,32 @@ class BackgroundService : Service() {
     /**
      * Applies a runtime config change.
      *
-     * Method/mode changes are applied in place — h, v, b, and P all survive.
-     * Recreating the filter there would blank altitude/sigma for several
-     * seconds after every settings toggle, which read as "GPS reset" in the
-     * field.
+     * Method/mode changes are applied in place — h, v, b, v_b, and P all
+     * survive. Recreating the filter there would blank altitude/sigma for
+     * several seconds after every settings toggle, which read as "GPS
+     * reset" in the field.
      *
-     * Model changes now also carry state across (h, b, v_z and their
-     * covariance block, see AltitudeKalmanFilter.transitionModel), so a 3↔2
-     * swap does not blank the filter for several seconds while it re-seeds.
-     * The RTS smoother's step-record buffer is the KF tab's concern, not
-     * the recorder's; the recorder never owned one, so nothing to clear
-     * here. Tuning changes that affect process noise re-instantiate the
-     * model object and leave x/P/initialized untouched — the accumulated b
-     * survives a q_b slider change, which is the whole point.
+     * Model changes now also carry state across (h, b, v_z, v_b and their
+     * covariance block, see AltitudeKalmanFilter.transitionModel), so a
+     * 3↔4 or 2↔4 swap does not blank the filter for several seconds while
+     * it re-seeds. The RTS smoother's step-record buffer is the KF tab's
+     * concern, not the recorder's; the recorder never owned one, so
+     * nothing to clear here. Tuning changes that affect process noise
+     * re-instantiate the model object and leave x/P/initialized untouched
+     * — the accumulated b survives a q_b or q_vb slider change, which is
+     * the whole point.
      *
      * The isInitialized() guard below now fires only when the filter
      * genuinely was not seeded yet (before the first GPS fix); the KF-
      * derived status fields are cleared then to keep the UI honest about
-     * "no state yet". A baroSigmaM- or gpsVerticalMinM-only change touches
-     * neither state nor model — both live at the caller.
+     * "no state yet". A baroSigmaM-, gpsVerticalMinM- or
+     * derivedBiasRateNoise-only change touches neither state nor model —
+     * both live at the caller.
      *
      * QNH is not cleared in either branch: the last-known-good outside
      * reading remains useful and is overwritten by the next post-reseed
-     * baro tick.
+     * baro tick. CUSUM is reset by the filter on any state-affecting
+     * change (transitionModel, reset, resetWithAltitude, seed).
      */
     private suspend fun applyConfigChange(newConfig: BackgroundConfig) {
         buffer?.flush()
@@ -804,10 +841,14 @@ class BackgroundService : Service() {
                     verticalSpeedMps     = null,
                     slopePercent         = null,
                     kalmanBiasM          = null,
+                    kalmanBiasRateMps    = null,
                     kalmanAltitudeSigmaM = null,
                     kalmanBiasSigmaM     = null,
                     lastGpsInnovationM   = null,
                     lastBaroInnovationM  = null,
+                    airconCusumPos       = null,
+                    airconCusumNeg       = null,
+                    airconDetected       = false,
                 )
             }
         }
@@ -829,10 +870,14 @@ class BackgroundService : Service() {
                     // currentQnhHpa intentionally preserved — last-known-good
                     // outside pressure stays visible in airplane mode.
                     kalmanBiasM          = null,
+                    kalmanBiasRateMps    = null,
                     kalmanAltitudeSigmaM = null,
                     kalmanBiasSigmaM     = null,
                     lastGpsInnovationM   = null,
                     lastBaroInnovationM  = null,
+                    airconCusumPos       = null,
+                    airconCusumNeg       = null,
+                    airconDetected       = false,
                 )
             }
         }
@@ -1016,8 +1061,12 @@ class BackgroundService : Service() {
                 currentPressureHpa   = null,
                 currentQnhHpa        = null,
                 kalmanBiasM          = null,
+                kalmanBiasRateMps    = null,
                 kalmanBiasSigmaM     = null,
                 lastBaroInnovationM  = null,
+                airconCusumPos       = null,
+                airconCusumNeg       = null,
+                airconDetected       = false,
             )
         }
     }
