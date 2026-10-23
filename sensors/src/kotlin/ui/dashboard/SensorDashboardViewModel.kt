@@ -26,7 +26,7 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.core.geo.CoordFormat
-import de.perigon.companion.sensors.data.MagneticModel
+import de.perigon.companion.core.geo.magnetic.MagneticModel
 import de.perigon.companion.sensors.data.TrackPrefs
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted

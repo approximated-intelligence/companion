@@ -29,7 +29,7 @@ import de.perigon.companion.core.feature.RequestCodes
 import de.perigon.companion.core.ui.CoreIcons
 import de.perigon.companion.core.ui.navigatePendingIntent
 import de.perigon.companion.sensors.SensorsChannels
-import de.perigon.companion.sensors.data.GeoidGrid
+import de.perigon.companion.core.geo.geoid.GeoidGrid
 import de.perigon.companion.sensors.data.RecordingMode
 import de.perigon.companion.sensors.data.TrackConfigEntity
 import de.perigon.companion.sensors.data.TrackConfigPrefs

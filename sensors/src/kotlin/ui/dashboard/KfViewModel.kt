@@ -17,7 +17,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
-import de.perigon.companion.sensors.data.GeoidGrid
+import de.perigon.companion.core.geo.geoid.GeoidGrid
 import de.perigon.companion.sensors.data.TrackConfigPrefs
 import de.perigon.companion.sensors.data.TrackPrefs
 import de.perigon.companion.sensors.domain.AltitudeKalmanFilter

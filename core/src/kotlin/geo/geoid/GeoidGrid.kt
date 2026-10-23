@@ -1,4 +1,4 @@
-package de.perigon.companion.sensors.data
+package de.perigon.companion.core.geo.geoid
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
