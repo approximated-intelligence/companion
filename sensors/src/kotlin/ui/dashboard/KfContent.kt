@@ -383,7 +383,7 @@ fun KfContent(vm: KfViewModel) {
                         ChartSeries("b", COLOR_B, samples.map { it.b }),
                         ChartSeries("b*", COLOR_B_SMOOTH, samples.map { it.bSmoothed }),
                     ),
-                    centerAtZero = true,
+                    centerAtZero = false,
                     windowSeconds = windowSec,
                 )
             }
