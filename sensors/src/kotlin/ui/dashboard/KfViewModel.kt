@@ -154,6 +154,19 @@ data class KfUiState(
  * count. A sample-count cap is coupled to sensor rate; a time window
  * guarantees the smoother always covers the chart's history.
  *
+ * State preservation across model/tuning changes is a first-class
+ * property here: the whole point of the sandbox is to compare 3-state vs
+ * 2-state under the *same* trajectory. `setModel` carries h, b and v_z
+ * across the dimension swap (see
+ * [de.perigon.companion.sensors.domain.AltitudeKalmanFilter.transitionModel]),
+ * and `setTuning` reinstantiates the model object without touching state.
+ * The chart's filtered trace is continuous across both. Diagnostics that
+ * cannot span the swap are cleared: the RTS step-record buffer (the
+ * backward chain cannot cross a dimension change) so `b*`/`h*` show a
+ * brief gap until records accumulate, and the NIS running windows (the
+ * mean is a χ²(1) statistic, meaningful only under a single well-
+ * specified model).
+ *
  * [applyToTrackSettings] is the only path by which this tab writes to
  * TrackConfigPrefs. Explicit and one-way (the tab does not read config):
  * after promoting, the tab's own tuning copy is untouched, so further
@@ -199,14 +212,18 @@ class KfViewModel @Inject constructor(
 
     // RTS smoother buffer. Time-bounded (see BUFFER_WINDOW_MS), with a
     // hard sample cap as a backstop against a pathological sensor rate.
-    // Cleared on model/tuning rebuild and on gap detection (a filter reset
-    // means the forward pass has a discontinuity the smoother should not
-    // bridge).
+    // Cleared on model swap (dimension change) and on gap detection (a
+    // filter reset means the forward pass has a discontinuity the smoother
+    // should not bridge). NOT cleared on a tuning change — the filter's
+    // state survives, so the forward pass is continuous and the buffer
+    // remains valid.
     private val stepRecords = ArrayDeque<KfStepRecord>()
 
     // NIS running windows. Sampled per measurement, not per chart tick, so
     // the mean reflects the actual measurement distribution rather than a
-    // downsampled one.
+    // downsampled one. Cleared on model swap (along with stepRecords):
+    // the mean is a χ²(1) statistic only under a single well-specified
+    // model, so mixing pre- and post-swap samples makes it meaningless.
     private val nisGpsWindow = ArrayDeque<Float>(NIS_WINDOW)
     private val nisBaroWindow = ArrayDeque<Float>(NIS_WINDOW)
 
@@ -260,21 +277,41 @@ class KfViewModel @Inject constructor(
     // ---- Toggles (all tab-local, none writes to config) ----
 
     /**
-     * Model changes reset the filter ([AltitudeKalmanFilter.setModel]).
-     * Listeners stay live: the next baro sample is dropped (b is
-     * unobservable alone), and the next GPS sample re-seeds. That is the
-     * correct behaviour; the new state dimensions need a fresh GPS lock
-     * to be meaningful anyway.
+     * Model changes transplant compatible state across the dimension swap
+     * (h, b, v_z and their covariance block; see
+     * AltitudeKalmanFilter.transitionModel). History survives — the chart
+     * continues across the swap, which is what makes 3↔2 comparison
+     * meaningful. The RTS step-record buffer and the NIS running windows
+     * are cleared: the backward chain cannot span a dimension change, and
+     * a χ²(1) mean mixes two models' calibration. So `b*`/`h*` show a gap
+     * until records accumulate, and NIS restarts from empty; the filtered
+     * trace itself is continuous.
      *
-     * After the reseed, v_z is immediately available in 3-state (seed puts
-     * v = 0). In 2-state it stays null until the cascade position-difference
-     * estimator sees two consecutive altitude samples — one baro interval
-     * if baro is on, two GPS intervals otherwise.
+     * If the filter was not yet seeded (before the first GPS fix), there
+     * is nothing to preserve; clearFilterState() handles the honest reset.
      */
     fun setModel(m: KalmanModel) {
         if (_state.value.model == m) return
+        val wasInit = filter.isInitialized()
         filter.setModel(m)
-        clearFilterState(model = m)
+        // The smoother's backward chain cannot bridge a dimension change;
+        // drop the buffer. History survives so the swap is visible on the
+        // chart.
+        stepRecords.clear()
+        // NIS is χ²(1) only under a single well-specified model; a mixture
+        // of two models' means is neither model's mean. Clear it — the
+        // running mean repopulates from the first post-swap measurement.
+        nisGpsWindow.clear()
+        nisBaroWindow.clear()
+        _state.update { it.copy(model = m) }
+        if (wasInit) {
+            // Publish refreshes h/v/b/σ from the post-transition state;
+            // appends at most one new history sample if the interval has
+            // elapsed, so the swap is visible as a continuous trace.
+            publish()
+        } else {
+            clearFilterState(model = m)
+        }
     }
 
     fun setMode(mode: KalmanMode) {
@@ -290,17 +327,26 @@ class KfViewModel @Inject constructor(
     }
 
     /**
-     * Update the tab's tuning overrides. The filter rebuilds if the change
-     * affects process noise for the current model; a `baroSigmaM`- or
-     * `gpsVerticalMinM`-only change updates the record in place (both live
-     * at the caller and take effect on the next measurement).
+     * Update the tab's tuning overrides. A change affecting process noise
+     * for the current model re-instantiates the model object; x, P,
+     * initialized, cascade state, history, NIS windows and the step-record
+     * buffer all survive. The accumulated b estimate in particular
+     * survives a q_b change — the whole point of moving from rebuild() to
+     * reinstantiateModel() in the filter.
+     *
+     * A `baroSigmaM`-, `gpsVerticalMinM`- or `derivedVelNoise`-only change
+     * updates the record without reinstantiating the model or touching
+     * state (the first two live at the caller and take effect on the next
+     * measurement; the third is a filter field, updated unconditionally by
+     * the filter's setTuning).
      */
     fun setTuning(newTuning: KalmanTuning) {
         if (_state.value.tuning == newTuning) return
         filter.setTuning(newTuning)
-        val rebuilt = !filter.isInitialized() && _state.value.isInitialized
         _state.update { it.copy(tuning = newTuning) }
-        if (rebuilt) clearFilterState(model = _state.value.model)
+        // No clearFilterState: the filter guarantees non-de-initialization
+        // on tuning-only change. If that ever changes, a post-condition
+        // check would belong here rather than at every call site.
     }
 
     /**
@@ -398,6 +444,14 @@ class KfViewModel @Inject constructor(
         nisBaroWindow.clear()
     }
 
+    /**
+     * Genuine cold-start display reset. Called only when there was no
+     * filter state to preserve (setModel on an unseeded filter) and from
+     * resetFilter(). Not called on tuning changes, where the filter's
+     * state survives — see setTuning(). Not called on a model swap with a
+     * seeded filter — see setModel(), which preserves history and
+     * republishes instead.
+     */
     private fun clearFilterState(model: KalmanModel) {
         history.clear()
         lastHistoryMs = 0L
@@ -648,9 +702,9 @@ class KfViewModel @Inject constructor(
      * Truncation: samples older than the smoothed buffer's range get null
      * smoothed values — rendered as a gap. With the time-based buffer (180s
      * vs. 90s history), this only happens (a) during warmup before the
-     * buffer has accumulated, and (b) after a model/tuning rebuild, when
-     * history survives but the buffer is cleared. Both are transient; both
-     * are honest about what the smoother actually knows.
+     * buffer has accumulated, and (b) after a model swap, when stepRecords
+     * is cleared by setModel() but history survives. Both are transient;
+     * both are honest about what the smoother actually knows.
      */
     private fun smoothHistory(): List<KfSample> {
         if (stepRecords.isEmpty()) return history.toList()
@@ -662,7 +716,10 @@ class KfViewModel @Inject constructor(
             while (si < smoothed.size - 1 && smoothed[si + 1].timeMs <= sample.timeMs) si++
             val s = smoothed[si]
             if (s.timeMs > sample.timeMs) {
-                // Sample predates the smoothed window; no match.
+                // Sample predates the smoothed window; no match. This is
+                // the post-swap case: pre-swap samples keep whatever
+                // smoothed values they were given under the old model,
+                // post-swap samples get filled in as the buffer refills.
                 sample
             } else {
                 sample.copy(

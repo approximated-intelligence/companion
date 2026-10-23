@@ -774,12 +774,20 @@ class BackgroundService : Service() {
      * seconds after every settings toggle, which read as "GPS reset" in the
      * field.
      *
-     * Model or tuning changes that affect process noise reset the filter
-     * (dimensions change or process noise changes, nothing valid to
-     * preserve); the KF-derived status fields are cleared so the UI does
-     * not flash stale values from the old state. A `baroSigmaM`- or
-     * `gpsVerticalMinM`-only change does not reset — both live at the
-     * caller and take effect on the next measurement.
+     * Model changes now also carry state across (h, b, v_z and their
+     * covariance block, see AltitudeKalmanFilter.transitionModel), so a 3↔2
+     * swap does not blank the filter for several seconds while it re-seeds.
+     * The RTS smoother's step-record buffer is the KF tab's concern, not
+     * the recorder's; the recorder never owned one, so nothing to clear
+     * here. Tuning changes that affect process noise re-instantiate the
+     * model object and leave x/P/initialized untouched — the accumulated b
+     * survives a q_b slider change, which is the whole point.
+     *
+     * The isInitialized() guard below now fires only when the filter
+     * genuinely was not seeded yet (before the first GPS fix); the KF-
+     * derived status fields are cleared then to keep the UI honest about
+     * "no state yet". A baroSigmaM- or gpsVerticalMinM-only change touches
+     * neither state nor model — both live at the caller.
      *
      * QNH is not cleared in either branch: the last-known-good outside
      * reading remains useful and is overwritten by the next post-reseed

@@ -13,7 +13,9 @@ package de.perigon.companion.sensors.domain
  * in `updateGps`/`updateBaro`, not here.
  *
  * Models must be small, stateless-after-construction objects. The filter
- * swaps them by reset (dimensions change, nothing valid to preserve).
+ * swaps them by reinstantiation (constructing under new tuning is lossless
+ * for the state; a model-dimension change is bridged by
+ * [AltitudeKalmanFilter]'s transitionModel, not by the model itself).
  */
 interface AltitudeStateModel {
     val n: Int
@@ -145,7 +147,7 @@ class ThreeStateModel(
 
     override fun seedCovariance(): DoubleArray = doubleArrayOf(
         100.0, 0.0, 0.0,
-        0.0, 4.0, 0.0,
+        0.0, SEED_VELOCITY_VARIANCE, 0.0,
         0.0, 0.0, 10000.0,
     )
 
@@ -159,6 +161,15 @@ class ThreeStateModel(
             0.0, p11, 0.0,
             0.0, 0.0, 0.25,
         )
+    }
+
+    companion object {
+        /**
+         * P[1,1] at seed: σ_v = 2 m/s, so var = 4.0 (m/s)². Referenced by
+         * [AltitudeKalmanFilter]'s transitionModel when a 2→3 swap has no
+         * cascade velocity to inherit.
+         */
+        const val SEED_VELOCITY_VARIANCE = 4.0
     }
 }
 

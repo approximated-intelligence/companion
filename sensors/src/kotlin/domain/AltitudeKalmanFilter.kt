@@ -30,11 +30,24 @@ enum class UpdateSource { GPS, BARO }
  * rules mid-recording — the state representation is the same for all modes,
  * only the update rule changes, so there is no reason to reset.
  *
- * [setModel] and [setTuning] RESET: either the state dimension changed or
- * the process noise did, and there is no valid state to carry. A change to
- * [KalmanTuning.baroSigmaM] or [KalmanTuning.gpsVerticalMinM] alone is the
- * exception — both live at the caller (sigma arguments to [updateBaro] and
- * [updateGps]) and take effect without rebuilding.
+ * [setModel] and [setTuning] PRESERVE state:
+ *   - Tuning change: the model object is reinstantiated under the new
+ *     process noise; x, P, initialized, lastMs and cascade state all
+ *     survive. The accumulated b estimate — the parameter most directly
+ *     about the q_b slider being tuned — is retained.
+ *   - Model change: the compatible state is transplanted across the
+ *     dimension swap — h (index 0), b (index n-1), and their covariance
+ *     block are copied through; v_z is handed across (state ↔ cascade).
+ *     Per-update diagnostics are cleared (they belong to the old model's H
+ *     and dims) and repopulate on the next measurement. The RTS smoother's
+ *     step-record buffer is owned by the caller ([KfViewModel]) and is
+ *     cleared there; the filter does not own it.
+ *   - A change to [KalmanTuning.baroSigmaM] or [KalmanTuning.gpsVerticalMinM]
+ *     alone touches neither model nor state — both live at the caller
+ *     (sigma arguments to [updateBaro] and [updateGps]).
+ * [reset] remains the explicit cold start; its callers are the gap timeout
+ * in [predict], the airplane-mode flip in [BackgroundService], and the KF
+ * tab's "Reset filter".
  *
  * Velocity:
  *
@@ -52,7 +65,8 @@ enum class UpdateSource { GPS, BARO }
  *   (Martin 1970): the gain minimises velocity error covariance rather
  *   than state error covariance. It is a leaf — v_z never feeds back into
  *   h or b, and the cascade runs only when the model has no velocity
- *   state.
+ *   state. Across a model swap the cascade and the 3-state v_z hand off
+ *   to each other, so [verticalSpeed] is continuous through the swap.
  *
  * Diagnostics ([lastGpsInnovationM], [lastGpsInnovationS], [lastGpsNis],
  * and the baro equivalents) are exposed for the KF debug tab. NIS is the
@@ -106,7 +120,10 @@ class AltitudeKalmanFilter(
     /**
      * Cascade velocity random-walk process noise q_v, m²/s³. Used only when
      * the model has no velocity state (2-state). Overridden from
-     * [KalmanTuning.derivedVelNoise].
+     * [KalmanTuning.derivedVelNoise]. Kept as a plain field, independent of
+     * the model object: a `derivedVelNoise`-only change updates it without
+     * reinstantiating the model, because neither ThreeStateModel nor
+     * TwoStateModel depends on it.
      */
     private var derivedVelNoise: Double =
         initialTuning.derivedVelNoise ?: KalmanTuning.DEFAULT_DERIVED_VEL_NOISE
@@ -149,38 +166,57 @@ class AltitudeKalmanFilter(
 
     fun setIskfInverseHessian(enabled: Boolean) { iskfInverseHessian = enabled }
 
-    /** Swap model. RESETS: no valid cross-model state exists. Method survives. */
+    /**
+     * Swap model. Carries compatible state across the dimension change:
+     * h, b, and their covariance block are transplanted; v_z is handed
+     * between the 3-state's state vector and the 2-state's cascade.
+     * Diagnostics are cleared (per-update, tied to the old H/dims);
+     * history, NIS windows and the step-record buffer are the caller's
+     * to manage.
+     */
     fun setModel(newModel: KalmanModel) {
         if (modelEnum == newModel) return
-        modelEnum = newModel
-        rebuild()
+        transitionModel(newModel, tuning)
     }
 
     /**
-     * Update tuning overrides. Rebuilds the filter if any parameter that
-     * affects the model's process noise or the cascade's process noise
-     * changed; a change to [KalmanTuning.baroSigmaM] or
-     * [KalmanTuning.gpsVerticalMinM] alone updates the record without
-     * rebuilding (both live at the caller).
+     * Update tuning overrides.
+     *
+     * The [KalmanTuning.derivedVelNoise] field is a plain field of this
+     * filter, not a constructor argument of either model, so it is updated
+     * unconditionally here. The model object is reinstantiated only when a
+     * constructor argument changed — `accelNoiseQ`/`biasNoiseQ` for 3-state,
+     * `qH`/`biasNoiseQ` for 2-state — and when it does, x, P, initialized,
+     * lastMs, cascade state and diagnostics all survive.
+     *
+     * A [KalmanTuning.baroSigmaM]- or [KalmanTuning.gpsVerticalMinM]-only
+     * change touches neither model nor state: both live at the caller and
+     * take effect on the next measurement.
      */
     fun setTuning(newTuning: KalmanTuning) {
         if (tuning == newTuning) return
         val relevant = relevantTuningChange(tuning, newTuning)
         tuning = newTuning
-        if (relevant) rebuild()
+        derivedVelNoise = newTuning.derivedVelNoise ?: KalmanTuning.DEFAULT_DERIVED_VEL_NOISE
+        if (relevant) reinstantiateModel()
     }
 
     /**
      * Swap model AND tuning in one call. Used by callers that detect both
-     * changed at once (the config observer). [setModel] and [setTuning]
-     * would each rebuild, this does it once.
+     * changed at once (the config observer). When the model is unchanged,
+     * this routes through the tuning-only path — same cost as [setTuning],
+     * same state preservation, no state transplant.
      */
     fun setModelAndTuning(newModel: KalmanModel, newTuning: KalmanTuning) {
         if (modelEnum == newModel && tuning == newTuning) return
-        val needsRebuild = modelEnum != newModel || relevantTuningChange(tuning, newTuning)
-        modelEnum = newModel
-        tuning = newTuning
-        if (needsRebuild) rebuild()
+        if (modelEnum == newModel) {
+            val relevant = relevantTuningChange(tuning, newTuning)
+            tuning = newTuning
+            derivedVelNoise = newTuning.derivedVelNoise ?: KalmanTuning.DEFAULT_DERIVED_VEL_NOISE
+            if (relevant) reinstantiateModel()
+        } else {
+            transitionModel(newModel, newTuning)
+        }
     }
 
     fun isInitialized(): Boolean = initialized
@@ -250,6 +286,12 @@ class AltitudeKalmanFilter(
     fun lastIskfProcessOutlierNormValue(): Float? = lastIskfProcessOutlierNorm?.toFloat()
     fun lastIskfMeasOutlierValue(): Float? = lastIskfMeasOutlier?.toFloat()
 
+    /**
+     * Explicit cold start. Readers all gate on [initialized], and [seed]
+     * reassigns x, P, lastPriorX, lastPriorP before anything observes them,
+     * so there is no need to zero the raw buffers here — a reset is a
+     * logical reset, not a memory wipe.
+     */
     fun reset() {
         initialized = false
         lastMs = 0L
@@ -425,21 +467,146 @@ class AltitudeKalmanFilter(
         lastP00 = 0.0
     }
 
-    /** Rebuild the model instance and reset the filter state. */
-    private fun rebuild() {
+    /**
+     * Rebuild the model OBJECT under the current tuning, leaving state
+     * untouched. This is the lossless half of what used to be rebuild():
+     * ThreeStateModel/TwoStateModel capture q in their constructors, so a
+     * process-noise change requires a fresh instance — but x, P, initialized,
+     * lastMs, cascade state and diagnostics are independent of the model
+     * object and survive. derivedVelNoise is a filter field, not a model
+     * constructor argument, and is updated by [setTuning] / [setModelAndTuning]
+     * directly.
+     */
+    private fun reinstantiateModel() {
         model = modelEnum.create(tuning)
-        derivedVelNoise = tuning.derivedVelNoise ?: KalmanTuning.DEFAULT_DERIVED_VEL_NOISE
-        x = DoubleArray(model.n)
-        P = DoubleArray(model.n * model.n)
-        lastPriorX = DoubleArray(model.n)
-        lastPriorP = DoubleArray(model.n * model.n)
-        initialized = false
-        clearDiagnostics()
-        clearDerivedVelocity()
-        lastMs = 0L
     }
 
-    /** Whether the tuning change alters the running model's process noise. */
+    /**
+     * Move to [newModel] / [newTuning], carrying every state component that
+     * is compatible across the dimension change:
+     *
+     *   h   — index 0 in both models, copied directly.
+     *   b   — index n-1 in both models, copied directly.
+     *   v_z — 3-state keeps its own; 3→2 hands the state's v_z to the
+     *         cascade; 2→3 hands the cascade's v_z to the state (or the
+     *         seed covariance if the cascade never ran).
+     *
+     * P is transplanted for the {h, b} submatrix; cross-terms with v_z are
+     * preserved on 3→3 (impossible via setModel's guard) and zeroed on 2→3
+     * (no a priori knowledge of the correlation across the swap). 3→2 keeps
+     * the h-h, h-b, b-h, b-b submatrix and discards the v_z row/col, which
+     * the cascade then re-initialises from the discarded P11.
+     *
+     * Diagnostics (per-measurement) are cleared — they describe the last
+     * measurement under the old model and would be misleading. They
+     * repopulate on the next update. Cascade state, NIS running windows
+     * and the RTS step-record buffer are the caller's to manage (see
+     * KfViewModel.setModel / BackgroundService.applyConfigChange).
+     *
+     * Called only from setModel and setModelAndTuning, both of which guard
+     * on `modelEnum != newModel`; the 3→3 and 2→2 cases never reach here.
+     */
+    private fun transitionModel(newModel: KalmanModel, newTuning: KalmanTuning) {
+        val oldModel     = model
+        val oldN         = oldModel.n
+        val oldX         = x
+        val oldP         = P
+        val wasInit      = initialized
+        val oldLastMs    = lastMs
+        val cascadeVz    = derivedVz
+        val cascadeVzCov = derivedVzCov
+
+        modelEnum       = newModel
+        tuning          = newTuning
+        model           = newModel.create(newTuning)
+        derivedVelNoise = newTuning.derivedVelNoise ?: KalmanTuning.DEFAULT_DERIVED_VEL_NOISE
+
+        if (!wasInit) {
+            // Unseeded: nothing to preserve. Arrays may also be the wrong
+            // size for the new model; resize them to the new dimension so
+            // subsequent seed()/predict() operate on the right shape.
+            x = DoubleArray(model.n)
+            P = DoubleArray(model.n * model.n)
+            lastPriorX = DoubleArray(model.n)
+            lastPriorP = DoubleArray(model.n * model.n)
+            initialized = false
+            lastMs = 0L
+            clearDiagnostics()
+            clearDerivedVelocity()
+            return
+        }
+
+        val bNew = model.n - 1
+        val bOld = oldN - 1
+
+        val newX = DoubleArray(model.n)
+        newX[0]    = oldX[0]
+        newX[bNew] = oldX[bOld]
+        if (model.hasVelocity) {
+            newX[1] = if (oldModel.hasVelocity) oldX[1]
+                      else cascadeVz ?: 0.0
+        }
+
+        val newP = DoubleArray(model.n * model.n)
+        newP[0]                             = oldP[0]
+        newP[0            * model.n + bNew] = oldP[0    * oldN + bOld]
+        newP[bNew         * model.n + 0]    = oldP[bOld * oldN + 0]
+        newP[bNew         * model.n + bNew] = oldP[bOld * oldN + bOld]
+        if (model.hasVelocity) {
+            // P[1,1] for v_z. 2→3 has no state v_z to inherit: if the cascade
+            // ran, its covariance carries over; if it never ran (no sample
+            // pair differenced yet), fall back to the model's seed covariance
+            // so the estimate (0) and its uncertainty (σ_v = 2 m/s) stay
+            // consistent with seedCovariance().
+            newP[1 * model.n + 1] = when {
+                oldModel.hasVelocity -> oldP[1 * oldN + 1]
+                cascadeVz == null    -> ThreeStateModel.SEED_VELOCITY_VARIANCE
+                else -> cascadeVzCov.takeIf { it > 0.0 && it.isFinite() }
+                    ?: ThreeStateModel.SEED_VELOCITY_VARIANCE
+            }
+            if (oldModel.hasVelocity) {
+                // 3→3 would preserve cross-terms, but setModel's guard
+                // prevents it from reaching here; kept for symmetry and in
+                // case setModelAndTuning is ever relaxed.
+                newP[0            * model.n + 1]    = oldP[0    * oldN + 1]
+                newP[1            * model.n + 0]    = oldP[1    * oldN + 0]
+                newP[1            * model.n + bNew] = oldP[1    * oldN + bOld]
+                newP[bNew         * model.n + 1]    = oldP[bOld * oldN + 1]
+            }
+        }
+
+        x           = newX
+        P           = newP
+        initialized = true
+        lastMs      = oldLastMs
+        clearDiagnostics()
+
+        if (model.hasVelocity) {
+            // 2→3: v_z now lives in the state vector; the cascade is
+            // dormant. Clear its stale values so a future 3→2 swap starts
+            // from the state's v_z, not from a leftover cascade sample.
+            clearDerivedVelocity()
+        } else {
+            // 3→2: hand the old state's v_z to the cascade, with its P11
+            // as the cascade's initial covariance. Re-anchor the h-
+            // difference baseline so the first post-swap sample computes
+            // v_z from the transplanted height, not a stale pre-swap one.
+            if (oldModel.hasVelocity) {
+                derivedVz    = oldX[1]
+                derivedVzCov = oldP[1 * oldN + 1]
+            }
+            lastH     = newX[0]
+            lastHTime = oldLastMs
+            lastP00   = newP[0]
+        }
+    }
+
+    /**
+     * Whether the tuning change requires reinstantiating the model object.
+     * This depends only on the model's constructor arguments — the process
+     * noise that gets baked into the model. It is deliberately independent
+     * of [derivedVelNoise], which lives on the filter, not the model.
+     */
     private fun relevantTuningChange(old: KalmanTuning, new: KalmanTuning): Boolean =
         when (modelEnum) {
             KalmanModel.THREE_STATE ->
@@ -447,8 +614,7 @@ class AltitudeKalmanFilter(
                 old.biasNoiseQ != new.biasNoiseQ
             KalmanModel.TWO_STATE ->
                 old.qH != new.qH ||
-                old.biasNoiseQ != new.biasNoiseQ ||
-                old.derivedVelNoise != new.derivedVelNoise
+                old.biasNoiseQ != new.biasNoiseQ
         }
 
     private fun seed(altM: Double) {
