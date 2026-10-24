@@ -27,9 +27,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import coil3.compose.AsyncImage
 import de.perigon.companion.core.feature.RecordedTrackSummary
-import de.perigon.companion.core.ui.AppTopBar
+import de.perigon.companion.media.MediaRoute
 import de.perigon.companion.media.data.RenderPrefs
 import de.perigon.companion.media.domain.GpxTrack
+import de.perigon.companion.media.ui.MediaTopBar
 
 @Composable
 fun TrackRenderScreen(
@@ -63,7 +64,7 @@ fun TrackRenderScreen(
     }
 
     Scaffold(
-        topBar = { AppTopBar(navController) },
+        topBar = { MediaTopBar(navController, MediaRoute.TrackRender) },
     ) { padding ->
         Box(
             modifier = Modifier.padding(padding).padding(16.dp).fillMaxSize()

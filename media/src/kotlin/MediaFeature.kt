@@ -45,18 +45,34 @@ object MediaTargets {
  *
  * Also owns the transform Queue: [MediaRoute.Queue] is the single diagnostic
  * surface for every consumer of TransformQueue — posts publish and archive
- * consolidation alike. It is a Media menu item and a Media `navigate_to`
- * target, not a Posts one, because the pipeline it reports on belongs to no
- * single feature.
+ * consolidation alike. It is a Media tab and a Media `navigate_to` target,
+ * not a Posts one, because the pipeline it reports on belongs to no single
+ * feature.
+ *
+ * The two surfaces are tabs of one feature, mirroring Archive and Posts:
+ * Track Render is the default tab (first in the row and the target of the
+ * single "Media" menu item), and Queue is one tap away. The tab row is a
+ * convenience (one menu entry instead of two) rather than a claim that the
+ * two are facets of the same screen.
  */
 class MediaFeature @Inject constructor(
     private val inbox: Optional<MediaInbox>,
 ) : FeatureEntry {
     override val id = "media"
     override val order = 500
+
+    /**
+     * Single "Media" menu entry, defaulting to the Track Render tab.
+     * Track Render is also the share target (see [shareRoute]) and the
+     * destination for `navigate_to = "TrackRender"`, so all external entry
+     * points converge on the same tab.
+     *
+     * No `startRoute`: "default tab" is about which tab shows when Media
+     * is opened, not about Media being an app cold-start target. Media
+     * remains out of the Settings → Start screen chooser.
+     */
     override val menuItems = listOf(
-        MenuItem("Track render", MediaRoute.TrackRender, order = 60),
-        MenuItem("Queue", MediaRoute.Queue, order = 90),
+        MenuItem("Media", MediaRoute.TrackRender, order = 60),
     )
 
     override val requirements = listOf(

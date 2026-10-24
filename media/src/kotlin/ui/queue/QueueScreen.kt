@@ -14,9 +14,10 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
+import de.perigon.companion.media.MediaRoute
 import de.perigon.companion.media.data.TransformJobEntity
 import de.perigon.companion.media.data.TransformJobStatus
-import de.perigon.companion.core.ui.AppTopBar
+import de.perigon.companion.media.ui.MediaTopBar
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -40,7 +41,7 @@ fun QueueScreen(
     val failed   = jobs.count { it.status == TransformJobStatus.FAILED }
 
     Scaffold(
-        topBar = { AppTopBar(navController) },
+        topBar = { MediaTopBar(navController, MediaRoute.Queue) },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {
             if (jobs.isEmpty()) {
@@ -209,4 +210,3 @@ class QueueViewModel @Inject constructor(
         viewModelScope.launch { queue.clearFinished() }
     }
 }
-
