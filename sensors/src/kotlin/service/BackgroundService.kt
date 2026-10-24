@@ -86,10 +86,10 @@ data class RecordingStatus(
     val currentPressureHpa:    Float?            = null,
     // KF-fused MSL altitude.
     val kalmanAltitudeM:       Float?            = null,
-    // KF vertical speed (m/s, positive = up). In the 3/4-state model this is
-    // the v_z state; in the 2-state model it is derived from the cascade
-    // position-difference velocity filter inside the KF. Non-null from the
-    // first measurement pair after seed in either model.
+    // KF vertical speed (m/s, positive = up). In the 3/4/GPS-2-state model
+    // this is the v_z state; in the 2-state model it is derived from the
+    // cascade position-difference velocity filter inside the KF. Non-null
+    // from the first measurement pair after seed in either model.
     val verticalSpeedMps:      Float?            = null,
     // slope = 100 * v_z / v_h. Null when v_h is below the minimum slope
     // speed (0.5 m/s), or before v_z is available.
@@ -97,12 +97,14 @@ data class RecordingStatus(
     // QNH (barometric sea-level pressure). Null before the KF has seeded
     // from a 3D GPS fix. Not cleared on model swap or airplane-mode entry —
     // the last-known-good outside QNH remains useful, and it will be
-    // overwritten by the next post-reseed baro tick.
+    // overwritten by the next post-reseed baro tick. Null for the GPS
+    // 2-state model, which has no bias state.
     val currentQnhHpa:         Float?            = null,
     // The KF's estimate of the barometric bias b. Positive means rawBaro
     // reads higher than true altitude (weather low-pressure system, or
     // aircon on in a car). This is the calibration "offset" — not a stored
-    // config value, just a live state estimate.
+    // config value, just a live state estimate. Null for the GPS 2-state
+    // model, which has no bias state.
     val kalmanBiasM:           Float?            = null,
     // Bias rate v_b (m/s). State in 4-state, cascade in 2/3-state. Positive
     // means the raw baro reading is rising relative to true altitude
@@ -224,6 +226,7 @@ class BackgroundService : Service() {
         keepEphemerisWarm      = true,
         holdWakeLock           = true,
         recordBaroAltitude     = false,
+        kalmanEnabled          = false,
         airplaneMode           = false,
         autoSplitOnDayRollover = true,
         autoSegmentGapMs       = TrackConfigEntity.DEFAULT_AUTO_SEGMENT_GAP_MS,
@@ -250,9 +253,102 @@ class BackgroundService : Service() {
     private val isSingleFixMode: Boolean
         get() = config.mode == RecordingMode.SINGLE_FIX || config.mode == RecordingMode.ALARM
 
+    /** True while the Kalman filter is constructed and being fed. */
+    private val kfActive: Boolean
+        get() = config.kalmanEnabled
+
+    /**
+     * True when the active model fuses baro (the filter is on, the model
+     * has a baro measurement, and airplane mode hasn't excluded it). Reads
+     * the filter's model via a feature property rather than testing the
+     * enum name — the feature property is the model class's own declaration,
+     * so it stays correct when a new no-baro model is added without touching
+     * this site.
+     */
+    private val baroFused: Boolean
+        get() = kfActive &&
+            altitudeFilter.hasBaroMeasurement &&
+            !config.airplaneMode
+
     /** Raw ISA altitude — exactly what SensorManager.getAltitude returns. */
     private fun rawBaroAltitude(pressureHpa: Float): Float =
         SensorManager.getAltitude(SensorManager.PRESSURE_STANDARD_ATMOSPHERE, pressureHpa)
+
+    /**
+     * Build the filter appropriate for [cfg]. When Kalman filtering is off,
+     * returns a fresh, un-fed filter (all readers stay null). Airplane mode
+     * is passed at construction so [KalmanModel.GPS_TWO_STATE] picks its
+     * q_v variant immediately.
+     *
+     * Keeping an instance (rather than a nullable field) means teardown /
+     * config-change / baro-on-off paths never need an `if (kfActive)`
+     * branch — they always have a filter to reset. The filter is simply
+     * never updated when disabled, so all its readers stay null.
+     */
+    private fun buildFilter(cfg: BackgroundConfig): AltitudeKalmanFilter =
+        if (cfg.kalmanEnabled) {
+            AltitudeKalmanFilter(
+                initialModel = cfg.kalmanModel,
+                initialMode = cfg.kalmanMode,
+                initialIskfInverseHessian = cfg.iskfInverseHessian,
+                initialTuning = cfg.kalmanTuning,
+                initialAirplaneMode = cfg.airplaneMode,
+            )
+        } else {
+            AltitudeKalmanFilter()
+        }
+
+    /**
+     * Measurement σ for the GPS altitude measurement.
+     *
+     * For no-baro models (feature, not name): uses [KalmanTuning.gpsOnlySigmaM]
+     * directly — those models' R is the *reported series'* per-sample noise
+     * (quantization-limited), not the chip's reported vertical accuracy.
+     * The 10 m fusion floor is the wrong value for them.
+     *
+     * For the fusion models: the existing logic — floored
+     * verticalAccuracyMeters (or accuracy × 3 as fallback).
+     */
+    private fun gpsMeasurementSigma(location: Location, point: TrackPointEntity): Float {
+        if (kfActive && !altitudeFilter.hasBaroMeasurement) {
+            return config.kalmanTuning.gpsOnlySigmaM
+                ?: KalmanTuning.DEFAULT_GPS_ONLY_SIGMA_M
+        }
+        val floor = gpsVerticalFloor()
+        return when {
+            location.hasVerticalAccuracy() ->
+                maxOf(location.verticalAccuracyMeters, floor)
+            point.accuracyM != null ->
+                maxOf(point.accuracyM * GPS_VERTICAL_FALLBACK_FACTOR, floor)
+            else -> GPS_VERTICAL_DEFAULT_M
+        }
+    }
+
+    /**
+     * Clear the KF-derived fields of [RecordingStatus] when the filter
+     * resets or swaps. QNH is *not* cleared here — it is a weather reading,
+     * not filter state, and survives every model/tuning/airplane transition.
+     * The only place it is cleared is when the filter turns off entirely
+     * (see applyConfigChange) and when the baro sensor stops (stopBarometric).
+     */
+    private fun clearKfStatus() {
+        _status.update {
+            it.copy(
+                kalmanAltitudeM      = null,
+                verticalSpeedMps     = null,
+                slopePercent         = null,
+                kalmanBiasM          = null,
+                kalmanBiasRateMps    = null,
+                kalmanAltitudeSigmaM = null,
+                kalmanBiasSigmaM     = null,
+                lastGpsInnovationM   = null,
+                lastBaroInnovationM  = null,
+                airconCusumPos       = null,
+                airconCusumNeg       = null,
+                airconDetected       = false,
+            )
+        }
+    }
 
     /**
      * Barometric measurement sigma, honouring the user's tuning override.
@@ -315,7 +411,7 @@ class BackgroundService : Service() {
             val p = event.values[0]
             lastBaroPressureHpa = p
 
-            if (!config.airplaneMode) {
+            if (baroFused) {
                 val z = rawBaroAltitude(p)
                 altitudeFilter.updateBaro(z, baroSigma())
             }
@@ -325,8 +421,13 @@ class BackgroundService : Service() {
                 lastBaroStatusMs = now
                 val baroRaw = rawBaroAltitude(p)
                 val kfAlt = altitudeFilter.altitude()
-                val qnh = if (!config.airplaneMode) altitudeFilter.qnhHpa(p) else null
-                val cusum = altitudeFilter.airconCusum()
+                val qnh = if (baroFused) altitudeFilter.qnhHpa(p) else null
+                // The CUSUM is only meaningful when baro innovations are
+                // being fed. For a no-baro model the accumulators are never
+                // updated, so reading them yields 0f — not the same thing as
+                // "not applicable". Null preserves the invariant that
+                // GPS-only models report null for every baro-derived field.
+                val cusum = if (baroFused) altitudeFilter.airconCusum() else null
                 _status.update {
                     it.copy(
                         currentBaroAltitudeM = baroRaw,
@@ -342,9 +443,9 @@ class BackgroundService : Service() {
                         kalmanBiasSigmaM     = altitudeFilter.biasSigma(),
                         lastGpsInnovationM   = altitudeFilter.lastGpsInnovationM(),
                         lastBaroInnovationM  = altitudeFilter.lastBaroInnovationM(),
-                        airconCusumPos       = cusum.first,
-                        airconCusumNeg       = cusum.second,
-                        airconDetected       = altitudeFilter.airconDetected(),
+                        airconCusumPos       = cusum?.first,
+                        airconCusumNeg       = cusum?.second,
+                        airconDetected       = baroFused && altitudeFilter.airconDetected(),
                     )
                 }
                 updateSlope(_status.value.lastProvidedFix?.speedMs)
@@ -364,16 +465,8 @@ class BackgroundService : Service() {
         val point = convert(location)
 
         val gpsAlt = point.ele
-        if (gpsAlt != null) {
-            // Apply the tuning-driven floor. See gpsVerticalFloor().
-            val floor = gpsVerticalFloor()
-            val vAcc = when {
-                location.hasVerticalAccuracy() ->
-                    maxOf(location.verticalAccuracyMeters, floor)
-                point.accuracyM != null ->
-                    maxOf(point.accuracyM * GPS_VERTICAL_FALLBACK_FACTOR, floor)
-                else -> GPS_VERTICAL_DEFAULT_M
-            }
+        if (gpsAlt != null && kfActive) {
+            val vAcc = gpsMeasurementSigma(location, point)
             altitudeFilter.updateGps(gpsAlt, vAcc)
             _status.update {
                 it.copy(
@@ -444,14 +537,22 @@ class BackgroundService : Service() {
      * One-shot KF seeding. Does NOT store a persistent offset anywhere —
      * the KF's `b` state absorbs any remaining weather bias. If the filter
      * was already running, velocity and bias-rate covariances are preserved
-     * in the 3/4-state models; the 2/3-state cascades are reseeded (the
-     * snap is a discontinuity). CUSUM is reset by the filter itself.
+     * in the 3/4/GPS-2-state models; the 2/3-state cascades are reseeded
+     * (the snap is a discontinuity). CUSUM is reset by the filter itself.
      *
      * The user-facing entry point is the live card's "recalibrate" link on
      * the Track tab (BaroCalibrationDialog); the KF tab's Seed button uses
      * the same dialog and the same filter path.
+     *
+     * No-op when Kalman filtering is disabled — the dialog hides the link,
+     * but guard here too so a stale intent from before a config flip cannot
+     * seed an un-fed filter.
      */
     private fun calibrateBaro(refAltM: Float) {
+        if (!kfActive) {
+            Log.w(TAG, "Calibration ignored: Kalman filter disabled")
+            return
+        }
         if (config.airplaneMode) {
             Log.w(TAG, "Calibration disabled in airplane mode")
             return
@@ -545,10 +646,11 @@ class BackgroundService : Service() {
 
     /**
      * slope = 100 · v_z / v_h. v_z is model-agnostic — the filter returns
-     * the 3/4-state velocity state when it exists, or the cascade
+     * the 3/4/GPS-2-state velocity state when it exists, or the cascade
      * position-difference filter's output in 2-state — so this function
      * does not need to know which model is active. Null when v_z is not
-     * available yet, or when v_h is too small for a meaningful slope.
+     * available yet, when v_h is too small for a meaningful slope, or when
+     * the Kalman filter is disabled (verticalSpeedMps stays null).
      */
     private fun updateSlope(groundSpeedMps: Float?) {
         val vz = _status.value.verticalSpeedMps
@@ -603,12 +705,7 @@ class BackgroundService : Service() {
             val cfg  = configPrefs.get()
             config   = cfg.toRecorderConfig()
             strategy = Background.strategyFor(config.mode, config.intervalMs)
-            altitudeFilter = AltitudeKalmanFilter(
-                initialModel = config.kalmanModel,
-                initialMode = config.kalmanMode,
-                initialIskfInverseHessian = config.iskfInverseHessian,
-                initialTuning = config.kalmanTuning,
-            )
+            altitudeFilter = buildFilter(config)
 
             startForeground(NOTIFICATION_ID, buildPreviewNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
 
@@ -676,12 +773,7 @@ class BackgroundService : Service() {
                 val cfg  = configPrefs.get()
                 config   = cfg.toRecorderConfig()
                 strategy = Background.strategyFor(config.mode, config.intervalMs)
-                altitudeFilter = AltitudeKalmanFilter(
-                    initialModel = config.kalmanModel,
-                    initialMode = config.kalmanMode,
-                    initialIskfInverseHessian = config.iskfInverseHessian,
-                    initialTuning = config.kalmanTuning,
-                )
+                altitudeFilter = buildFilter(config)
                 startForeground(NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
                 registerGnssCallback()
                 applyBarometric()
@@ -829,56 +921,56 @@ class BackgroundService : Service() {
      * reading remains useful and is overwritten by the next post-reseed
      * baro tick. CUSUM is reset by the filter on any state-affecting
      * change (transitionModel, reset, resetWithAltitude, seed).
+     *
+     * Enabling / disabling the Kalman filter is a distinct branch: the
+     * filter is rebuilt from scratch (there is nothing meaningful to carry
+     * across a switch that turns the state estimator on or off), and the
+     * KF-derived status fields are cleared so the live card drops from
+     * numbers to "--" immediately instead of showing a stale value from
+     * before the flip.
+     *
+     * Airplane mode is handled differently per model, and that
+     * model-dependence lives inside [AltitudeKalmanFilter.setAirplaneMode]:
+     *   - Fusion models: cabin pressure invalidates the bias state, so the
+     *     filter resets. The method returns true so this caller can do its
+     *     own reset-side bookkeeping (distance baseline, status clear).
+     *   - No-baro models: nothing is invalidated; only the q_v variant
+     *     changes. Returns false, no caller bookkeeping needed.
+     * The call is made first, before any model swap, so the flag is
+     * current when a subsequent `setModelAndTuning` reinstantiates the
+     * model under the new q_v.
      */
     private suspend fun applyConfigChange(newConfig: BackgroundConfig) {
         buffer?.flush()
 
-        altitudeFilter.setModelAndTuning(newConfig.kalmanModel, newConfig.kalmanTuning)
-        if (!altitudeFilter.isInitialized()) {
-            _status.update {
-                it.copy(
-                    kalmanAltitudeM      = null,
-                    verticalSpeedMps     = null,
-                    slopePercent         = null,
-                    kalmanBiasM          = null,
-                    kalmanBiasRateMps    = null,
-                    kalmanAltitudeSigmaM = null,
-                    kalmanBiasSigmaM     = null,
-                    lastGpsInnovationM   = null,
-                    lastBaroInnovationM  = null,
-                    airconCusumPos       = null,
-                    airconCusumNeg       = null,
-                    airconDetected       = false,
-                )
+        if (config.kalmanEnabled != newConfig.kalmanEnabled) {
+            altitudeFilter = buildFilter(newConfig)
+            clearKfStatus()
+            // QNH is a filter-derived value — with no filter running there
+            // is no altitude to derive it from, so the cached reading would
+            // be stale. Cleared here, not in clearKfStatus(), because every
+            // other transition (model/tuning/airplane) preserves it.
+            _status.update { it.copy(currentQnhHpa = null) }
+        } else if (newConfig.kalmanEnabled) {
+            // Sync airplane mode first, regardless of whether the model is
+            // also changing, so any subsequent reinstantiation observes the
+            // correct value. The return says whether the state was
+            // invalidated (fusion model) or preserved (no-baro model).
+            if (config.airplaneMode != newConfig.airplaneMode) {
+                val wasReset = altitudeFilter.setAirplaneMode(newConfig.airplaneMode)
+                if (wasReset) {
+                    resetDistanceBaseline()
+                    clearKfStatus()
+                }
             }
-        }
-        if (config.kalmanMode != newConfig.kalmanMode) {
-            altitudeFilter.setMode(newConfig.kalmanMode)
-        }
-        if (config.iskfInverseHessian != newConfig.iskfInverseHessian) {
-            altitudeFilter.setIskfInverseHessian(newConfig.iskfInverseHessian)
-        }
 
-        if (config.airplaneMode != newConfig.airplaneMode) {
-            altitudeFilter.reset()
-            resetDistanceBaseline()
-            _status.update {
-                it.copy(
-                    kalmanAltitudeM      = null,
-                    verticalSpeedMps     = null,
-                    slopePercent         = null,
-                    // currentQnhHpa intentionally preserved — last-known-good
-                    // outside pressure stays visible in airplane mode.
-                    kalmanBiasM          = null,
-                    kalmanBiasRateMps    = null,
-                    kalmanAltitudeSigmaM = null,
-                    kalmanBiasSigmaM     = null,
-                    lastGpsInnovationM   = null,
-                    lastBaroInnovationM  = null,
-                    airconCusumPos       = null,
-                    airconCusumNeg       = null,
-                    airconDetected       = false,
-                )
+            altitudeFilter.setModelAndTuning(newConfig.kalmanModel, newConfig.kalmanTuning)
+            if (!altitudeFilter.isInitialized()) clearKfStatus()
+            if (config.kalmanMode != newConfig.kalmanMode) {
+                altitudeFilter.setMode(newConfig.kalmanMode)
+            }
+            if (config.iskfInverseHessian != newConfig.iskfInverseHessian) {
+                altitudeFilter.setIskfInverseHessian(newConfig.iskfInverseHessian)
             }
         }
 
@@ -1213,6 +1305,7 @@ private fun TrackConfigEntity.toRecorderConfig() = BackgroundConfig(
     keepEphemerisWarm      = keepEphemerisWarm,
     holdWakeLock           = holdWakeLock,
     recordBaroAltitude     = recordBaroAltitude,
+    kalmanEnabled          = kalmanEnabled,
     airplaneMode           = airplaneMode,
     autoSplitOnDayRollover = autoSplitOnDayRollover,
     autoSegmentGapMs       = autoSegmentGapMs,

@@ -11,12 +11,16 @@ enum class UpdateSource { GPS, BARO }
 /**
  * Altitude Kalman filter. Three orthogonal axes:
  *
- *   [KalmanModel] — state dimension and dynamics (2-, 3-, 4-state).
+ *   [KalmanModel] — state dimension and dynamics (2-, 3-, 4-, GPS 2-state).
  *   [KalmanMode]  — update rule (GAUSSIAN / HUBER / VBAKF / ISKF).
  *   KalmanTuning  — process/measurement noise overrides.
  *
- * [setMode] and [setIskfInverseHessian] mutate the filter in place; state
- * and covariance survive.
+ * [setMode], [setIskfInverseHessian] and [setAirplaneMode] mutate the filter
+ * in place; state and covariance survive. For [KalmanModel.GPS_TWO_STATE],
+ * toggling airplane mode reinstantiates the model object (the q_v variant
+ * changes) but preserves x, P, initialized, lastMs, and the cascade state.
+ * For the fusion models, toggling airplane mode resets the filter — see
+ * [setAirplaneMode].
  *
  * [setModel] and [setTuning] PRESERVE state:
  *   - Tuning-only change: model object reinstantiated under new process
@@ -35,9 +39,10 @@ enum class UpdateSource { GPS, BARO }
  *
  * Velocity and bias rate:
  *
- *   `verticalSpeed()` returns the v_z state (3/4-state) or cascade output
- *   (2-state). `biasRate()` returns the v_b state (4-state) or cascade
- *   output (2/3-state). Both cascades are leaves — they never feed back.
+ *   `verticalSpeed()` returns the v_z state (3/4/GPS-2-state) or cascade
+ *   output (2-state). `biasRate()` returns the v_b state (4-state) or
+ *   cascade output (2/3-state). Both cascades are leaves — they never feed
+ *   back.
  *
  *   The v_z cascade (2-state) and v_b cascade (2/3-state) are discrete
  *   position-difference estimators, the Kalman analogue of Martin's
@@ -96,6 +101,7 @@ class AltitudeKalmanFilter(
     initialMode: KalmanMode = KalmanMode.GAUSSIAN,
     initialIskfInverseHessian: Boolean = false,
     initialTuning: KalmanTuning = KalmanTuning(),
+    initialAirplaneMode: Boolean = false,
     private val huberDelta: Double = 1.5,
     private val iskfLambdaX: Double = 1.0,
     private val iskfLambdaY: Double = 1.5,
@@ -105,7 +111,8 @@ class AltitudeKalmanFilter(
 ) {
     private var modelEnum: KalmanModel = initialModel
     private var tuning: KalmanTuning = initialTuning
-    private var model: AltitudeStateModel = initialModel.create(initialTuning)
+    private var airplaneMode: Boolean = initialAirplaneMode
+    private var model: AltitudeStateModel = initialModel.create(initialTuning, initialAirplaneMode)
     private var mode: KalmanMode = initialMode
     private var iskfInverseHessian: Boolean = initialIskfInverseHessian
 
@@ -172,11 +179,49 @@ class AltitudeKalmanFilter(
     fun currentModel(): KalmanModel = modelEnum
     fun currentMode(): KalmanMode = mode
     fun currentTuning(): KalmanTuning = tuning
+    fun currentAirplaneMode(): Boolean = airplaneMode
+
+    /**
+     * Features of the current model, for callers that need to branch on what
+     * the model *is* (has a bias state? fuses baro?) rather than on which
+     * enum entry happens to be selected. Reads from the model instance, not
+     * from the config — during a config-change transition the config may be
+     * ahead of the model, and the model is always internally consistent.
+     */
+    val hasBias: Boolean            get() = model.hasBias
+    val hasBaroMeasurement: Boolean get() = model.hasBaroMeasurement
 
     /** Update rule only. State, covariance, and model survive. */
     fun setMode(newMode: KalmanMode) { mode = newMode }
 
     fun setIskfInverseHessian(enabled: Boolean) { iskfInverseHessian = enabled }
+
+    /**
+     * Toggle airplane mode. The semantics are model-dependent, and live here:
+     *
+     *   - Fusion models (`hasBaroMeasurement == true`): cabin pressure
+     *     becomes invalid, which taints the bias state that was fused with
+     *     it. Resets the filter. Returns true so the caller can do its own
+     *     reset-side bookkeeping (distance baseline, status clear).
+     *
+     *   - No-baro models: baro was never in the measurement map, so nothing
+     *     is invalidated. The flag only selects the q_v variant.
+     *     Reinstantiates the model, keeps x/P/initialized. Returns false.
+     *
+     * Callers should not branch on the model's identity here; the return
+     * value says whether a reset happened, which is the only fact they need.
+     */
+    fun setAirplaneMode(enabled: Boolean): Boolean {
+        if (airplaneMode == enabled) return false
+        airplaneMode = enabled
+        return if (model.hasBaroMeasurement) {
+            reset()
+            true
+        } else {
+            reinstantiateModel()
+            false
+        }
+    }
 
     /**
      * Swap model. Carries compatible state across the dimension change
@@ -197,8 +242,9 @@ class AltitudeKalmanFilter(
      * unconditionally here. The model object is reinstantiated only when a
      * constructor argument changed — `accelNoiseQ`/`biasNoiseQ` for
      * 3-state, `qH`/`biasNoiseQ` for 2-state, `accelNoiseQ`/`biasRateQ`
-     * for 4-state — and when it does, x, P, initialized, lastMs, both
-     * cascades and diagnostics all survive.
+     * for 4-state, `gpsOnlyAccelQ`/`gpsOnlyAccelQAirplane` for GPS 2-state
+     * — and when it does, x, P, initialized, lastMs, both cascades and
+     * diagnostics all survive.
      *
      * A [KalmanTuning.baroSigmaM]- or [KalmanTuning.gpsVerticalMinM]-only
      * change touches neither model nor state: both live at the caller and
@@ -238,7 +284,7 @@ class AltitudeKalmanFilter(
     /**
      * Best vertical-speed estimate available:
      *
-     *  - 3/4-state: the KF's v_z state (proper uncertainty via
+     *  - 3/4/GPS-2-state: the KF's v_z state (proper uncertainty via
      *    [velocitySigma]).
      *  - 2-state: the cascade scalar KF described in the class doc.
      *
@@ -251,25 +297,27 @@ class AltitudeKalmanFilter(
     }
 
     fun bias(): Float? =
-        if (initialized) x[model.biasIndex].toFloat() else null
+        if (initialized && model.hasBias) x[model.biasIndex].toFloat() else null
 
     /**
      * Bias rate (db/dt, m/s). 4-state: the v_b state. 2/3-state: the
      * cascade output — same semantic, lower quality (differentiation
-     * amplifies noise).
+     * amplifies noise). GPS 2-state: null (no bias in the model).
      */
     fun biasRate(): Float? {
         if (!initialized) return null
-        return if (model.hasBiasRate) x[model.n - 1].toFloat() else derivedVb?.toFloat()
+        return if (model.hasBiasRate) x[model.n - 1].toFloat()
+               else if (model.hasBias) derivedVb?.toFloat()
+               else null
     }
 
     fun altitudeSigma(): Float? =
         if (initialized) sqrt(max(P[0], 0.0)).toFloat() else null
 
     /**
-     * σ(v) from the 3/4-state covariance when v_z is a state, or from the
-     * cascade filter's scalar covariance when it is not. Null when no
-     * velocity estimate exists yet.
+     * σ(v) from the 3/4/GPS-2-state covariance when v_z is a state, or
+     * from the cascade filter's scalar covariance when it is not. Null
+     * when no velocity estimate exists yet.
      */
     fun velocitySigma(): Float? {
         if (!initialized) return null
@@ -282,7 +330,7 @@ class AltitudeKalmanFilter(
     }
 
     fun biasSigma(): Float? {
-        if (!initialized) return null
+        if (!initialized || !model.hasBias) return null
         val i = model.biasIndex
         return sqrt(max(P[i * model.n + i], 0.0)).toFloat()
     }
@@ -292,9 +340,9 @@ class AltitudeKalmanFilter(
         return if (model.hasBiasRate) {
             val i = model.n - 1
             sqrt(max(P[i * model.n + i], 0.0)).toFloat()
-        } else {
+        } else if (model.hasBias) {
             derivedVb?.let { sqrt(max(derivedVbCov, 0.0)).toFloat() }
-        }
+        } else null
     }
 
     /**
@@ -307,9 +355,11 @@ class AltitudeKalmanFilter(
     fun airconDetected(): Boolean = cusum.detected()
 
     fun lastGpsInnovationM(): Float? = lastGpsInnovation?.toFloat()
-    fun lastBaroInnovationM(): Float? = lastBaroInnovation?.toFloat()
+    fun lastBaroInnovationM(): Float? =
+        if (model.hasBaroMeasurement) lastBaroInnovation?.toFloat() else null
     fun lastGpsInnovationS(): Float? = lastGpsInnovationS?.toFloat()
-    fun lastBaroInnovationS(): Float? = lastBaroInnovationS?.toFloat()
+    fun lastBaroInnovationS(): Float? =
+        if (model.hasBaroMeasurement) lastBaroInnovationS?.toFloat() else null
 
     fun lastGpsNis(): Float? {
         val v = lastGpsInnovation ?: return null
@@ -319,6 +369,7 @@ class AltitudeKalmanFilter(
     }
 
     fun lastBaroNis(): Float? {
+        if (!model.hasBaroMeasurement) return null
         val v = lastBaroInnovation ?: return null
         val s = lastBaroInnovationS ?: return null
         if (s < 1e-12) return null
@@ -351,10 +402,10 @@ class AltitudeKalmanFilter(
      * calibration dialog.
      *
      * Already initialized: h snaps to [altM] and b to (baroZ − altM). What
-     * else survives is the model's decision — the 3/4-state keep P11 so a
-     * mid-recording recalibrate does not blank out the velocity estimate;
-     * the 2-state's cascade velocity estimator is reset (the snap is a
-     * discontinuity, and pre-snap Δh would corrupt the first velocity
+     * else survives is the model's decision — the 3/4/GPS-2-state keep P11
+     * so a mid-recording recalibrate does not blank out the velocity
+     * estimate; the 2-state's cascade velocity estimator is reset (the snap
+     * is a discontinuity, and pre-snap Δh would corrupt the first velocity
      * sample). The v_b cascade is reset for the same reason. CUSUM is
      * reset — pre-calibration data was collected with a wrong b.
      *
@@ -369,7 +420,7 @@ class AltitudeKalmanFilter(
     fun resetWithAltitude(altM: Float, baroZ: Float?) {
         val newX = if (initialized) x.copyOf() else model.seedState(altM.toDouble())
         newX[0] = altM.toDouble()
-        if (baroZ != null) newX[model.biasIndex] = (baroZ - altM).toDouble()
+        if (model.hasBias && baroZ != null) newX[model.biasIndex] = (baroZ - altM).toDouble()
         x = newX
         P = model.calibrateCovariance(if (initialized) P else null)
         clearDiagnostics()
@@ -403,6 +454,7 @@ class AltitudeKalmanFilter(
     /** Baro altitude measurement. No-op until GNSS has seeded the filter. */
     fun updateBaro(altM: Float, sigmaM: Float) {
         if (!initialized) return
+        if (!model.hasBaroMeasurement) return
         predict()
         // §3 fix: gap-reset during predict() has de-initialized us; drop the
         // baro sample rather than apply it to zeros. b is unobservable from
@@ -420,10 +472,11 @@ class AltitudeKalmanFilter(
      * without offset, the recovered QNH is the same once the filter has
      * converged. Callers should still gate on "not airplane mode" — in a
      * pressurized cabin, h_KF is real but P is cabin pressure, so the
-     * formula yields nonsense.
+     * formula yields nonsense. Returns null for models with no bias state
+     * (GPS 2-state), since the whole concept requires a baro reference.
      */
     fun qnhHpa(pressureHpa: Float): Float? {
-        if (!initialized) return null
+        if (!initialized || !model.hasBias) return null
         val L = 0.0065
         val T0 = 288.15
         val n = 5.25588
@@ -492,14 +545,16 @@ class AltitudeKalmanFilter(
             k -= 1
         }
 
-        val biasIdx = nS - 1
+        val biasIdx = if (model.hasBias) model.biasIndex else -1
         return records.mapIndexed { i, r ->
             SmoothedSample(
                 timeMs = r.timeMs,
                 h = smoothedX[i][0].toFloat(),
                 sigmaH = sqrt(max(smoothedP[i][0], 0.0)).toFloat(),
-                b = smoothedX[i][biasIdx].toFloat(),
-                sigmaB = sqrt(max(smoothedP[i][biasIdx * nS + biasIdx], 0.0)).toFloat(),
+                b = if (biasIdx >= 0) smoothedX[i][biasIdx].toFloat() else 0f,
+                sigmaB = if (biasIdx >= 0)
+                             sqrt(max(smoothedP[i][biasIdx * nS + biasIdx], 0.0)).toFloat()
+                         else Float.NaN,
             )
         }
     }
@@ -549,7 +604,7 @@ class AltitudeKalmanFilter(
      * [setTuning] / [setModelAndTuning] directly.
      */
     private fun reinstantiateModel() {
-        model = modelEnum.create(tuning)
+        model = modelEnum.create(tuning, airplaneMode)
     }
 
     /**
@@ -578,8 +633,17 @@ class AltitudeKalmanFilter(
      * CUSUM is NOT cleared — see class doc for the invariance argument.
      *
      * Called only from setModel and setModelAndTuning, both of which guard
-     * on `modelEnum != newModel`; the 2→2, 3→3 and 4→4 cases go through
-     * reinstantiateModel instead.
+     * on `modelEnum != newModel`; the 2→2, 3→3, 4→4 and GPS2→GPS2 cases
+     * go through reinstantiateModel instead.
+     *
+     * When the source model has no bias state (GPS 2-state), the b/hVar
+     * fields of [CompatibleState] are populated with the source's cold-
+     * start placeholder values (b = 0, bVar = 10000.0, hbCov = 0.0).
+     * The destination model interprets bVar as "this is a cold-start
+     * uncertainty, not a preserved estimate" and treats the branch the
+     * same as if the source simply had no bias — [AltitudeStateModel.seedFrom]
+     * does not distinguish "null" from "cold-start default" here because
+     * the destination's own seed default would be identical.
      */
     private fun transitionModel(newModel: KalmanModel, newTuning: KalmanTuning) {
         val oldModel = model
@@ -592,9 +656,16 @@ class AltitudeKalmanFilter(
         val compatible: CompatibleState? = if (wasInit) CompatibleState(
             h = oldX[0],
             hVar = oldP[0 * oldN + 0],
-            b = oldX[oldModel.biasIndex],
-            bVar = oldP[oldModel.biasIndex * oldN + oldModel.biasIndex],
-            hbCov = oldP[0 * oldN + oldModel.biasIndex],
+            b = if (oldModel.hasBias) oldX[oldModel.biasIndex] else 0.0,
+            // 10000.0 matches seedCovariance()'s bias variance — the model's
+            // own cold-start uncertainty. A wider placeholder (e.g. 1e6) is
+            // not neutral: it lets the first post-swap baro measurement
+            // dominate b even when that measurement is a transient outlier.
+            // The transition means "state preserved, dimensions changed";
+            // for the source's missing component the correct prior is the
+            // one a fresh filter would have.
+            bVar = if (oldModel.hasBias) oldP[oldModel.biasIndex * oldN + oldModel.biasIndex] else 10000.0,
+            hbCov = if (oldModel.hasBias) oldP[0 * oldN + oldModel.biasIndex] else 0.0,
             vZ = if (oldModel.hasVelocity) oldX[1] else derivedVz,
             vZVar = if (oldModel.hasVelocity) oldP[1 * oldN + 1]
                     else derivedVzCov.takeIf { derivedVz != null },
@@ -605,7 +676,7 @@ class AltitudeKalmanFilter(
 
         modelEnum = newModel
         tuning = newTuning
-        model = newModel.create(newTuning)
+        model = newModel.create(newTuning, airplaneMode)
         derivedVelNoise = newTuning.derivedVelNoise ?: KalmanTuning.DEFAULT_DERIVED_VEL_NOISE
         derivedBiasRateNoise = newTuning.derivedBiasRateNoise ?: KalmanTuning.DEFAULT_DERIVED_BIAS_RATE_NOISE
 
@@ -636,12 +707,12 @@ class AltitudeKalmanFilter(
 
         // Cascade housekeeping. Velocity:
         if (model.hasVelocity) {
-            // 2→3/4: v_z now lives in the state vector; the cascade is
-            // dormant. Clear its stale values so a future 3/4→2 swap
+            // 2→3/4/GPS2: v_z now lives in the state vector; the cascade is
+            // dormant. Clear its stale values so a future 3/4/GPS2→2 swap
             // starts from the state's v_z, not a leftover cascade sample.
             clearDerivedVelocity()
         } else {
-            // 3/4→2: hand the old state's v_z to the cascade, with its
+            // 3/4/GPS2→2: hand the old state's v_z to the cascade, with its
             // P11 as the cascade's initial covariance. Re-anchor the h-
             // difference baseline so the first post-swap sample computes
             // v_z from the transplanted height, not a stale pre-swap one.
@@ -663,10 +734,10 @@ class AltitudeKalmanFilter(
 
         // Bias rate:
         if (model.hasBiasRate) {
-            // 2/3→4: v_b now lives in the state vector; the cascade is
+            // 2/3/GPS2→4: v_b now lives in the state vector; the cascade is
             // dormant. Clear its stale values.
             clearDerivedBiasRate()
-        } else {
+        } else if (model.hasBias) {
             // 4→2/3: hand the old state's v_b to the cascade. Same
             // takeIf defence as the velocity hand-off above.
             if (oldModel.hasBiasRate) {
@@ -676,6 +747,9 @@ class AltitudeKalmanFilter(
             lastB = newX[model.biasIndex]
             lastBTime = oldLastMs
             lastPbb = newP[model.biasIndex * model.n + model.biasIndex]
+        } else {
+            // GPS 2-state has no bias state and no cascade — clear.
+            clearDerivedBiasRate()
         }
     }
 
@@ -697,6 +771,9 @@ class AltitudeKalmanFilter(
             KalmanModel.FOUR_STATE ->
                 old.accelNoiseQ != new.accelNoiseQ ||
                 old.biasRateQ != new.biasRateQ
+            KalmanModel.GPS_TWO_STATE ->
+                old.gpsOnlyAccelQ != new.gpsOnlyAccelQ ||
+                old.gpsOnlyAccelQAirplane != new.gpsOnlyAccelQAirplane
         }
 
     private fun seed(altM: Double) {
@@ -774,10 +851,12 @@ class AltitudeKalmanFilter(
      * Noisier than the 4-state's v_b state (differentiation amplifies
      * noise), but model-robust and useful for visual comparison on the KF
      * tab. Only called from [updateBaro] — GPS-only updates leave b
-     * unchanged, so z_vb would be spuriously zero.
+     * unchanged, so z_vb would be spuriously zero. Returns immediately for
+     * models with no bias state (GPS 2-state).
      */
     private fun recordDerivedBiasRate() {
         if (model.hasBiasRate) return
+        if (!model.hasBias) return
         val bIdx = model.biasIndex
         val b = x[bIdx]
         val pbb = P[bIdx * model.n + bIdx]

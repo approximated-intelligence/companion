@@ -6,10 +6,11 @@ package de.perigon.companion.sensors.domain
  *   [KalmanModel] (this file)  — state dimension, dynamics, measurement maps
  *   [KalmanMode]               — update rule (GAUSSIAN / HUBER / VBAKF / ISKF)
  *
- * Three models:
- *   [TwoStateModel]   [h, b]           — random walk on h, no velocity
- *   [ThreeStateModel] [h, v_z, b]      — CV on h, v_z as state
- *   [FourStateModel]  [h, v_z, b, v_b] — CV on both h and b
+ * Four models:
+ *   [TwoStateModel]      [h, b]           — random walk on h, no velocity
+ *   [ThreeStateModel]    [h, v_z, b]      — CV on h, v_z as state
+ *   [FourStateModel]     [h, v_z, b, v_b] — CV on both h and b
+ *   [GpsTwoStateModel]   [h, v_z]         — CV on h, GPS only, no bias state
  *
  * `v_b = db/dt` is the bias rate. In the 4-state it's a state; in the 2/3-
  * state it's exposed via a cascade estimator on b (see
@@ -17,6 +18,11 @@ package de.perigon.companion.sensors.domain
  * the tracking form; the cascade is the diagnostic form. `v_b` absorbs
  * aircon, weather drift, and thermal effects as a rate rather than as
  * process noise on b.
+ *
+ * [GpsTwoStateModel] has no bias state: baro is not in its measurement
+ * map. [hasBaroMeasurement] is false, and [AltitudeKalmanFilter.updateBaro]
+ * is a no-op for this model. Its h is still fed MSL (geoid-corrected),
+ * same as every other model; see BackgroundService.emitLocation.
  *
  * Both axes are selectable at runtime. The filter delegates
  * predict/seed/recalibrate to the model and iterates its update rules to
@@ -29,16 +35,30 @@ package de.perigon.companion.sensors.domain
  * swaps them by reinstantiation (constructing under new tuning is lossless
  * for the state) or by [seedFrom] (carries compatible state across a
  * dimension change — see [CompatibleState]).
+ *
+ * INVARIANT on the four feature flags ([n], [hasVelocity], [hasBiasRate],
+ * [hasBias], [hasBaroMeasurement]): they describe the model's *shape*,
+ * and must not depend on any constructor parameter. Concretely, a model
+ * constructed with `KalmanTuning()` and `airplaneMode = false` must
+ * report the same values as one constructed with user overrides — the
+ * q_v variant of [GpsTwoStateModel] differs between ground and airplane,
+ * but its *shape* is the same. [KalmanModel]'s lazily-constructed
+ * canonical instance relies on this; violating the invariant would make
+ * `KalmanModel.hasBias` (and siblings) return stale answers for any
+ * caller reading the enum without first constructing the model.
  */
 interface AltitudeStateModel {
     val n: Int
 
     /**
-     * True when v_z is a state variable of this model (3-state, 4-state).
-     * False means the filter still exposes v_z — through the cascade
-     * estimator in [AltitudeKalmanFilter] — but not as a state. Callers
-     * that want the velocity estimate should use
+     * True when v_z is a state variable of this model (3-state, 4-state,
+     * GPS-only 2-state). False means the filter still exposes v_z —
+     * through the cascade estimator in [AltitudeKalmanFilter] — but not
+     * as a state. Callers that want the velocity estimate should use
      * [AltitudeKalmanFilter.verticalSpeed] and not branch on this flag.
+     *
+     * Must not depend on constructor parameters — see the interface's
+     * INVARIANT note.
      */
     val hasVelocity: Boolean
 
@@ -46,13 +66,39 @@ interface AltitudeStateModel {
      * True when v_b is a state variable (4-state only). When false, the
      * filter exposes v_b through a cascade estimator on b — same call
      * pattern, lower quality (differentiation amplifies noise).
+     *
+     * Must not depend on constructor parameters — see the interface's
+     * INVARIANT note.
      */
     val hasBiasRate: Boolean get() = false
 
     /**
+     * True when b is a state variable. False for [GpsTwoStateModel]:
+     * there is no baro measurement in its map, so a bias state would be
+     * unobservable and its covariance would only grow. Callers reading
+     * [AltitudeKalmanFilter.bias] / [AltitudeKalmanFilter.biasSigma]
+     * should treat null as "no bias in this model", not "no estimate yet".
+     *
+     * Must not depend on constructor parameters — see the interface's
+     * INVARIANT note.
+     */
+    val hasBias: Boolean get() = true
+
+    /**
+     * True when [AltitudeKalmanFilter.updateBaro] has any effect for this
+     * model. False for [GpsTwoStateModel]; the caller should skip calling
+     * updateBaro entirely. Defaults to [hasBias] because the models that
+     * have a bias state are exactly the ones that have a baro measurement.
+     *
+     * Must not depend on constructor parameters — see the interface's
+     * INVARIANT note.
+     */
+    val hasBaroMeasurement: Boolean get() = hasBias
+
+    /**
      * Index of `b` in the state vector. Default `n-1` is correct for
      * 2-state and 3-state. [FourStateModel] overrides to `n-2` because
-     * `v_b` occupies the last slot.
+     * `v_b` occupies the last slot. Meaningless when [hasBias] is false.
      */
     val biasIndex: Int get() = n - 1
 
@@ -71,8 +117,9 @@ interface AltitudeStateModel {
     /**
      * Covariance at recalibration (`resetWithAltitude`). [oldP] is null when
      * the filter was not yet initialized; non-null when it was and the model
-     * should preserve what remains meaningful (the 3/4-state keep P11 so a
-     * mid-recording recalibrate does not blank out the velocity estimate).
+     * should preserve what remains meaningful (the 3/4/GPS-2-state keep P11
+     * so a mid-recording recalibrate does not blank out the velocity
+     * estimate).
      */
     fun calibrateCovariance(oldP: DoubleArray?): DoubleArray
 
@@ -91,10 +138,11 @@ interface AltitudeStateModel {
      * of another model's state. Used by [AltitudeKalmanFilter]'s
      * transitionModel on a dimension change.
      *
-     * The default implementation is universal: h lives at index 0 in
-     * every model, b at [biasIndex], and v_z / v_b (when present as
-     * states) at indices 1 and n-1. A model that ever needed a different
-     * layout would override this; none do today.
+     * The default implementation is universal for the fusion models: h
+     * lives at index 0, b at [biasIndex], and v_z / v_b (when present as
+     * states) at indices 1 and n-1. [GpsTwoStateModel] overrides this to
+     * skip the bias copy (it has no bias state). A model that ever needed
+     * a different layout would override this; none do today.
      *
      * Null velocity / bias-rate fields in [src] mean "no estimate
      * available from the source" (either the source model did not have
@@ -106,11 +154,13 @@ interface AltitudeStateModel {
         val P = DoubleArray(n * n)
 
         x[0] = src.h
-        x[biasIndex] = src.b
         P[0 * n + 0] = src.hVar
-        P[0 * n + biasIndex] = src.hbCov
-        P[biasIndex * n + 0] = src.hbCov
-        P[biasIndex * n + biasIndex] = src.bVar
+        if (hasBias) {
+            x[biasIndex] = src.b
+            P[0 * n + biasIndex] = src.hbCov
+            P[biasIndex * n + 0] = src.hbCov
+            P[biasIndex * n + biasIndex] = src.bVar
+        }
 
         if (hasVelocity) {
             x[1] = src.vZ ?: 0.0
@@ -139,15 +189,16 @@ interface AltitudeStateModel {
  * Models that don't use a field ignore it; models that do use a field
  * fall back to their seed default when it is null.
  *
- * h and b are always available: every model has them.
+ * h and b are always available from the fusion models. [GpsTwoStateModel]
+ * ignores b on the way in and leaves it null on the way out.
  *
- * Why this shape rather than per-transition code: six model transitions
- * (2↔3, 2↔4, 3↔4) all want the same thing — carry whatever is compatible
- * across the dimension change. Enumerating them individually invites
- * one of them being wrong; a shared snapshot that each model consumes
- * selectively keeps every transition on the same path and pushes the
- * "what do I know how to receive?" decision into the destination model,
- * which is the only place that knows it.
+ * Why this shape rather than per-transition code: every pair of models
+ * wants the same thing — carry whatever is compatible across the
+ * dimension change. Enumerating them individually invites one of them
+ * being wrong; a shared snapshot that each model consumes selectively
+ * keeps every transition on the same path and pushes the "what do I know
+ * how to receive?" decision into the destination model, which is the only
+ * place that knows it.
  */
 data class CompatibleState(
     val h: Double,
@@ -442,26 +493,164 @@ class FourStateModel(
     }
 }
 
-/** Model axis. Independent of [KalmanMode] (update-rule axis). */
-enum class KalmanModel(
-    val displayName: String,
-    val hasVelocity: Boolean,
-    val hasBiasRate: Boolean,
-) {
-    TWO_STATE("2-state", hasVelocity = false, hasBiasRate = false),
-    THREE_STATE("3-state", hasVelocity = true, hasBiasRate = false),
-    FOUR_STATE("4-state", hasVelocity = true, hasBiasRate = true);
+/**
+ * GPS-only 2-state `[h, v_z]ᵀ`:
+ *
+ *   h   = altitude (m), same ellipsoid/geoid convention as the caller
+ *   v_z = vertical velocity (m/s, positive = up)
+ *
+ * F = [[1, dt], [0, 1]]
+ * Q = accel-noise block on (h, v_z), variance rate q_v
+ *
+ * GPS:  H = [1, 0]
+ * Baro: not in the measurement model. [baroH] is defined for interface
+ *       compatibility but [AltitudeKalmanFilter.updateBaro] is a no-op for
+ *       this model: there is no bias state to absorb a baro measurement
+ *       against, and feeding one would corrupt h by injecting an unknown
+ *       offset.
+ *
+ * WHY THIS EXISTS: consumer GPS altitude is quantized (~1 m steps on many
+ * chips) and noisy at the 5–15 m level. A raw `(h_t − h_{t−1})/Δt` is
+ * unusable for slope display — the quantization alone produces ±50%
+ * spikes at 1 Hz and freezes at 0 between steps. A CV model on `[h, v_z]`
+ * gives a continuous altitude and a defensible vertical speed: the
+ * velocity state *coasts* over the quantization steps instead of
+ * differentiating them.
+ *
+ * This is a SMOOTHER, not a fuser. It replaces the baro-fused filter as
+ * the source of `h`, `v_z`, and slope *only when that filter is disabled*
+ * or the user explicitly selects this model. Its tuning is independent of
+ * the fusion filter's: q_v here is a few orders of magnitude smaller (GPS
+ * vertical acceleration over a short window is much gentler than the
+ * process model assumes for baro-fused tracking), and there is no q_b at
+ * all.
+ *
+ * R (measurement noise) is deliberately NOT taken from
+ * verticalAccuracyMeters. It is the per-sample noise of the reported
+ * series, which is quantization-limited — see KalmanTuning.gpsOnlySigmaM.
+ *
+ * The `q_v` switch (ground vs airplane) is selected at construction from
+ * [KalmanModel.create]. The filter reinstantiates the model when the
+ * recorder's airplane-mode flag changes; see AltitudeKalmanFilter's
+ * setAirplaneMode.
+ *
+ * h is fed MSL (geoid-corrected), same as every other model. See
+ * BackgroundService.emitLocation.
+ *
+ * [hasBias] is false. [AltitudeKalmanFilter.bias] / [biasSigma] return
+ * null for this model, and the live card hides the bias-related rows.
+ */
+class GpsTwoStateModel(
+    /**
+     * Vertical acceleration process noise q_v, m²/s³. Null → default
+     * (0.01, `DEFAULT_GPS_ONLY_ACCEL_Q`). The tighter default is
+     * deliberate: the goal is a smooth, differentiation-stable altitude
+     * for slope, not tracking of real vertical accelerations over
+     * seconds. Raise if descents lag.
+     */
+    accelQ: Double? = null,
+) : AltitudeStateModel {
+    private val qAccel: Double = accelQ ?: KalmanTuning.DEFAULT_GPS_ONLY_ACCEL_Q
+
+    override val n = 2
+    override val hasVelocity = true
+    override val hasBias = false
+
+    override fun gpsH(): DoubleArray = doubleArrayOf(1.0, 0.0)
+    override fun baroH(): DoubleArray = doubleArrayOf(1.0, 0.0)  // unused
+
+    override fun predict(x: DoubleArray, P: DoubleArray, dtSec: Double) {
+        x[0] += x[1] * dtSec
+
+        val n00 = P[0] + dtSec * P[2] + dtSec * P[1] + dtSec * dtSec * P[3]
+        val n01 = P[1] + dtSec * P[3]
+        val n10 = P[2] + dtSec * P[3]
+        val n11 = P[3]
+
+        P[0] = n00 + qAccel * dtSec * dtSec * dtSec / 3.0
+        P[1] = n01 + qAccel * dtSec * dtSec / 2.0
+        P[2] = n10 + qAccel * dtSec * dtSec / 2.0
+        P[3] = n11 + qAccel * dtSec
+    }
+
+    override fun transitionMatrix(dtSec: Double): DoubleArray = doubleArrayOf(
+        1.0, dtSec,
+        0.0, 1.0,
+    )
+
+    override fun seedState(altM: Double): DoubleArray = doubleArrayOf(altM, 0.0)
+
+    override fun seedCovariance(): DoubleArray = doubleArrayOf(
+        100.0, 0.0,
+        0.0,   KalmanModel.SEED_VELOCITY_VARIANCE,
+    )
+
+    override fun calibrateCovariance(oldP: DoubleArray?): DoubleArray {
+        val p11 = oldP?.get(3)?.takeIf { it > 0.0 } ?: 1.0
+        return doubleArrayOf(
+            1.0, 0.0,
+            0.0, p11,
+        )
+    }
+
+    /** GPS-only: nothing to receive except h / v_z. */
+    override fun seedFrom(src: CompatibleState): Pair<DoubleArray, DoubleArray> {
+        val x = DoubleArray(n)
+        val P = DoubleArray(n * n)
+        x[0] = src.h
+        P[0] = src.hVar
+        x[1] = src.vZ ?: 0.0
+        P[3] = src.vZVar?.takeIf { it > 0.0 && it.isFinite() }
+            ?: KalmanModel.SEED_VELOCITY_VARIANCE
+        return x to P
+    }
+}
+
+/**
+ * Model axis. Independent of [KalmanMode] (update-rule axis).
+ *
+ * Feature flags (`hasVelocity`, `hasBiasRate`, `hasBias`,
+ * `hasBaroMeasurement`) are read from a lazily-constructed canonical
+ * instance of the corresponding [AltitudeStateModel] class. The class is
+ * the single source of truth — the enum does not redeclare them, because
+ * a parallel declaration would be free to drift from the class and would
+ * require a guard test to stay in sync. Construction is cheap (a few
+ * field assignments) and lazy, so the cost is paid at most once per enum
+ * entry per process, and only if a caller actually reads a feature.
+ *
+ * The canonical instance is built with `create()` under default tuning
+ * and `airplaneMode = false`. This is only safe because the four feature
+ * flags describe the model's *shape* and do not depend on any constructor
+ * parameter — see [AltitudeStateModel]'s INVARIANT note. The q_v variant
+ * of [GpsTwoStateModel] differs between ground and airplane, but its
+ * shape does not, so `hasBias` reads the same for both variants.
+ */
+enum class KalmanModel(val displayName: String) {
+    TWO_STATE("2-state"),
+    THREE_STATE("3-state"),
+    FOUR_STATE("4-state"),
+    GPS_TWO_STATE("GPS only");
+
+    private val canonical: AltitudeStateModel by lazy { create() }
+
+    val hasVelocity: Boolean        get() = canonical.hasVelocity
+    val hasBiasRate: Boolean        get() = canonical.hasBiasRate
+    val hasBias: Boolean            get() = canonical.hasBias
+    val hasBaroMeasurement: Boolean get() = canonical.hasBaroMeasurement
 
     /**
      * Build this model. [tuning] supplies overrides; null fields fall back
-     * to the model's built-in defaults.
+     * to the model's built-in defaults. [airplaneMode] selects the q_v
+     * variant for [GPS_TWO_STATE]; it is ignored by the fusion models
+     * (their airplane-mode effect lives in the service, gating baro feed).
      *
      * Note: `biasNoiseQ` is passed to BOTH 2/3-state models — same field,
      * same semantics, same units. The Advanced panel's "Bias process noise"
      * slider is 1:1 with q_b in the filter for either of those models.
      * 4-state uses `biasRateQ` instead — it has no random walk on b.
+     * GPS_TWO_STATE uses `gpsOnlyAccelQ` — it has neither.
      */
-    fun create(tuning: KalmanTuning = KalmanTuning()): AltitudeStateModel = when (this) {
+    fun create(tuning: KalmanTuning = KalmanTuning(), airplaneMode: Boolean = false): AltitudeStateModel = when (this) {
         THREE_STATE -> ThreeStateModel(
             accelQ = tuning.accelNoiseQ,
             biasQ  = tuning.biasNoiseQ,
@@ -473,6 +662,10 @@ enum class KalmanModel(
         FOUR_STATE -> FourStateModel(
             accelQ    = tuning.accelNoiseQ,
             biasRateQ = tuning.biasRateQ,
+        )
+        GPS_TWO_STATE -> GpsTwoStateModel(
+            accelQ = if (airplaneMode) tuning.gpsOnlyAccelQAirplane
+                     else tuning.gpsOnlyAccelQ,
         )
     }
 

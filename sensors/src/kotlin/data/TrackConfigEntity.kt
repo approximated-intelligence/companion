@@ -23,6 +23,11 @@ data class TrackConfigEntity(
     val keepEphemerisWarm: Boolean       = true,
     val holdWakeLock: Boolean            = false,
     val recordBaroAltitude: Boolean      = false,
+    // Master switch. False (the shipped default) = no filter is constructed
+    // or fed; GPS altitude is stored as-is and every KF-derived readout
+    // stays null. Baro can still be recorded per point (recordBaroAltitude)
+    // independently of this.
+    val kalmanEnabled: Boolean           = false,
     val airplaneMode: Boolean            = false,
     val autoScheduleEnabled: Boolean     = false,
     val autoStartSeconds: Long           = 25200L,
@@ -51,6 +56,10 @@ data class TrackConfigEntity(
     val kalmanDerivedBiasRateNoise: Double? = null, // 2/3-state only, q_vb (cascade)
     val baroSigmaM: Float?               = null,   // both, R_baro = σ²
     val kalmanGpsVerticalMinM: Float?    = null,   // both, σ floor on GPS
+    // GPS-only model tuning. See GpsTwoStateModel KDoc and KalmanTuning.
+    val gpsOnlyAccelQ: Double?           = null,   // ground q_v, m²/s³
+    val gpsOnlyAccelQAirplane: Double?   = null,   // airplane q_v, m²/s³
+    val gpsOnlySigmaM: Float?            = null,   // R = σ², m
 ) {
     val autoStartTime: java.time.LocalTime get() = java.time.LocalTime.ofSecondOfDay(autoStartSeconds)
     val autoStopTime: java.time.LocalTime  get() = java.time.LocalTime.ofSecondOfDay(autoStopSeconds)
@@ -96,6 +105,9 @@ fun TrackConfigEntity.toKalmanTuning(): KalmanTuning = KalmanTuning(
     derivedBiasRateNoise = kalmanDerivedBiasRateNoise,
     baroSigmaM      = baroSigmaM,
     gpsVerticalMinM = kalmanGpsVerticalMinM,
+    gpsOnlyAccelQ         = gpsOnlyAccelQ,
+    gpsOnlyAccelQAirplane = gpsOnlyAccelQAirplane,
+    gpsOnlySigmaM         = gpsOnlySigmaM,
 )
 
 fun isValidLoggingRate(loggingMs: Long, hardwareMs: Long): Boolean =

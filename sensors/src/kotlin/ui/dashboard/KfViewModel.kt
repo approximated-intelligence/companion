@@ -74,7 +74,8 @@ data class KfUiState(
     // sandbox with none of the recorder's reasons for shipping the feature
     // off (battery, per-point DB writes, an extra GPX column). The listener
     // stays registered regardless so the raw reading is always available;
-    // this toggle only gates filter.updateBaro().
+    // this toggle only gates filter.updateBaro(). Ignored by GPS_TWO_STATE,
+    // which has no baro measurement in its map.
     val baroEnabled: Boolean = true,
     // Tab-local. Only applied in ISKF mode; the toggle is only shown there.
     val iskfInverseHessian: Boolean = false,
@@ -89,6 +90,10 @@ data class KfUiState(
     // still session-scoped (started when the FGS starts, released when it
     // stops); only the *preference* persists.
     val wakeLockEnabled: Boolean = false,
+    // Airplane mode for the GPS-only model's q_v selection. Ignored by the
+    // fusion models in the sandbox — their baro exclusion is handled by the
+    // baroEnabled toggle above. Only shown when model.hasBias is false.
+    val airplaneMode: Boolean = false,
     val isInitialized: Boolean = false,
     val hadGpsSeed: Boolean = false,
     val h: Float? = null,
@@ -165,8 +170,8 @@ data class KfUiState(
  *
  * State preservation across model/tuning changes is a first-class
  * property here: the whole point of the sandbox is to compare 2-state vs
- * 3-state vs 4-state under the *same* trajectory. `setModel` carries h, b,
- * v_z, v_b across the dimension swap (see
+ * 3-state vs 4-state vs GPS 2-state under the *same* trajectory. `setModel`
+ * carries h, b, v_z, v_b across the dimension swap (see
  * [de.perigon.companion.sensors.domain.AltitudeKalmanFilter.transitionModel]),
  * and `setTuning` reinstantiates the model object without touching state.
  * The chart's filtered trace is continuous across both. Diagnostics that
@@ -190,7 +195,7 @@ data class KfUiState(
  */
 @HiltViewModel
 class KfViewModel @Inject constructor(
-    @ApplicationContext private val context: Context,
+    @param:ApplicationContext private val context: Context,
     private val geoidGrid: GeoidGrid,
     private val configPrefs: TrackConfigPrefs,
     private val prefs: TrackPrefs,
@@ -201,6 +206,7 @@ class KfViewModel @Inject constructor(
         initialMode = KalmanMode.GAUSSIAN,
         initialIskfInverseHessian = false,
         initialTuning = KalmanTuning(),
+        initialAirplaneMode = false,
     )
 
     // Wake-lock preference is persisted; read synchronously from the warmed
@@ -240,6 +246,12 @@ class KfViewModel @Inject constructor(
     // downsampled one. Cleared on model swap (along with stepRecords):
     // the mean is a χ²(1) statistic only under a single well-specified
     // model, so mixing pre- and post-swap samples makes it meaningless.
+    //
+    // Also cleared on airplane-mode toggle for GPS-only models: the q_v
+    // variant is a different specification, and its innovations belong to
+    // a different χ²(1) population. Fusion-model airplane toggles reset
+    // the filter (see AltitudeKalmanFilter.setAirplaneMode) and are
+    // handled by the standard reset path — no separate clear needed here.
     private val nisGpsWindow = ArrayDeque<Float>(NIS_WINDOW)
     private val nisBaroWindow = ArrayDeque<Float>(NIS_WINDOW)
 
@@ -296,7 +308,7 @@ class KfViewModel @Inject constructor(
      * Model changes transplant compatible state across the dimension swap
      * (h, b, v_z, v_b and their covariance block; see
      * AltitudeKalmanFilter.transitionModel). History survives — the chart
-     * continues across the swap, which is what makes 2↔3↔4 comparison
+     * continues across the swap, which is what makes 2↔3↔4↔GPS2 comparison
      * meaningful. The RTS step-record buffer and the NIS running windows
      * are cleared: the backward chain cannot span a dimension change, and
      * a χ²(1) mean mixes two models' calibration. So `b*`/`h*` show a gap
@@ -350,11 +362,12 @@ class KfViewModel @Inject constructor(
      * particular survive a q_b/q_vb change — the whole point of moving from
      * rebuild() to reinstantiateModel() in the filter.
      *
-     * A `baroSigmaM`-, `gpsVerticalMinM`-, `derivedVelNoise`- or
-     * `derivedBiasRateNoise`-only change updates the record without
-     * reinstantiating the model or touching state (the first two live at
-     * the caller and take effect on the next measurement; the last two are
-     * filter fields, updated unconditionally by the filter's setTuning).
+     * A `baroSigmaM`-, `gpsVerticalMinM`-, `gpsOnlySigmaM`-,
+     * `derivedVelNoise`- or `derivedBiasRateNoise`-only change updates the
+     * record without reinstantiating the model or touching state (the first
+     * three live at the caller and take effect on the next measurement; the
+     * last two are filter fields, updated unconditionally by the filter's
+     * setTuning).
      */
     fun setTuning(newTuning: KalmanTuning) {
         if (_state.value.tuning == newTuning) return
@@ -385,6 +398,27 @@ class KfViewModel @Inject constructor(
     }
 
     /**
+     * Toggle airplane mode for the sandbox. Only meaningful for
+     * [KalmanModel.GPS_TWO_STATE] (`model.hasBias == false`), whose q_v
+     * variant switches when airplane mode flips. Ignored by the fusion
+     * models: their baro exclusion is handled by [setBaroEnabled] instead.
+     *
+     * The NIS GPS window is cleared on toggle: the q_v variant is a
+     * different specification, so pre- and post-toggle innovations belong
+     * to different χ²(1) populations and their mean is not a meaningful
+     * statistic. `stepRecords` is left alone — the smoother uses
+     * [AltitudeStateModel.transitionMatrix], which is identical between
+     * the ground and airplane q_v variants (only the Q differs), so the
+     * backward chain remains valid.
+     */
+    fun setAirplaneMode(enabled: Boolean) {
+        if (_state.value.airplaneMode == enabled) return
+        filter.setAirplaneMode(enabled)
+        nisGpsWindow.clear()
+        _state.update { it.copy(airplaneMode = enabled) }
+    }
+
+    /**
      * Explicitly copy the tab's current tuning overrides to TrackConfigPrefs.
      * The tab keeps its own copy; subsequent edits are not mirrored
      * automatically. `null` fields are written as "clear the override", i.e.
@@ -407,6 +441,9 @@ class KfViewModel @Inject constructor(
                     kalmanDerivedBiasRateNoise = t.derivedBiasRateNoise,
                     baroSigmaM            = t.baroSigmaM,
                     kalmanGpsVerticalMinM = t.gpsVerticalMinM,
+                    gpsOnlyAccelQ         = t.gpsOnlyAccelQ,
+                    gpsOnlyAccelQAirplane = t.gpsOnlyAccelQAirplane,
+                    gpsOnlySigmaM         = t.gpsOnlySigmaM,
                 )
             }
         }
@@ -440,8 +477,8 @@ class KfViewModel @Inject constructor(
      *
      * Clears the CUSUM and the derived bias-rate baseline: pre-calibration
      * data was collected with a wrong b, so its rate and innovation bias
-     * carry no information about aircon. The 3/4-state's v_z/v_b states
-     * survive via calibrateCovariance.
+     * carry no information about aircon. The 3/4/GPS-2-state's v_z/v_b
+     * states survive via calibrateCovariance.
      */
     fun calibrateBaro(refAltM: Float) {
         val baroZ = _state.value.baroInput
@@ -579,7 +616,9 @@ class KfViewModel @Inject constructor(
                 // Fusion is the toggle; the reading is always published so
                 // the numeric and chart output show "what baro says" even
                 // while it is not being fed to the filter. That is the
-                // question the tab exists to answer.
+                // question the tab exists to answer. The filter itself
+                // no-ops updateBaro for GPS_TWO_STATE — no bias state to
+                // absorb it against.
                 if (_state.value.baroEnabled) {
                     val sigma = _state.value.tuning.baroSigmaM
                         ?: KalmanTuning.DEFAULT_BARO_SIGMA_M
@@ -620,23 +659,32 @@ class KfViewModel @Inject constructor(
         val listener = object : LocationListener {
             override fun onLocationChanged(location: Location) {
                 if (!location.hasAltitude()) return
-                // Floor the sigma from the tuning override. The Pixel HAL's
-                // reported verticalAccuracyMeters is optimistic during
-                // stationary plateaus, where the solution is smoothed;
-                // flooring prevents the filter from following false steps
-                // and — the key reason — from attributing baro/alt
-                // divergence to bias when the barometer moved correctly and
-                // GPS did not. Read from the live tuning each time, like
-                // baroSigmaM, so a slider change takes effect on the next
-                // sample without a rebuild.
-                val floor = _state.value.tuning.gpsVerticalMinM
-                    ?: KalmanTuning.DEFAULT_GPS_VERTICAL_MIN_M
-                val vAcc = when {
-                    location.hasVerticalAccuracy() ->
-                        maxOf(location.verticalAccuracyMeters, floor)
-                    location.hasAccuracy() ->
-                        maxOf(location.accuracy * GPS_VERTICAL_FALLBACK_FACTOR, floor)
-                    else -> GPS_VERTICAL_DEFAULT_M
+                // Measurement sigma depends on the active model. No-baro
+                // models (feature read from the filter, not from the enum)
+                // use gpsOnlySigmaM — the per-sample noise of the reported
+                // series (quantization-limited), not verticalAccuracyMeters.
+                // Fusion models use the floored verticalAccuracyMeters: the
+                // Pixel HAL's reported verticalAccuracyMeters is optimistic
+                // during stationary plateaus, where the solution is
+                // smoothed; flooring prevents the filter from following
+                // false steps and — the key reason — from attributing
+                // baro/alt divergence to bias when the barometer moved
+                // correctly and GPS did not. Read from the live tuning each
+                // time, like baroSigmaM, so a slider change takes effect on
+                // the next sample without a rebuild.
+                val vAcc = if (!filter.hasBaroMeasurement) {
+                    _state.value.tuning.gpsOnlySigmaM
+                        ?: KalmanTuning.DEFAULT_GPS_ONLY_SIGMA_M
+                } else {
+                    val floor = _state.value.tuning.gpsVerticalMinM
+                        ?: KalmanTuning.DEFAULT_GPS_VERTICAL_MIN_M
+                    when {
+                        location.hasVerticalAccuracy() ->
+                            maxOf(location.verticalAccuracyMeters, floor)
+                        location.hasAccuracy() ->
+                            maxOf(location.accuracy * GPS_VERTICAL_FALLBACK_FACTOR, floor)
+                        else -> GPS_VERTICAL_DEFAULT_M
+                    }
                 }
                 // Geoid is read unconditionally so the numeric grid can show
                 // the undulation even when the toggle is off.
@@ -754,6 +802,8 @@ class KfViewModel @Inject constructor(
         val smoothed = filter.smoothBackward(stepRecords.toList())
         if (smoothed.isEmpty()) return history.toList()
 
+        val hasBias = filter.hasBias
+
         var si = 0
         return history.map { sample ->
             while (si < smoothed.size - 1 && smoothed[si + 1].timeMs <= sample.timeMs) si++
@@ -768,7 +818,10 @@ class KfViewModel @Inject constructor(
                 sample.copy(
                     hSmoothed = s.h,
                     sigmaHSmoothed = s.sigmaH,
-                    bSmoothed = s.b,
+                    // Smoothing b is meaningless for no-bias models — the
+                    // filter's smoother returns NaN/0 placeholders for it,
+                    // and there is no b to overlay against the filtered b.
+                    bSmoothed = if (hasBias) s.b else null,
                 )
             }
         }
@@ -796,6 +849,7 @@ class KfViewModel @Inject constructor(
         val initialized = filter.isInitialized()
         val cusum = filter.airconCusum()
         val aircon = filter.airconDetected()
+        val hasBias = filter.hasBias
 
         val now = SystemClock.elapsedRealtime()
         val push = initialized && (now - lastHistoryMs) >= HISTORY_INTERVAL_MS
@@ -808,14 +862,19 @@ class KfViewModel @Inject constructor(
             history.addLast(
                 KfSample(
                     timeMs = now,
-                    h = h, v = v, b = b, vB = vb,
-                    sigmaH = sh, sigmaV = sv, sigmaB = sb, sigmaVB = svb,
-                    deltaGps = dg, deltaBaro = db,
+                    h = h, v = v,
+                    b = if (hasBias) b else null,
+                    vB = if (hasBias) vb else null,
+                    sigmaH = sh, sigmaV = sv,
+                    sigmaB = if (hasBias) sb else null,
+                    sigmaVB = if (hasBias) svb else null,
+                    deltaGps = dg,
+                    deltaBaro = if (hasBias) db else null,
                     baroInput = baroInput, gpsInput = gpsInput,
                     nisGps = filter.lastGpsNis(),
-                    nisBaro = filter.lastBaroNis(),
-                    cusumPos = cusum.first,
-                    cusumNeg = cusum.second,
+                    nisBaro = if (hasBias) filter.lastBaroNis() else null,
+                    cusumPos = if (hasBias) cusum.first else null,
+                    cusumNeg = if (hasBias) cusum.second else null,
                 )
             )
             newHistory = smoothHistory()

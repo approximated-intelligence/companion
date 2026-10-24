@@ -52,6 +52,8 @@ import de.perigon.companion.sensors.domain.KalmanMode
 import de.perigon.companion.sensors.domain.KalmanModel
 import de.perigon.companion.sensors.ui.BaroCalibrationDialog
 import de.perigon.companion.sensors.ui.KalmanAdvancedPanel
+import de.perigon.companion.sensors.ui.KalmanModeSelector
+import de.perigon.companion.sensors.ui.KalmanModelSelector
 import kotlin.math.abs
 import kotlin.math.max
 
@@ -128,6 +130,13 @@ fun KfContent(vm: KfViewModel) {
 
         var showCalibrate by remember { mutableStateOf(false) }
 
+        // Read the model's features from the enum (which delegates to the
+        // class) rather than comparing enum identity. This is the whole
+        // point of the enum feature properties — a new no-bias model would
+        // be picked up here automatically, without touching this file.
+        val modelHasBias = state.model.hasBias
+        val modelHasBaro = state.model.hasBaroMeasurement
+
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -148,48 +157,18 @@ fun KfContent(vm: KfViewModel) {
 
             // Model chips + description as one item: they describe each other.
             item {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        KalmanModel.entries.forEach { m ->
-                            FilterChip(
-                                selected = state.model == m,
-                                onClick = { vm.setModel(m) },
-                                label = { Text(m.displayName) },
-                            )
-                        }
-                    }
-                    Text(
-                        modelDescription(state.model),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                KalmanModelSelector(
+                    currentModel = state.model,
+                    onModelSelected = vm::setModel,
+                )
             }
 
             // Mode chips + description as one item: they describe each other.
             item {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        KalmanMode.entries.forEach { m ->
-                            FilterChip(
-                                selected = state.mode == m,
-                                onClick = { vm.setMode(m) },
-                                label = { Text(m.shortLabel()) },
-                            )
-                        }
-                    }
-                    Text(
-                        state.mode.longDescription(),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                KalmanModeSelector(
+                    currentMode = state.mode,
+                    onModeSelected = vm::setMode,
+                )
             }
 
             if (state.mode == KalmanMode.ISKF) {
@@ -213,14 +192,18 @@ fun KfContent(vm: KfViewModel) {
                     onCheckedChange = vm::setGnssEnabled,
                 )
             }
-            item {
-                ToggleRow(
-                    title = "Feed barometer",
-                    subtitle = baroSubtitle(state),
-                    checked = state.baroEnabled,
-                    onCheckedChange = vm::setBaroEnabled,
-                    enabled = state.hasBarometer,
-                )
+            // Baro toggle is hidden for no-baro models — baro isn't in that
+            // model's measurement map, so the toggle would be a lie.
+            if (modelHasBaro) {
+                item {
+                    ToggleRow(
+                        title = "Feed barometer",
+                        subtitle = baroSubtitle(state),
+                        checked = state.baroEnabled,
+                        onCheckedChange = vm::setBaroEnabled,
+                        enabled = state.hasBarometer,
+                    )
+                }
             }
             item {
                 ToggleRow(
@@ -229,6 +212,19 @@ fun KfContent(vm: KfViewModel) {
                     checked = state.geoidEnabled,
                     onCheckedChange = vm::setGeoidEnabled,
                 )
+            }
+            // Airplane mode for no-baro models only: switches the model's
+            // q_v. Fusion models don't need this — their baro exclusion is
+            // handled by the "Feed barometer" toggle above.
+            if (!modelHasBaro) {
+                item {
+                    ToggleRow(
+                        title = "Airplane mode",
+                        subtitle = "Switches the GPS-only model to a looser q_v for takeoff ramps.",
+                        checked = state.airplaneMode,
+                        onCheckedChange = vm::setAirplaneMode,
+                    )
+                }
             }
 
             item { HorizontalDivider() }
@@ -252,15 +248,22 @@ fun KfContent(vm: KfViewModel) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     OutlinedButton(
                         onClick = { showCalibrate = true },
-                        enabled = state.baroInput != null,
+                        // Seed is possible without GPS in two cases: the
+                        // fusion models accept a baro-only seed (h snaps to
+                        // refAlt, b to baro − refAlt), which is useful at a
+                        // surveyed point before GPS locks; and any model
+                        // with an h already in state can be re-seeded.
+                        // GPS height is only required for a filter that has
+                        // never been seeded and has no baro reference.
+                        enabled = state.h != null ||
+                                  state.gpsInput != null ||
+                                  (modelHasBaro && state.baroInput != null),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text("Seed altitude…")
                     }
                     Text(
-                        if (state.baroInput == null)
-                            "Enable the barometer and wait for a reading to seed."
-                        else "Snap h to a known altitude; b is set to baro − h. No persistent offset is stored.",
+                        seedHint(state, modelHasBaro),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -296,7 +299,8 @@ fun KfContent(vm: KfViewModel) {
                 // for every model, just sourced differently.
                 //
                 // v_b and σ(v_b) follow the same pattern: 4-state exposes
-                // them as states; 2/3-state exposes them via the cascade.
+                // them as states; 2/3-state exposes them via the cascade;
+                // no-bias models have no bias so those rows are hidden.
                 //
                 // NIS² means are the calibration check: expected ≈ 1.0 under
                 // a well-specified model. Drift above 1 indicates the filter
@@ -310,34 +314,36 @@ fun KfContent(vm: KfViewModel) {
                         listOf(
                             "h (m)" to fmtM(state.h, 1),
                             "v_z (m/s)" to fmtM(state.v, 2),
-                            "b (m)" to fmtSignedM(state.b, 1),
+                            "b (m)" to if (modelHasBias) fmtSignedM(state.b, 1) else "--",
                         )
                     )
                     NumericRow(
                         listOf(
                             "σ(h) (m)" to fmtM(state.sigmaH, 2),
                             "σ(v) (m/s)" to fmtM(state.sigmaV, 2),
-                            "σ(b) (m)" to fmtM(state.sigmaB, 2),
+                            "σ(b) (m)" to if (modelHasBias) fmtM(state.sigmaB, 2) else "--",
                         )
                     )
-                    NumericRow(
-                        listOf(
-                            "v_b (mm/s)" to (state.vB?.let { "%+.2f".format(it * 1000f) } ?: "--"),
-                            "σ(v_b) (mm/s)" to (state.sigmaVB?.let { "%.2f".format(it * 1000f) } ?: "--"),
-                            "aircon" to if (state.airconDetected) "yes" else "--",
+                    if (modelHasBias) {
+                        NumericRow(
+                            listOf(
+                                "v_b (mm/s)" to (state.vB?.let { "%+.2f".format(it * 1000f) } ?: "--"),
+                                "σ(v_b) (mm/s)" to (state.sigmaVB?.let { "%.2f".format(it * 1000f) } ?: "--"),
+                                "aircon" to if (state.airconDetected) "yes" else "--",
+                            )
                         )
-                    )
-                    NumericRow(
-                        listOf(
-                            "CUSUM+" to (state.cusumPos?.let { "%.2f".format(it) } ?: "--"),
-                            "CUSUM−" to (state.cusumNeg?.let { "%.2f".format(it) } ?: "--"),
-                            "thr" to "8.0",
+                        NumericRow(
+                            listOf(
+                                "CUSUM+" to (state.cusumPos?.let { "%.2f".format(it) } ?: "--"),
+                                "CUSUM−" to (state.cusumNeg?.let { "%.2f".format(it) } ?: "--"),
+                                "thr" to "8.0",
+                            )
                         )
-                    )
+                    }
                     NumericRow(
                         listOf(
                             "Δgps (m)" to fmtSignedM(state.deltaGps, 1),
-                            "Δbaro (m)" to fmtSignedM(state.deltaBaro, 1),
+                            "Δbaro (m)" to if (modelHasBias) fmtSignedM(state.deltaBaro, 1) else "--",
                             "last" to (state.lastUpdateSource?.name ?: "--"),
                         )
                     )
@@ -351,7 +357,7 @@ fun KfContent(vm: KfViewModel) {
                     NumericRow(
                         listOf(
                             "NIS² gps" to fmtNis(state.nisGpsMean),
-                            "NIS² baro" to fmtNis(state.nisBaroMean),
+                            "NIS² baro" to if (modelHasBias) fmtNis(state.nisBaroMean) else "--",
                             "expected" to "1.0",
                         )
                     )
@@ -422,94 +428,106 @@ fun KfContent(vm: KfViewModel) {
                     windowSeconds = windowSec,
                 )
             }
-            item {
-                // Overlay chart, not difference. For a slow-moving state like
-                // b, the RTS correction is a predictable ramp — the smoother
-                // pulls past b toward the value implied by the final
-                // measurements — so the difference chart collapses to a
-                // linear-to-zero line that hides the underlying trajectory
-                // and looks like an artifact.
-                //
-                // Overlay makes both curves visible:
-                //   - b_filtered drifts (the filter's live estimate)
-                //   - b_smoothed is flatter (hindsight, conditioned on the
-                //     whole buffer)
-                //   - vertical gap = how much hindsight would correct
-                //
-                // When b_filtered and b_smoothed track together, qB is well
-                // matched (or too low — the filter can't keep up with real
-                // drift). When b_filtered drifts away from b_smoothed *with
-                // the gap growing backward in time*, qB is too high — the
-                // filter is chasing noise that hindsight rejects. This is the
-                // direct visual comparison the difference chart obscured.
-                //
-                // Not centered at zero: b is a signed offset, not a residual.
-                // Forcing a symmetric axis doubles the visible span when b is
-                // parked at, say, +40 m and compresses the b-vs-b* gap that
-                // the chart exists to show.
-                KfChart(
-                    title = "Bias b (m)",
-                    series = listOf(
-                        ChartSeries("b", COLOR_B, samples.map { it.b }),
-                        ChartSeries("b*", COLOR_B_SMOOTH, samples.map { it.bSmoothed }),
-                    ),
-                    centerAtZero = false,
-                    windowSeconds = windowSec,
-                )
-            }
-            item {
-                // v_b with its ±σ band, same convention as v_z above. In
-                // the 4-state this is a state and σ(v_b) comes from P[3,3];
-                // in 2/3-state it's the cascade output with its own scalar
-                // covariance. Cascade is visibly noisier; swap models to
-                // compare the same trajectory under both.
-                //
-                // Reading: a trace that stays well inside the band means
-                // v_b is poorly determined (typical right after seed). A
-                // trace that pins the band — |v_b| ≳ 2σ — is the CUSUM's
-                // raw signal, even before the accumulator crosses threshold.
-                KfChart(
-                    title = "Bias rate v_b (mm/s)",
-                    series = listOf(
-                        ChartSeries(
-                            "v_b",
-                            COLOR_VB,
-                            samples.map { s -> s.vB?.let { it * 1000f } },
-                            sigma = samples.map { s -> s.sigmaVB?.let { it * 1000f } },
+            if (modelHasBias) {
+                item {
+                    // Overlay chart, not difference. For a slow-moving state like
+                    // b, the RTS correction is a predictable ramp — the smoother
+                    // pulls past b toward the value implied by the final
+                    // measurements — so the difference chart collapses to a
+                    // linear-to-zero line that hides the underlying trajectory
+                    // and looks like an artifact.
+                    //
+                    // Overlay makes both curves visible:
+                    //   - b_filtered drifts (the filter's live estimate)
+                    //   - b_smoothed is flatter (hindsight, conditioned on the
+                    //     whole buffer)
+                    //   - vertical gap = how much hindsight would correct
+                    //
+                    // When b_filtered and b_smoothed track together, qB is well
+                    // matched (or too low — the filter can't keep up with real
+                    // drift). When b_filtered drifts away from b_smoothed *with
+                    // the gap growing backward in time*, qB is too high — the
+                    // filter is chasing noise that hindsight rejects. This is the
+                    // direct visual comparison the difference chart obscured.
+                    //
+                    // Not centered at zero: b is a signed offset, not a residual.
+                    // Forcing a symmetric axis doubles the visible span when b is
+                    // parked at, say, +40 m and compresses the b-vs-b* gap that
+                    // the chart exists to show.
+                    KfChart(
+                        title = "Bias b (m)",
+                        series = listOf(
+                            ChartSeries("b", COLOR_B, samples.map { it.b }),
+                            ChartSeries("b*", COLOR_B_SMOOTH, samples.map { it.bSmoothed }),
                         ),
-                    ),
-                    centerAtZero = false,
-                    windowSeconds = windowSec,
-                )
-                Text(
-                    "Cascade v_b (2/3-state) is noisier than the 4-state's v_b state. " +
-                        "Swap models to compare the same trajectory under both.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-                )
+                        centerAtZero = false,
+                        windowSeconds = windowSec,
+                    )
+                }
+                item {
+                    // v_b with its ±σ band, same convention as v_z above. In
+                    // the 4-state this is a state and σ(v_b) comes from P[3,3];
+                    // in 2/3-state it's the cascade output with its own scalar
+                    // covariance. Cascade is visibly noisier; swap models to
+                    // compare the same trajectory under both.
+                    //
+                    // Reading: a trace that stays well inside the band means
+                    // v_b is poorly determined (typical right after seed). A
+                    // trace that pins the band — |v_b| ≳ 2σ — is the CUSUM's
+                    // raw signal, even before the accumulator crosses threshold.
+                    KfChart(
+                        title = "Bias rate v_b (mm/s)",
+                        series = listOf(
+                            ChartSeries(
+                                "v_b",
+                                COLOR_VB,
+                                samples.map { s -> s.vB?.let { it * 1000f } },
+                                sigma = samples.map { s -> s.sigmaVB?.let { it * 1000f } },
+                            ),
+                        ),
+                        centerAtZero = false,
+                        windowSeconds = windowSec,
+                    )
+                    Text(
+                        "Cascade v_b (2/3-state) is noisier than the 4-state's v_b state. " +
+                            "Swap models to compare the same trajectory under both.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                    )
+                }
             }
             item {
                 KfChart(
                     title = "Uncertainty (m)",
-                    series = listOf(
-                        ChartSeries("σ(h)", COLOR_SIGMA_H, samples.map { it.sigmaH }),
-                        ChartSeries("σ(b)", COLOR_SIGMA_B, samples.map { it.sigmaB }),
-                    ),
+                    series = buildList {
+                        add(ChartSeries("σ(h)", COLOR_SIGMA_H, samples.map { it.sigmaH }))
+                        if (modelHasBias) {
+                            add(ChartSeries("σ(b)", COLOR_SIGMA_B, samples.map { it.sigmaB }))
+                        }
+                    },
                     windowSeconds = windowSec,
                 )
             }
             item {
                 KfChart(
                     title = "Innovation (m)",
-                    series = listOf(
-                        ChartSeries("Δgps", COLOR_DGPS, samples.map { it.deltaGps }),
-                        ChartSeries("Δbaro", COLOR_DBARO, samples.map { it.deltaBaro }),
-                    ),
+                    series = buildList {
+                        add(ChartSeries("Δgps", COLOR_DGPS, samples.map { it.deltaGps }))
+                        if (modelHasBias) {
+                            add(ChartSeries("Δbaro", COLOR_DBARO, samples.map { it.deltaBaro }))
+                        }
+                    },
                     centerAtZero = true,
                     windowSeconds = windowSec,
                 )
             }
+            // NIS² GPS is valid for EVERY model — it is the normalized
+            // squared GPS innovation, a pure GPS statistic that has nothing
+            // to do with whether the model fuses baro. It is one of the
+            // primary calibration checks the tab exists to show, so it must
+            // NOT be hidden for no-bias models. Only the baro series is
+            // gated. Same shape as the Innovation chart above.
             item {
                 // NIS² sits below Innovation: same quantity, normalized.
                 // Reference line at 3.84 = χ²(1, 0.95). Robust methods push
@@ -518,10 +536,12 @@ fun KfContent(vm: KfViewModel) {
                 // of samples above the line and a running mean near 1.0.
                 KfChart(
                     title = "Innovation consistency (NIS²)",
-                    series = listOf(
-                        ChartSeries("gps", COLOR_DGPS, samples.map { it.nisGps }),
-                        ChartSeries("baro", COLOR_DBARO, samples.map { it.nisBaro }),
-                    ),
+                    series = buildList {
+                        add(ChartSeries("gps", COLOR_DGPS, samples.map { it.nisGps }))
+                        if (modelHasBias) {
+                            add(ChartSeries("baro", COLOR_DBARO, samples.map { it.nisBaro }))
+                        }
+                    },
                     referenceLines = listOf(3.84f),
                     yClampMax = 10f,
                     windowSeconds = windowSec,
@@ -534,27 +554,32 @@ fun KfContent(vm: KfViewModel) {
                     modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
                 )
             }
-            item {
-                // CUSUM on the normalized baro innovation. Two accumulators
-                // (positive and negative drift) share a threshold line. A
-                // crossing is the detector firing — aircon step in v_b.
-                // Dashed reference line at 8 (the threshold).
-                KfChart(
-                    title = "Aircon CUSUM",
-                    series = listOf(
-                        ChartSeries("g⁺", COLOR_CUSUM_POS, samples.map { it.cusumPos }),
-                        ChartSeries("g⁻", COLOR_CUSUM_NEG, samples.map { it.cusumNeg }),
-                    ),
-                    referenceLines = listOf(8f),
-                    windowSeconds = windowSec,
-                )
-                Text(
-                    "Dashed line: CUSUM threshold h = 8. Crossing = aircon-like step in v_b. " +
-                        "Tests model consistency, not |v_b| — weather (any magnitude) stays below.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-                )
+            // CUSUM is intrinsically a baro detector — it tests baro
+            // innovations, so hiding it for no-baro models is honest, not
+            // a bug.
+            if (modelHasBias) {
+                item {
+                    // CUSUM on the normalized baro innovation. Two accumulators
+                    // (positive and negative drift) share a threshold line. A
+                    // crossing is the detector firing — aircon step in v_b.
+                    // Dashed reference line at 8 (the threshold).
+                    KfChart(
+                        title = "Aircon CUSUM",
+                        series = listOf(
+                            ChartSeries("g⁺", COLOR_CUSUM_POS, samples.map { it.cusumPos }),
+                            ChartSeries("g⁻", COLOR_CUSUM_NEG, samples.map { it.cusumNeg }),
+                        ),
+                        referenceLines = listOf(8f),
+                        windowSeconds = windowSec,
+                    )
+                    Text(
+                        "Dashed line: CUSUM threshold h = 8. Crossing = aircon-like step in v_b. " +
+                            "Tests model consistency, not |v_b| — weather (any magnitude) stays below.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                    )
+                }
             }
 
             item { HorizontalDivider() }
@@ -851,33 +876,6 @@ private fun DrawScope.drawCenteredText(
     )
 }
 
-private fun KalmanMode.shortLabel(): String = when (this) {
-    KalmanMode.GAUSSIAN -> "Gaussian"
-    KalmanMode.HUBER -> "Huber"
-    KalmanMode.VBAKF -> "VBAKF"
-    KalmanMode.ISKF -> "ISKF"
-}
-
-private fun KalmanMode.longDescription(): String = when (this) {
-    KalmanMode.GAUSSIAN ->
-        "Reference filter — standard Riccati update, no outlier rejection."
-    KalmanMode.HUBER ->
-        "Huber M-estimation. Downweights measurement outliers; covariance via Joseph form with the effective measurement noise."
-    KalmanMode.VBAKF ->
-        "Variational Bayes estimation of the measurement noise (inverse-gamma prior). Adapts R online per sample."
-    KalmanMode.ISKF ->
-        "Iteratively Saturated KF (Yang & Boyd 2025). Convex robust MAP with separate process and measurement outlier terms."
-}
-
-private fun modelDescription(m: KalmanModel): String = when (m) {
-    KalmanModel.THREE_STATE ->
-        "h, v_z, b. CV dynamics. v_z is a proper KF state; σ_h grows as t^{3/2} during outages. Better for short outages with well-tracked velocity."
-    KalmanModel.TWO_STATE ->
-        "h, b. Random walk on h; baro drives h at full bandwidth. v_z is derived by a cascade position-difference filter (no feedback). σ_h grows as t^{1/2} during outages. Better for long outages; worse for short ones on a moving vehicle."
-    KalmanModel.FOUR_STATE ->
-        "h, v_z, b, v_b. CV on both h and b. v_b absorbs aircon and weather drift as a rate; a tight q_vb turns aircon's step in v_b into a detectable CUSUM signal. b integrates v_b, no random walk. Slightly more confident about b during long outages than 3-state."
-}
-
 private fun modeSpecificLine(state: KfUiState): String = when (state.mode) {
     KalmanMode.GAUSSIAN ->
         "Reference mode — no per-update weights."
@@ -912,6 +910,25 @@ private fun baroSubtitle(state: KfUiState): String {
 private fun geoidSubtitle(state: KfUiState): String {
     val n = state.geoidUndulationM?.let { "%+.1f m".format(it) } ?: "--"
     return "Undulation at current position: $n"
+}
+
+/**
+ * Helper for the Seed button's hint text. Handles three cases:
+ *
+ *  - Filter has never been seeded and no baro reference exists — needs GPS.
+ *  - Filter has never been seeded but baro is available on a baro-fusing
+ *    model — can seed from a manual altitude plus the current baro reading.
+ *  - Filter is already seeded (h in state) — re-seeding is always allowed.
+ */
+private fun seedHint(state: KfUiState, modelHasBaro: Boolean): String = when {
+    state.h != null ->
+        "Snap h to a known altitude. The b state absorbs remaining bias (fusion models only)."
+    state.gpsInput != null ->
+        "Uses the current GPS height as the reference."
+    modelHasBaro && state.baroInput != null ->
+        "Enable GNSS or seed from a known altitude using the current baro reading."
+    else ->
+        "Enable GNSS and wait for a fix to seed."
 }
 
 private fun fmtM(value: Float?, decimals: Int): String =

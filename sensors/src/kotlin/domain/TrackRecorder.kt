@@ -11,6 +11,7 @@ data class BackgroundConfig(
     val keepEphemerisWarm: Boolean,
     val holdWakeLock: Boolean,
     val recordBaroAltitude: Boolean,
+    val kalmanEnabled: Boolean,
     val airplaneMode: Boolean,
     val autoSplitOnDayRollover: Boolean,
     val autoSegmentGapMs: Long,

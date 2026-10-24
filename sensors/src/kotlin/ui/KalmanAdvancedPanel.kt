@@ -56,11 +56,13 @@ import kotlin.math.ln
  *
  * Model-aware:
  *
- *   2-state: q_h (RW on h), q_b (RW on b), derivedVelNoise (cascade v_z),
- *            derivedBiasRateNoise (cascade v_b)
- *   3-state: q_v (accel on h/v_z), q_b (RW on b),
- *            derivedBiasRateNoise (cascade v_b)
- *   4-state: q_v (accel on h/v_z), q_vb (jerk on b/v_b) — no cascade
+ *   2-state:     q_h (RW on h), q_b (RW on b), derivedVelNoise (cascade v_z),
+ *                derivedBiasRateNoise (cascade v_b)
+ *   3-state:     q_v (accel on h/v_z), q_b (RW on b),
+ *                derivedBiasRateNoise (cascade v_b)
+ *   4-state:     q_v (accel on h/v_z), q_vb (jerk on b/v_b) — no cascade
+ *   GPS 2-state: q_v ground, q_v airplane, σ_gps (reported-series noise),
+ *                no bias, no cascade
  *
  * The "Bias process noise" slider (q_b) is shared by 2-state and 3-state;
  * the "Bias rate process noise" slider (q_vb) is 4-state only. "Bias rate
@@ -145,10 +147,38 @@ fun KalmanAdvancedPanel(
                             onReset  = { onChange(tuning.copy(qH = null)) },
                         )
                     }
+                    KalmanModel.GPS_TWO_STATE -> {
+                        TuningSlider(
+                            title = "Vertical acceleration, ground (q_v)",
+                            explanation = "How much vertical acceleration the filter " +
+                                "expects on foot, on a bike, or in a car. Higher: " +
+                                "tracks hill ramps faster, more jitter. Lower: " +
+                                "smoother, lags on ramps.",
+                            value = tuning.gpsOnlyAccelQ,
+                            default = KalmanTuning.DEFAULT_GPS_ONLY_ACCEL_Q,
+                            units = "m²/s³",
+                            range = 1e-4..0.5,
+                            onChange = { onChange(tuning.copy(gpsOnlyAccelQ = it)) },
+                            onReset  = { onChange(tuning.copy(gpsOnlyAccelQ = null)) },
+                        )
+                        TuningSlider(
+                            title = "Vertical acceleration, airplane (q_v)",
+                            explanation = "How much vertical acceleration the filter " +
+                                "expects during a takeoff ramp or fast descent. " +
+                                "Active when airplane mode is on. Much looser than " +
+                                "the ground value so v_z can track sustained ramps.",
+                            value = tuning.gpsOnlyAccelQAirplane,
+                            default = KalmanTuning.DEFAULT_GPS_ONLY_ACCEL_Q_AIRPLANE,
+                            units = "m²/s³",
+                            range = 1e-2..5.0,
+                            onChange = { onChange(tuning.copy(gpsOnlyAccelQAirplane = it)) },
+                            onReset  = { onChange(tuning.copy(gpsOnlyAccelQAirplane = null)) },
+                        )
+                    }
                 }
                 // Shared bias process noise (2/3-state only — 4-state has no
-                // random walk on b). Same field, same label, same semantics
-                // in 2-state and 3-state.
+                // random walk on b, GPS 2-state has no bias at all). Same
+                // field, same label, same semantics in 2-state and 3-state.
                 when (model) {
                     KalmanModel.TWO_STATE, KalmanModel.THREE_STATE -> {
                         TuningSlider(
@@ -181,6 +211,7 @@ fun KalmanAdvancedPanel(
                             onReset  = { onChange(tuning.copy(biasRateQ = null)) },
                         )
                     }
+                    KalmanModel.GPS_TWO_STATE -> Unit  // no bias in this model
                 }
                 if (model == KalmanModel.TWO_STATE) {
                     TuningSlider(
@@ -213,33 +244,52 @@ fun KalmanAdvancedPanel(
                     )
                 }
                 // Measurement noise — shown as σ, in metres.
-                TuningSlider(
-                    title = "Barometer precision (σ_baro)",
-                    explanation = "RMS noise of the phone's pressure sensor after " +
-                        "filtering. Higher: less trust in baro, more GPS influence. " +
-                        "Lower: sharper but noisier.",
-                    value = tuning.baroSigmaM?.toDouble(),
-                    default = KalmanTuning.DEFAULT_BARO_SIGMA_M.toDouble(),
-                    units = "m",
-                    range = 0.3..5.0,
-                    onChange = { onChange(tuning.copy(baroSigmaM = it.toFloat())) },
-                    onReset  = { onChange(tuning.copy(baroSigmaM = null)) },
-                )
-                // Linear scale: range includes 0 ("floor disabled").
-                TuningSlider(
-                    title = "GPS vertical floor (σ_gps, min)",
-                    explanation = "Minimum σ used for GPS height. Some phone HALs " +
-                        "smooth altitude during plateaus, so the reported " +
-                        "verticalAccuracyMeters is optimistic and the filter follows " +
-                        "false steps. A floor prevents that. 0 disables the floor.",
-                    value = tuning.gpsVerticalMinM?.toDouble(),
-                    default = KalmanTuning.DEFAULT_GPS_VERTICAL_MIN_M.toDouble(),
-                    units = "m",
-                    range = 0.0..30.0,
-                    onChange = { onChange(tuning.copy(gpsVerticalMinM = it.toFloat())) },
-                    onReset  = { onChange(tuning.copy(gpsVerticalMinM = null)) },
-                    logScale = false,
-                )
+                if (model != KalmanModel.GPS_TWO_STATE) {
+                    TuningSlider(
+                        title = "Barometer precision (σ_baro)",
+                        explanation = "RMS noise of the phone's pressure sensor after " +
+                            "filtering. Higher: less trust in baro, more GPS influence. " +
+                            "Lower: sharper but noisier.",
+                        value = tuning.baroSigmaM?.toDouble(),
+                        default = KalmanTuning.DEFAULT_BARO_SIGMA_M.toDouble(),
+                        units = "m",
+                        range = 0.3..5.0,
+                        onChange = { onChange(tuning.copy(baroSigmaM = it.toFloat())) },
+                        onReset  = { onChange(tuning.copy(baroSigmaM = null)) },
+                    )
+                    // Linear scale: range includes 0 ("floor disabled").
+                    TuningSlider(
+                        title = "GPS vertical floor (σ_gps, min)",
+                        explanation = "Minimum σ used for GPS height. Some phone HALs " +
+                            "smooth altitude during plateaus, so the reported " +
+                            "verticalAccuracyMeters is optimistic and the filter follows " +
+                            "false steps. A floor prevents that. 0 disables the floor.",
+                        value = tuning.gpsVerticalMinM?.toDouble(),
+                        default = KalmanTuning.DEFAULT_GPS_VERTICAL_MIN_M.toDouble(),
+                        units = "m",
+                        range = 0.0..30.0,
+                        onChange = { onChange(tuning.copy(gpsVerticalMinM = it.toFloat())) },
+                        onReset  = { onChange(tuning.copy(gpsVerticalMinM = null)) },
+                        logScale = false,
+                    )
+                } else {
+                    // GPS 2-state has no baro. Its measurement noise is the
+                    // per-sample noise of the *reported* altitude series, not
+                    // verticalAccuracyMeters — see KalmanTuning.gpsOnlySigmaM.
+                    TuningSlider(
+                        title = "GPS measurement precision (σ_gps)",
+                        explanation = "Per-sample noise of the *reported* altitude series. " +
+                            "Not verticalAccuracyMeters — that describes the chip's estimate, " +
+                            "not the reported series' noise. Quantization-limited chips are " +
+                            "typically ~0.3–1 m; ~0.5 m is a good default.",
+                        value = tuning.gpsOnlySigmaM?.toDouble(),
+                        default = KalmanTuning.DEFAULT_GPS_ONLY_SIGMA_M.toDouble(),
+                        units = "m",
+                        range = 0.1..5.0,
+                        onChange = { onChange(tuning.copy(gpsOnlySigmaM = it.toFloat())) },
+                        onReset  = { onChange(tuning.copy(gpsOnlySigmaM = null)) },
+                    )
+                }
                 if (onPromote != null && !tuning.isDefault) {
                     OutlinedButton(
                         onClick = onPromote,

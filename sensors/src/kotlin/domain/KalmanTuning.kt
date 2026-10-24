@@ -44,6 +44,13 @@ package de.perigon.companion.sensors.domain
  *                       cascade differentiates b, amplifying noise. The
  *                       cascade v_b is diagnostic only.
  *
+ * GPS-only model (4th model, sibling of 2/3/4-state):
+ *   [gpsOnlyAccelQ]         — ground q_v, m²/s³.
+ *   [gpsOnlyAccelQAirplane] — airplane q_v, m²/s³ (airplane-mode variant).
+ *   [gpsOnlySigmaM]         — per-sample noise of the *reported* altitude
+ *                             series (quantization-limited), not the chip's
+ *                             reported vertical accuracy.
+ *
  * 2/3-state models serve the same use case — out and about, car/bike/wild
  * — so the bias process noise should reflect the same physical reality:
  * weather drift when you're stationary or slow, aircon when you're in a
@@ -66,12 +73,18 @@ data class KalmanTuning(
     val derivedBiasRateNoise: Double? = null,
     val baroSigmaM: Float? = null,
     val gpsVerticalMinM: Float? = null,
+    // GPS-only model tuning. See GpsTwoStateModel's KDoc.
+    val gpsOnlyAccelQ: Double? = null,
+    val gpsOnlyAccelQAirplane: Double? = null,
+    val gpsOnlySigmaM: Float? = null,
 ) {
     val isDefault: Boolean
         get() = accelNoiseQ == null && biasNoiseQ == null &&
                 qH == null && derivedVelNoise == null &&
                 biasRateQ == null && derivedBiasRateNoise == null &&
-                baroSigmaM == null && gpsVerticalMinM == null
+                baroSigmaM == null && gpsVerticalMinM == null &&
+                gpsOnlyAccelQ == null && gpsOnlyAccelQAirplane == null &&
+                gpsOnlySigmaM == null
 
     companion object {
         /** 3/4-state accel process noise q_v, m²/s³. Historical 0.2² = 0.04. */
@@ -118,5 +131,36 @@ data class KalmanTuning(
          * lower it via the Advanced expander; 0 disables the floor entirely.
          */
         const val DEFAULT_GPS_VERTICAL_MIN_M: Float = 10f
+
+        /**
+         * GPS-only ground q_v, m²/s³. Principled from
+         * q_v ≈ σ_a² · Δt for a 1 s sample interval and σ_a ≈ 0.1 m/s² —
+         * the typical sustained vertical acceleration of a cyclist or a
+         * car on a mountain road. Under-tracks stairs by design
+         * (σ_a ≈ 0.5 m/s² would want ~0.25); stairs slope is inherently
+         * noisy at any q_v, and over-tightening for that case makes hills
+         * lag.
+         */
+        const val DEFAULT_GPS_ONLY_ACCEL_Q = 0.01
+
+        /**
+         * GPS-only airplane q_v, m²/s³. Takeoff ramp: σ_a ≈ 0.4 m/s²
+         * sustained for 20–30 s, Δv ≈ 10 m/s. The derivation gives ~3;
+         * the lower end (0.5) trades ramp-tracking speed (within ~10 s,
+         * the best a 1 Hz GPS-only filter can do) for cruise quiet
+         * (σ(v_z) growth per sample ≈ √0.5 ≈ 0.7 m/s, corrected by
+         * measurements). Tune on the KF tab against a known takeoff ramp.
+         */
+        const val DEFAULT_GPS_ONLY_ACCEL_Q_AIRPLANE = 0.5
+
+        /**
+         * GPS-only measurement σ, m. Uniform quantization error over a
+         * 1 m bin has variance 1/12 ≈ 0.083 m², σ ≈ 0.29 m. A slightly
+         * larger 0.5 m accounts for the chip's internal smoothing and
+         * any small per-sample noise atop the quantization. NOT
+         * verticalAccuracyMeters — that field describes the chip's
+         * underlying estimate, not the reported series' noise.
+         */
+        const val DEFAULT_GPS_ONLY_SIGMA_M: Float = 0.5f
     }
 }

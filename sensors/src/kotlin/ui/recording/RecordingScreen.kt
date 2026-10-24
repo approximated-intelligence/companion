@@ -49,6 +49,8 @@ import de.perigon.companion.sensors.domain.formatModeLabel
 import de.perigon.companion.sensors.service.GnssInfo
 import de.perigon.companion.sensors.ui.BaroCalibrationDialog
 import de.perigon.companion.sensors.ui.KalmanAdvancedPanel
+import de.perigon.companion.sensors.ui.KalmanModeSelector
+import de.perigon.companion.sensors.ui.KalmanModelSelector
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -209,6 +211,8 @@ fun RecordingScreenContent(
                         lastBaroInnovationM  = state.lastBaroInnovationM,
                         airconDetected       = state.airconDetected,
                         baroEnabled          = state.config.recordBaroAltitude,
+                        kalmanEnabled        = state.config.kalmanEnabled,
+                        modelUsesBaro        = state.config.kalmanModel.hasBaroMeasurement,
                         hasBarometer         = state.hasBarometer,
                         airplaneMode         = state.config.airplaneMode,
                         gnssInfo             = state.gnssInfo,
@@ -302,10 +306,27 @@ fun RecordingScreenContent(
             item { Text("Barometric altitude", style = MaterialTheme.typography.titleSmall) }
             item { ToggleRow("Record barometric altitude", "MEMS pressure sensor via standard atmosphere. Adds relative climb precision; ~100 µA at 5 Hz.", state.config.recordBaroAltitude, vm::setRecordBaroAltitude) }
 
-            if (state.config.recordBaroAltitude) {
-                item { HorizontalDivider() }
-                item { Text("Altitude filter", style = MaterialTheme.typography.titleSmall) }
+            item { HorizontalDivider() }
+            item { Text("Altitude filter", style = MaterialTheme.typography.titleSmall) }
 
+            // Master switch. Off by default: the recorder stores raw GPS
+            // altitude and the per-point baro column as-is, and the live
+            // card's KF-derived readouts (h, v_z, slope, b, σ, innovations,
+            // CUSUM) stay "--". The model/mode/tuning controls below are
+            // only meaningful when this is on, so they're hidden while off.
+            item {
+                ToggleRow(
+                    title           = "Kalman filtering",
+                    subtitle        = if (state.config.kalmanEnabled)
+                        "Smooth or fuse GPS altitude through a Kalman filter."
+                    else
+                        "Off: raw GPS altitude is recorded. No filter, no slope / v_z / bias readouts.",
+                    checked         = state.config.kalmanEnabled,
+                    onCheckedChange = vm::setKalmanEnabled,
+                )
+            }
+
+            if (state.config.kalmanEnabled) {
                 item {
                     Text("Model", style = MaterialTheme.typography.bodyMedium)
                     Spacer(Modifier.height(4.dp))
@@ -480,63 +501,6 @@ fun RecordingScreenContent(
 }
 
 @Composable
-private fun KalmanModelSelector(currentModel: KalmanModel, onModelSelected: (KalmanModel) -> Unit) {
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        KalmanModel.entries.forEach { model ->
-            FilterChip(
-                selected = currentModel == model,
-                onClick = { onModelSelected(model) },
-                label = { Text(model.displayName) },
-            )
-        }
-    }
-    Spacer(Modifier.height(4.dp))
-    Text(
-        when (currentModel) {
-            KalmanModel.THREE_STATE ->
-                "h, v_z, b. v_z is a proper KF state; velocity observable from GPS but weakly, so σ_h grows as t^{3/2} during outages. Better for short outages with well-tracked velocity; worse for long ones."
-            KalmanModel.TWO_STATE ->
-                "h, b. Baro drives h at full bandwidth; no velocity state steals baro information. v_z is derived by a cascade position-difference filter (leaf; no feedback). σ_h grows as t^{1/2} during outages. Better for long outages; worse for short ones on a moving vehicle."
-            KalmanModel.FOUR_STATE ->
-                "h, v_z, b, v_b. CV on both h and b; v_b absorbs aircon and weather drift as a rate. Tight q_vb makes aircon a step violation detectable by the CUSUM on baro innovations. Slightly more confident about b during long outages than 3-state (t³ vs t growth on σ_b²)."
-        },
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-}
-
-@Composable
-private fun KalmanModeSelector(currentMode: KalmanMode, onModeSelected: (KalmanMode) -> Unit) {
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        KalmanMode.entries.forEach { mode ->
-            FilterChip(
-                selected = currentMode == mode,
-                onClick = { onModeSelected(mode) },
-                label = { Text(mode.label()) },
-            )
-        }
-    }
-    Spacer(Modifier.height(4.dp))
-    Text(
-        when (currentMode) {
-            KalmanMode.GAUSSIAN -> "Plain Kalman filter. No outlier rejection; the reference."
-            KalmanMode.HUBER -> "Huber M-estimation: downweights measurement outliers, Joseph-form covariance."
-            KalmanMode.VBAKF -> "Variational Bayesian: estimates the measurement noise covariance online (inverse-gamma prior)."
-            KalmanMode.ISKF -> "Iteratively Saturated KF (Yang & Boyd 2025): convex robust MAP with separate process and measurement outlier terms."
-        },
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-}
-
-private fun KalmanMode.label(): String = when (this) {
-    KalmanMode.GAUSSIAN -> "Gaussian"
-    KalmanMode.HUBER -> "Huber"
-    KalmanMode.VBAKF -> "VBAKF"
-    KalmanMode.ISKF -> "ISKF"
-}
-
-@Composable
 private fun RecordingControls(
     isRecording: Boolean,
     isPaused: Boolean,
@@ -693,13 +657,29 @@ private fun StatValueWithUnit(
  * No-barometer hides baro from the heights line and the Q-line/recalibrate
  * entirely.
  *
- * slope and v_z are populated in EVERY model. 3/4-state: v_z is the KF's
- * own velocity state. 2-state: v_z comes from the filter's cascade
+ * slope and v_z are populated in EVERY model. 3/4/GPS-2-state: v_z is the
+ * KF's own velocity state. 2-state: v_z comes from the filter's cascade
  * position-difference estimator (a leaf — no feedback into h or b), so the
  * live card shows climb rate and slope in the 2-state too. The "--" case
  * for slope remains valid: it also covers v_h < 0.5 m/s, and the first
  * fraction of a second after seed when the cascade has not produced its
  * first sample yet.
+ *
+ * When Kalman filtering is off entirely, h/v_z/slope/b/σ/innovations/CUSUM
+ * are all null and every KF-derived readout renders "--"; raw baro pressure
+ * and the per-point baro column still flow through independently.
+ *
+ * When the model has no bias state (GPS-only), the b / σ(b) / Δbaro /
+ * bias-rate / Q-line / recalibrate rows are hidden even with baro enabled —
+ * there is no bias state for them to read from.
+ *
+ * Airplane mode's effect on the live card is determined by the filter
+ * state, not by the model identity. When the filter is off, the airplane
+ * toggle's ONLY effect is on whether baro alt is stored per point
+ * (BackgroundService.convert), so the row is still rendered when baro
+ * recording is enabled — hiding it would strand the user with no way to
+ * change the setting that controls the stored column. When the filter is
+ * on, the row is rendered regardless (the filter uses airplaneMode).
  *
  * The bias-rate line is new (4-state feature surfaced in every model). It
  * is a diagnostic, shown only when baro is in the pipeline. It prefixes
@@ -730,6 +710,8 @@ private fun LiveCard(
     lastBaroInnovationM: Float?,
     airconDetected: Boolean,
     baroEnabled: Boolean,
+    kalmanEnabled: Boolean,
+    modelUsesBaro: Boolean,
     hasBarometer: Boolean,
     airplaneMode: Boolean,
     gnssInfo: GnssInfo,
@@ -769,12 +751,19 @@ private fun LiveCard(
         "${cardinal(heading)} ${heading.toInt()}" to "°"
     } else "--" to ""
 
-    val kfAltitudeText: String = kalmanAltitudeM?.let { "%.1f m".format(it) } ?: "--"
-    // "--" covers three cases: v_h < 0.5 m/s (below MIN_SPEED_FOR_SLOPE_MPS),
-    // v_z not yet available (first sample after seed), or the filter not
-    // seeded at all. All three are genuinely unknown, not "flat".
-    val slopeText: String = slopePercent?.let { "%+.1f%%".format(it) } ?: "--"
-    val vzText: String = verticalSpeedMps?.let { "%+.2f m/s".format(it) } ?: "--"
+    val kfAltitudeText: String =
+        if (!kalmanEnabled) "--"
+        else kalmanAltitudeM?.let { "%.1f m".format(it) } ?: "--"
+    // "--" covers four cases: Kalman disabled, v_h < 0.5 m/s (below
+    // MIN_SPEED_FOR_SLOPE_MPS), v_z not yet available (first sample after
+    // seed), or the filter not seeded at all. All four are genuinely
+    // unknown, not "flat".
+    val slopeText: String =
+        if (!kalmanEnabled) "--"
+        else slopePercent?.let { "%+.1f%%".format(it) } ?: "--"
+    val vzText: String =
+        if (!kalmanEnabled) "--"
+        else verticalSpeedMps?.let { "%+.2f m/s".format(it) } ?: "--"
 
     // Debug line. Every height representation the pipeline carries, plus baro.
     // Each part is present with a "--" placeholder when the value is not yet
@@ -797,19 +786,23 @@ private fun LiveCard(
         }
     }
 
-    val baroInPipeline = baroEnabled && !airplaneMode && hasBarometer
-    val kfLine: String? = if (kalmanAltitudeM != null) {
+    // Baro is *fused* only when Kalman is on, the model uses baro, the
+    // sensor is present, and airplane mode isn't excluding it. When false,
+    // the KF-derived baro rows (b, σ(b), Δbaro, CUSUM, QNH) are hidden.
+    val baroFused = kalmanEnabled && modelUsesBaro && !airplaneMode && hasBarometer
+
+    val kfLine: String? = if (kalmanEnabled && kalmanAltitudeM != null) {
         buildString {
-            if (baroInPipeline) {
+            if (baroFused) {
                 append("b ").append(kalmanBiasM?.let { "%+.1f m".format(it) } ?: "--")
                 append(" · ")
             }
             append("σ(h) ").append(kalmanAltitudeSigmaM?.let { "%.1f".format(it) } ?: "--")
-            if (baroInPipeline) {
+            if (baroFused) {
                 append(" · σ(b) ").append(kalmanBiasSigmaM?.let { "%.1f".format(it) } ?: "--")
             }
             append(" · Δgps ").append(lastGpsInnovationM?.let { "%+.1f".format(it) } ?: "--")
-            if (baroInPipeline) {
+            if (baroFused) {
                 append(" · Δbaro ").append(lastBaroInnovationM?.let { "%+.1f".format(it) } ?: "--")
             }
         }
@@ -817,7 +810,7 @@ private fun LiveCard(
 
     // Bias-rate line: shown whenever baro is in the pipeline (v_b is
     // baro-derived). Prefixes "aircon" when the CUSUM has fired.
-    val biasRateLine: String? = if (baroInPipeline && kalmanBiasRateMps != null) {
+    val biasRateLine: String? = if (baroFused && kalmanBiasRateMps != null) {
         buildString {
             append("db/dt ")
             append("%+.2f mm/s".format(kalmanBiasRateMps * 1000f))
@@ -828,7 +821,7 @@ private fun LiveCard(
     // QNH requires a 3D fix: the filter cannot seed from baro alone, because
     // the weather bias is unknown until GPS pins the absolute reference.
     // "(needs 3D fix)" is shown in that window rather than a bare "--".
-    val qLine: String? = if (baroInPipeline) {
+    val qLine: String? = if (baroFused) {
         buildString {
             append("QFE ")
             append(currentPressureHpa?.let { "%.1f hPa".format(it) } ?: "-- hPa")
@@ -841,8 +834,19 @@ private fun LiveCard(
         }
     } else null
 
-    val canRecalibrate = baroInPipeline && currentBaroAltitudeM != null
+    val canRecalibrate = baroFused && currentBaroAltitudeM != null
     val gnssText: String = gnssInfo.format().ifEmpty { "--" }
+
+    // Airplane-mode row visibility is determined by the toggle's *effect*,
+    // not by filter state alone. The toggle affects:
+    //   - The filter's q_v (GPS-only) or baro fusion (fusion models) when
+    //     the filter is on.
+    //   - Whether baro alt is stored per point (BackgroundService.convert)
+    //     when baro recording is on, regardless of filter state.
+    // So the row is shown whenever EITHER effect is active. Hiding it when
+    // the filter is off would strand the user with no way to change the
+    // setting that controls the stored baro column.
+    val showAirplaneRow = kalmanEnabled || baroEnabled
 
     Card(
         colors   = CardDefaults.cardColors(containerColor = containerColor),
@@ -888,31 +892,35 @@ private fun LiveCard(
             }
 
             // Row 2 — altitude · slope · v_z, one step down in prominence.
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                StatColumn(
-                    value = kfAltitudeText,
-                    modifier = Modifier.weight(1f),
-                    color = contentColor,
-                    valueStyle = MaterialTheme.typography.titleLarge,
-                    textAlign = TextAlign.Start,
-                )
-                StatColumn(
-                    value = slopeText,
-                    modifier = Modifier.weight(1f),
-                    color = contentColor,
-                    valueStyle = MaterialTheme.typography.titleLarge,
-                    textAlign = TextAlign.Center,
-                )
-                StatColumn(
-                    value = vzText,
-                    modifier = Modifier.weight(1f),
-                    color = contentColor,
-                    valueStyle = MaterialTheme.typography.titleMedium,
-                    textAlign = TextAlign.End,
-                )
+            // Hidden entirely when Kalman is off — the readouts are always
+            // "--" in that case, and three permanent dashes are just noise.
+            if (kalmanEnabled) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    StatColumn(
+                        value = kfAltitudeText,
+                        modifier = Modifier.weight(1f),
+                        color = contentColor,
+                        valueStyle = MaterialTheme.typography.titleLarge,
+                        textAlign = TextAlign.Start,
+                    )
+                    StatColumn(
+                        value = slopeText,
+                        modifier = Modifier.weight(1f),
+                        color = contentColor,
+                        valueStyle = MaterialTheme.typography.titleLarge,
+                        textAlign = TextAlign.Center,
+                    )
+                    StatColumn(
+                        value = vzText,
+                        modifier = Modifier.weight(1f),
+                        color = contentColor,
+                        valueStyle = MaterialTheme.typography.titleMedium,
+                        textAlign = TextAlign.End,
+                    )
+                }
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
@@ -979,22 +987,35 @@ private fun LiveCard(
                 color = contentColor.copy(alpha = 0.7f),
             )
 
-            HorizontalDivider(color = contentColor.copy(alpha = 0.2f))
+            // Airplane-mode row: shown whenever the toggle has an effect —
+            // see showAirplaneRow's comment. Subtitle differentiates the
+            // three states so the user knows which behaviour is being
+            // controlled.
+            if (showAirplaneRow) {
+                HorizontalDivider(color = contentColor.copy(alpha = 0.2f))
 
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "Airplane mode",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = contentColor,
-                    )
-                    Text(
-                        "Cabin pressure is regulated and excluded from altitude fusion",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = contentColor.copy(alpha = 0.7f),
-                    )
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "Airplane mode",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = contentColor,
+                        )
+                        Text(
+                            when {
+                                !kalmanEnabled ->
+                                    "Excludes barometric altitude from recorded points"
+                                modelUsesBaro ->
+                                    "Cabin pressure excluded from fusion"
+                                else ->
+                                    "Switches GPS-only filter to a looser q_v for takeoff ramps"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = contentColor.copy(alpha = 0.7f),
+                        )
+                    }
+                    Switch(checked = airplaneMode, onCheckedChange = onSetAirplaneMode)
                 }
-                Switch(checked = airplaneMode, onCheckedChange = onSetAirplaneMode)
             }
         }
     }

@@ -32,6 +32,7 @@ private object Keys {
     val KEEP_EPHEMERIS_WARM     = booleanPreferencesKey("keep_ephemeris_warm")
     val HOLD_WAKE_LOCK          = booleanPreferencesKey("hold_wake_lock")
     val RECORD_BARO_ALTITUDE    = booleanPreferencesKey("record_baro_altitude")
+    val KALMAN_ENABLED          = booleanPreferencesKey("kalman_enabled")
     val AIRPLANE_MODE           = booleanPreferencesKey("airplane_mode")
     val AUTO_SCHEDULE_ENABLED   = booleanPreferencesKey("auto_schedule_enabled")
     val AUTO_START_SECONDS      = longPreferencesKey("auto_start_seconds")
@@ -56,6 +57,11 @@ private object Keys {
     val BARO_SIGMA_M            = floatPreferencesKey("baro_sigma_m")
     val KALMAN_GPS_VERTICAL_MIN = floatPreferencesKey("kalman_gps_vertical_min_m")
 
+    // GPS-only model tuning. Same null-means-default convention.
+    val GPS_ONLY_ACCEL_Q          = floatPreferencesKey("gps_only_accel_q")
+    val GPS_ONLY_ACCEL_Q_AIRPLANE = floatPreferencesKey("gps_only_accel_q_airplane")
+    val GPS_ONLY_SIGMA_M          = floatPreferencesKey("gps_only_sigma_m")
+
     // Legacy σ-scale keys from before the unification. Read for migration;
     // removed on any write. Never written again.
     val LEGACY_KALMAN_ACCEL_NOISE = floatPreferencesKey("kalman_accel_noise_mps2")
@@ -72,6 +78,7 @@ private fun Preferences.toTrackConfig() = TrackConfigEntity(
     keepEphemerisWarm      = this[Keys.KEEP_EPHEMERIS_WARM]     ?: TrackConfigEntity.DEFAULT.keepEphemerisWarm,
     holdWakeLock           = this[Keys.HOLD_WAKE_LOCK]          ?: TrackConfigEntity.DEFAULT.holdWakeLock,
     recordBaroAltitude     = this[Keys.RECORD_BARO_ALTITUDE]    ?: TrackConfigEntity.DEFAULT.recordBaroAltitude,
+    kalmanEnabled          = this[Keys.KALMAN_ENABLED]          ?: TrackConfigEntity.DEFAULT.kalmanEnabled,
     airplaneMode           = this[Keys.AIRPLANE_MODE]           ?: TrackConfigEntity.DEFAULT.airplaneMode,
     autoScheduleEnabled    = this[Keys.AUTO_SCHEDULE_ENABLED]   ?: TrackConfigEntity.DEFAULT.autoScheduleEnabled,
     autoStartSeconds       = this[Keys.AUTO_START_SECONDS]      ?: TrackConfigEntity.DEFAULT.autoStartSeconds,
@@ -97,6 +104,9 @@ private fun Preferences.toTrackConfig() = TrackConfigEntity(
     kalmanDerivedBiasRateNoise = this[Keys.KALMAN_DERIVED_BIAS_RATE]?.toDouble(),
     baroSigmaM            = this[Keys.BARO_SIGMA_M],
     kalmanGpsVerticalMinM = this[Keys.KALMAN_GPS_VERTICAL_MIN],
+    gpsOnlyAccelQ         = this[Keys.GPS_ONLY_ACCEL_Q]?.toDouble(),
+    gpsOnlyAccelQAirplane = this[Keys.GPS_ONLY_ACCEL_Q_AIRPLANE]?.toDouble(),
+    gpsOnlySigmaM         = this[Keys.GPS_ONLY_SIGMA_M],
 )
 
 private fun parseKalmanMode(raw: String?): KalmanMode =
@@ -163,6 +173,7 @@ class TrackConfigPrefs @Inject constructor(
             set(Keys.KEEP_EPHEMERIS_WARM,     updated.keepEphemerisWarm)
             set(Keys.HOLD_WAKE_LOCK,          updated.holdWakeLock)
             set(Keys.RECORD_BARO_ALTITUDE,    updated.recordBaroAltitude)
+            set(Keys.KALMAN_ENABLED,          updated.kalmanEnabled)
             set(Keys.AIRPLANE_MODE,           updated.airplaneMode)
             set(Keys.AUTO_SCHEDULE_ENABLED,   updated.autoScheduleEnabled)
             set(Keys.AUTO_START_SECONDS,      updated.autoStartSeconds)
@@ -200,6 +211,15 @@ class TrackConfigPrefs @Inject constructor(
             updated.kalmanGpsVerticalMinM
                 ?.let { set(Keys.KALMAN_GPS_VERTICAL_MIN, it) }
                 ?: remove(Keys.KALMAN_GPS_VERTICAL_MIN)
+            updated.gpsOnlyAccelQ
+                ?.let { set(Keys.GPS_ONLY_ACCEL_Q, it.toFloat()) }
+                ?: remove(Keys.GPS_ONLY_ACCEL_Q)
+            updated.gpsOnlyAccelQAirplane
+                ?.let { set(Keys.GPS_ONLY_ACCEL_Q_AIRPLANE, it.toFloat()) }
+                ?: remove(Keys.GPS_ONLY_ACCEL_Q_AIRPLANE)
+            updated.gpsOnlySigmaM
+                ?.let { set(Keys.GPS_ONLY_SIGMA_M, it) }
+                ?: remove(Keys.GPS_ONLY_SIGMA_M)
             // Drop legacy σ-scale keys. They were read for migration above;
             // any subsequent write supersedes them, so they must not linger
             // and shadow a future read.

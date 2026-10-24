@@ -265,9 +265,14 @@ class RecordingViewModel @Inject constructor(
     /**
      * One-shot KF seeding. Sends the reference altitude to the service,
      * which snaps h and b. No offset is stored — the KF absorbs residual
-     * bias on its own.
+     * bias on its own. Ignored when the filter is disabled (nothing to
+     * seed) or when the model has no bias state (nothing for b to absorb).
      */
     fun calibrateBaro(referenceAltM: Float) {
+        if (!_state.value.config.kalmanEnabled) {
+            snackbar.send("Kalman filtering is disabled")
+            return
+        }
         if (_state.value.config.airplaneMode) {
             snackbar.send("Calibration is disabled in airplane mode")
             return
@@ -307,6 +312,7 @@ class RecordingViewModel @Inject constructor(
     fun setKeepEphemerisWarm(v: Boolean)         { viewModelScope.launch { configPrefs.update { it.copy(keepEphemerisWarm = v) } } }
     fun setHoldWakeLock(v: Boolean)              { viewModelScope.launch { configPrefs.update { it.copy(holdWakeLock = v) } } }
     fun setRecordBaroAltitude(v: Boolean)        { viewModelScope.launch { configPrefs.update { it.copy(recordBaroAltitude = v) } } }
+    fun setKalmanEnabled(v: Boolean)             { viewModelScope.launch { configPrefs.update { it.copy(kalmanEnabled = v) } } }
     fun setAirplaneMode(v: Boolean)              { viewModelScope.launch { configPrefs.update { it.copy(airplaneMode = v) } } }
     fun setAutoSplitOnDayRollover(v: Boolean)    { viewModelScope.launch { configPrefs.update { it.copy(autoSplitOnDayRollover = v) } } }
     fun setAutoSegmentGapMs(ms: Long)            { viewModelScope.launch { configPrefs.update { it.copy(autoSegmentGapMs = ms) } } }
@@ -345,6 +351,9 @@ class RecordingViewModel @Inject constructor(
                     kalmanDerivedBiasRateNoise = tuning.derivedBiasRateNoise,
                     baroSigmaM            = tuning.baroSigmaM,
                     kalmanGpsVerticalMinM = tuning.gpsVerticalMinM,
+                    gpsOnlyAccelQ         = tuning.gpsOnlyAccelQ,
+                    gpsOnlyAccelQAirplane = tuning.gpsOnlyAccelQAirplane,
+                    gpsOnlySigmaM         = tuning.gpsOnlySigmaM,
                 )
             }
         }
