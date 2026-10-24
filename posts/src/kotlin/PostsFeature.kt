@@ -31,6 +31,7 @@ import de.perigon.companion.posts.ui.picker.MediaPickerScreen
 import de.perigon.companion.posts.ui.prep.MediaPrepScreen
 import de.perigon.companion.posts.ui.prep.MediaPrepViewModel
 import kotlinx.serialization.Serializable
+import kotlin.reflect.KClass
 import javax.inject.Inject
 
 /** Member names match the former core Route, so screens keep `Route.X` via an import alias. */
@@ -176,10 +177,10 @@ class PostsFeature @Inject constructor() : FeatureEntry {
         route.contains("PostsRoute.PostEdit")    -> "Post"
         route.contains("PostsRoute.Posts")       -> "Posts"
         route.contains("PostsRoute.MediaPicker") -> "Select Media"
-        route.contains("PostsRoute.MediaPrep")   -> "Media Prep"
+        route.contains("PostsRoute.MediaPrep")   -> "Posts"
         route.contains("PostsRoute.AssetDiff")   -> "Asset Diff"
         route.contains("PostsRoute.AssetEdit")   -> "Edit Asset"
-        route.contains("PostsRoute.Assets")      -> "Assets"
+        route.contains("PostsRoute.Assets")      -> "Posts"
         else -> null
     }
 
@@ -201,6 +202,17 @@ class PostsFeature @Inject constructor() : FeatureEntry {
         val media = mime.isEmpty() || mime == "*/*" ||
             mime.startsWith("image/") || mime.startsWith("video/")
         return if (media) PostsRoute.MediaPrep() else null
+    }
+
+    override fun defaultTabClassFor(route: Any): KClass<*>? = when (route) {
+        is PostsRoute.Posts, is PostsRoute.Assets -> PostsRoute.Posts::class
+        // Only the TAB variant (postId = 0) is a tab root. The child variant
+        // (postId = N, reached from a post editor's "Add media") is a pushed
+        // screen: popping to Posts before navigating to it would break back-
+        // from-child (should return to the editor, not the tab root).
+        is PostsRoute.MediaPrep ->
+            if (route.postId == 0L) PostsRoute.Posts::class else null
+        else -> null
     }
 }
 

@@ -4,6 +4,7 @@ import androidx.navigation.NavGraphBuilder
 import androidx.navigation.NavHostController
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
+import kotlin.reflect.KClass
 
 /** One entry in the top-bar menu. [visible] lets a feature hide itself (e.g. Track without GPS). */
 data class MenuItem(
@@ -43,4 +44,23 @@ interface FeatureEntry {
 
     /** Route that accepts shared content of [mimeType], or null. */
     fun shareRoute(mimeType: String?): Any? = null
+
+    /**
+     * When [route] is a tab root of this feature, returns the class of the
+     * feature's default tab. Null when [route] is not a tab root of this
+     * feature, or the feature has no tab row.
+     *
+     * Used by [de.perigon.companion.core.ui.AppTopBar]'s menu click and by
+     * [de.perigon.companion.core.ui.deliver]: navigating to a tab root should
+     * pop back to the feature's default tab rather than stacking a new entry
+     * on top of the current tab. Without this, tapping "Posts" from the
+     * MediaPrep tab produced `[Posts, MediaPrep, Posts]`, and back-press
+     * walked through the duplicate before exiting.
+     *
+     * Only the class is returned (not the instance) because every tabbed
+     * feature's default tab is a `data object` — a singleton route with no
+     * arguments to distinguish. That is why `popUpTo(route: KClass<*>)`
+     * suffices here and no per-feature instance is needed.
+     */
+    fun defaultTabClassFor(route: Any): KClass<*>? = null
 }

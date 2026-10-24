@@ -21,6 +21,7 @@ import de.perigon.companion.core.ui.takeSharedUris
 import de.perigon.companion.media.ui.queue.QueueScreen
 import de.perigon.companion.media.ui.render.TrackRenderScreen
 import kotlinx.serialization.Serializable
+import kotlin.reflect.KClass
 import java.util.Optional
 import javax.inject.Inject
 
@@ -113,9 +114,13 @@ class MediaFeature @Inject constructor(
         context.startActivity(Intent.createChooser(send, "Share render").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 
+    // Both tab roots report the feature's menu label ("Media"), not the tab
+    // name. Media is the odd one out here: the menu item says "Media" but the
+    // tabs are "Track Render" / "Queue", so title≠menu was the *default*
+    // state — every tab click contradicted the menu.
     override fun titleFor(route: String): String? = when {
-        route.endsWith("MediaRoute.TrackRender") -> "Track Render"
-        route.endsWith("MediaRoute.Queue") -> "Queue"
+        route.endsWith("MediaRoute.TrackRender") ||
+        route.endsWith("MediaRoute.Queue") -> "Media"
         else -> null
     }
 
@@ -135,5 +140,11 @@ class MediaFeature @Inject constructor(
     override fun shareRoute(mimeType: String?): Any? {
         val mime = mimeType.orEmpty()
         return if (mime.contains("gpx") || mime.contains("octet")) MediaRoute.TrackRender else null
+    }
+
+    override fun defaultTabClassFor(route: Any): KClass<*>? = when (route) {
+        is MediaRoute.TrackRender, is MediaRoute.Queue ->
+            MediaRoute.TrackRender::class
+        else -> null
     }
 }

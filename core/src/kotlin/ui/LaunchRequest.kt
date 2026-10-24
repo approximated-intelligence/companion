@@ -38,6 +38,33 @@ fun launchRequestOf(intent: Intent): LaunchRequest? {
 }
 
 /**
+ * Navigate to a feature route. When [route] is a tab root of a feature
+ * (Archive / Posts / Media), pop back to that feature's default tab so the
+ * navigation behaves like a tab tap — no duplicate tab root stacked on top
+ * of the current tab. Non-tab routes navigate normally.
+ *
+ * Used by both [deliver] (notification taps) and
+ * [de.perigon.companion.core.ui.AppTopBar]'s menu handler (menu taps).
+ * Sharing the logic is the whole point: any future entry point that goes
+ * through either of them inherits the fix.
+ */
+fun NavController.navigateToFeatureRoute(
+    route: Any,
+    features: Collection<FeatureEntry>,
+) {
+    val tabRoot = features.firstNotNullOfOrNull { it.defaultTabClassFor(route) }
+    if (tabRoot != null) {
+        navigate(route) {
+            popUpTo(tabRoot) { inclusive = false; saveState = true }
+            launchSingleTop = true
+            restoreState = true
+        }
+    } else {
+        navigate(route) { launchSingleTop = true }
+    }
+}
+
+/**
  * Shares always open a FRESH entry (never launchSingleTop): shared media
  * starts a new post even when another post's media screen is on top. URIs
  * travel in the new entry's SavedStateHandle and are drained there once.
@@ -47,7 +74,7 @@ fun NavController.deliver(request: LaunchRequest, features: Collection<FeatureEn
         is LaunchRequest.Navigate -> {
             val route = features.firstNotNullOfOrNull { it.routeFor(request.target) }
                 ?: return Log.w("LaunchRequest", "no feature handles navigate_to=${request.target}").let { }
-            navigate(route) { launchSingleTop = true }
+            navigateToFeatureRoute(route, features)
         }
         is LaunchRequest.Share -> {
             val route = features.firstNotNullOfOrNull { it.shareRoute(request.mimeType) }

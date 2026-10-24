@@ -15,6 +15,7 @@ import de.perigon.companion.core.feature.CommonRequirements
 import de.perigon.companion.core.feature.FeatureEntry
 import de.perigon.companion.core.feature.MenuItem
 import kotlinx.serialization.Serializable
+import kotlin.reflect.KClass
 import javax.inject.Inject
 
 /**
@@ -77,10 +78,14 @@ class ArchiveFeature @Inject constructor() : FeatureEntry {
         graph.composable<ArchiveRoute.Mirror> { MirrorScreen(navController = nav) }
     }
 
+    // All three tab roots report the feature's menu label ("Archive"), not
+    // the tab name. The tab row indicates which sub-surface is selected; the
+    // title bar matching the menu entry keeps "which feature am I in?"
+    // answerable when the user is deep in a tab.
     override fun titleFor(route: String): String? = when {
-        route.endsWith("ArchiveRoute.Consolidate") -> "Archive"
-        route.endsWith("ArchiveRoute.Restore") -> "Restore"
-        route.endsWith("ArchiveRoute.Mirror") -> "Mirror"
+        route.endsWith("ArchiveRoute.Consolidate") ||
+        route.endsWith("ArchiveRoute.Restore") ||
+        route.endsWith("ArchiveRoute.Mirror") -> "Archive"
         else -> null
     }
 
@@ -92,6 +97,12 @@ class ArchiveFeature @Inject constructor() : FeatureEntry {
         // but tapping them should still land in the archive. Consolidate is
         // where the backup was triggered from, so that is where it lands.
         ArchiveTargets.BACKUP -> ArchiveRoute.Consolidate
+        else -> null
+    }
+
+    override fun defaultTabClassFor(route: Any): KClass<*>? = when (route) {
+        is ArchiveRoute.Consolidate, is ArchiveRoute.Restore, is ArchiveRoute.Mirror ->
+            ArchiveRoute.Consolidate::class
         else -> null
     }
 }

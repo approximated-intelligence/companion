@@ -54,7 +54,7 @@ fun AppTopBar(navController: NavController) {
                                 text = { Text(item.label) },
                                 onClick = {
                                     menuOpen = false
-                                    navController.navigate(item.route) { launchSingleTop = true }
+                                    navController.navigateToFeatureRoute(item.route, features)
                                 },
                             )
                         }
