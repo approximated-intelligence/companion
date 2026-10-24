@@ -196,6 +196,7 @@ fun RecordingScreenContent(
                         lastProvidedFix      = state.lastProvidedFix,
                         lastAcceptedFix      = state.lastAcceptedFix,
                         lastEnqueuedFix      = state.lastEnqueuedFix,
+                        lastHeadingDegrees   = state.lastHeadingDegrees,
                         liveDistanceM        = state.liveDistanceM,
                         currentBaroAltitudeM = state.currentBaroAltitudeM,
                         currentPressureHpa   = state.currentPressureHpa,
@@ -707,6 +708,7 @@ private fun LiveCard(
     lastProvidedFix: TrackPointEntity?,
     lastAcceptedFix: TrackPointEntity?,
     lastEnqueuedFix: TrackPointEntity?,
+    lastHeadingDegrees: Float?,
     liveDistanceM: Float?,
     currentBaroAltitudeM: Float?,
     currentPressureHpa: Float?,
@@ -745,10 +747,10 @@ private fun LiveCard(
     }
 
     val speedKmh: Float? = lastProvidedFix?.speedMs?.let { it * 3.6f }
-    // Location.getBearing() is course over ground (direction of travel),
-    // i.e. heading, not bearing-to-a-target. There is no target here.
-    // Goes null at rest — the UI must show "--" rather than hiding.
-    val heading: Float? = lastProvidedFix?.bearing
+    // Last non-null bearing from the service. Unfiltered — the service
+    // stores whatever the chipset reports, holding the previous value when
+    // a fix arrives without a course. No smoothing, no threshold.
+    val heading: Float? = lastHeadingDegrees
 
     // Row 1 — values with units inline, no labels.
     val (distanceValue, distanceUnit) = when {
@@ -758,9 +760,6 @@ private fun LiveCard(
     }
     val (speedValue, speedUnit) = if (speedKmh != null) {
         "%.1f".format(speedKmh) to "km/h"
-    } else "--" to ""
-    val (headingValue, headingUnit) = if (heading != null) {
-        "${cardinal(heading)} ${heading.toInt()}" to "°"
     } else "--" to ""
 
     val kfAltitudeText: String =
@@ -851,7 +850,7 @@ private fun LiveCard(
     } else null
 
     val canRecalibrate = baroFused && currentBaroAltitudeM != null
-    val gnssText: String = gnssInfo.format().ifEmpty { "--" }
+    val gnssText: String = gnssInfo.format()
 
     // Airplane-mode row visibility is determined by the toggle's *effect*,
     // not by filter state alone. The toggle affects:
@@ -898,13 +897,38 @@ private fun LiveCard(
                 }
             }
 
+            // Distance only when there is one (recording or paused); during
+            // locating/preview it is null and the cell is omitted entirely
+            // rather than rendering a placeholder. Speed and heading stay
+            // because they are meaningful even before recording starts —
+            // the preview is the user's chance to see them before
+            // committing.
+            // Three fixed slots — heading (left), speed (center), distance
+            // (right). When distance is absent (preview, or after stop), the
+            // right slot is a blank Spacer, not a "--": the layout stays
+            // stable across recording state so the other two cells don't
+            // slide around when recording starts or stops. The distance slot
+            // is never rendered as "--" in any state.
+            val showDistance = liveDistanceM != null
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                StatValueWithUnit(distanceValue, distanceUnit, Modifier.weight(1f), contentColor, Arrangement.Start)
-                StatValueWithUnit(speedValue, speedUnit, Modifier.weight(1f), contentColor, Arrangement.Center)
-                StatValueWithUnit(headingValue, headingUnit, Modifier.weight(1f), contentColor, Arrangement.End)
+                HeadingCell(
+                    heading,
+                    Modifier.weight(1f), contentColor,
+                    Arrangement.Start,
+                )
+                StatValueWithUnit(
+                    speedValue, speedUnit,
+                    Modifier.weight(1f), contentColor,
+                    Arrangement.Center,
+                )
+                if (showDistance) {
+                    StatValueWithUnit(distanceValue, distanceUnit, Modifier.weight(1f), contentColor, Arrangement.End)
+                } else {
+                    Spacer(Modifier.weight(1f))
+                }
             }
 
             // Row 2 — altitude · slope · v_z, one step down in prominence.
@@ -996,12 +1020,16 @@ private fun LiveCard(
                 onShareFix = onShareFix,
             )
 
-            // GNSS: always shown. "--" before first satellite status arrives.
-            Text(
-                gnssText,
-                style = MaterialTheme.typography.labelSmall,
-                color = contentColor.copy(alpha = 0.7f),
-            )
+            // Only shown when satellite status has arrived. "--" is
+            // dropped entirely; an empty line communicates the same absence
+            // without pretending to know the sensor state.
+            if (gnssText.isNotEmpty()) {
+                Text(
+                    gnssText,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = contentColor.copy(alpha = 0.7f),
+                )
+            }
 
             // Airplane-mode row: shown whenever the toggle has an effect —
             // see showAirplaneRow's comment. Subtitle differentiates the
@@ -1047,6 +1075,58 @@ private fun LiveCard(
             },
             onDismiss   = { showCalibrateDialog = false },
         )
+    }
+}
+
+/**
+ * Heading cell: "45°" at headline size, "NE" as a smaller annotation.
+ *
+ * The ° is emitted at the same size as the digits, in one Text: the °
+ * glyph is drawn in the upper half of the character cell by the font
+ * itself, so it is already a superscript without any shift. Splitting it
+ * into a smaller Text (or adding BaselineShift) made it read as a
+ * separate, floating character — neither is needed.
+ *
+ * "--" when heading is null (no fix yet).
+ */
+@Composable
+private fun HeadingCell(
+    heading: Float?,
+    modifier: Modifier = Modifier,
+    color: Color,
+    horizontalAlignment: Arrangement.Horizontal,
+) {
+    val headlineStyle = MaterialTheme.typography.headlineMedium
+    val smallStyle = MaterialTheme.typography.bodySmall
+    Row(
+        modifier = modifier,
+        horizontalArrangement = horizontalAlignment,
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        if (heading != null) {
+            Text(
+                "${heading.toInt()}°",
+                style = headlineStyle,
+                fontWeight = FontWeight.SemiBold,
+                color = color,
+                softWrap = false,
+                maxLines = 1,
+            )
+            Spacer(Modifier.width(3.dp))
+            Text(
+                cardinal(heading),
+                style = smallStyle,
+                color = color.copy(alpha = 0.75f),
+                modifier = Modifier.padding(bottom = 3.dp),
+            )
+        } else {
+            Text(
+                "--",
+                style = headlineStyle,
+                fontWeight = FontWeight.SemiBold,
+                color = color,
+            )
+        }
     }
 }
 

@@ -130,6 +130,12 @@ data class RecordingStatus(
     val airconDetected:        Boolean           = false,
     val pendingPoints:         Int               = 0,
     val gnssInfo:              GnssInfo          = GnssInfo.EMPTY,
+    // Last non-null bearing from the chipset, unfiltered. Null-bearing
+    // fixes keep the previous value so the cell doesn't flap to "--" when
+    // the chipset momentarily drops the course. Reset on preview stop and
+    // on service teardown; survives pause→resume and stop→preview, because
+    // in both cases the display is still showing a live session.
+    val lastHeadingDegrees:    Float?            = null,
 )
 
 @AndroidEntryPoint
@@ -244,7 +250,6 @@ class BackgroundService : Service() {
     private var previewing  = false
     private var configJob:  Job? = null
     private var ephemerisWarmupActive  = false
-    private var gnssCallbackRegistered = false
     private var sessionWakeLockHeld    = false
     private var sessionWakeLockJob: Job? = null
     private var fixTimeoutJob: Job? = null
@@ -389,23 +394,6 @@ class BackgroundService : Service() {
         )
     }
 
-    // ---- GNSS callbacks ----
-
-    private val gnssStatusCallback = object : GnssStatus.Callback() {
-        override fun onSatelliteStatusChanged(status: GnssStatus) {
-            val counts = mutableMapOf<Int, MutableList<Boolean>>()
-            for (i in 0 until status.satelliteCount) {
-                val type = status.getConstellationType(i)
-                counts.getOrPut(type) { mutableListOf() }.add(status.usedInFix(i))
-            }
-            _status.update {
-                it.copy(gnssInfo = GnssInfo(constellations = counts.mapValues { (_, sats) ->
-                    ConstellationCount(used = sats.count { it }, visible = sats.size)
-                }))
-            }
-        }
-    }
-
     private val pressureListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
             if (event.sensor.type != Sensor.TYPE_PRESSURE) return
@@ -457,13 +445,44 @@ class BackgroundService : Service() {
 
     private var lastFixRealtimeNanos: Long = -1L
 
-    private fun emitLocation(location: Location) {
+    private var gnssStatusInFlight: GnssStatus.Callback? = null
+
+    /**
+     * [enrichSatellites] is true only for fixes we solicited: continuous
+     * primary (GPS_PROVIDER) and single/alarm one-shots. It must be false
+     * for passive and ephemeris fixes.
+     *
+     * The reason: enrichment needs a GnssStatus.Callback, and a callback
+     * keeps the GNSS engine producing at hardware rate (~1 Hz) for several
+     * seconds after unregistration. During that tail, the passive
+     * listener receives fixes. If those fixes are themselves enriched, we
+     * register a fresh callback at the tail's edge and the engine never
+     * cools — the very thing "passive" must not do.
+     *
+     * Enriching only solicited fixes gives the satellite display the user's
+     * chosen cadence (5 min, or 1 s with KF on) and leaves passive
+     * strictly opportunistic: speed display still updates at Osmand's rate
+     * when Osmand is running, but the engine does not warm because of our
+     * own enrichment.
+     */
+    private fun emitLocation(location: Location, enrichSatellites: Boolean) {
         val ts = location.elapsedRealtimeNanos
         if (ts == lastFixRealtimeNanos) return
         if (ts < recordingStartElapsedNanos) return
         lastFixRealtimeNanos = ts
 
+        if (enrichSatellites) fetchGnssStatusOnce()
+
         val point = convert(location)
+
+        // Heading: raw from the fix, no filtering. Non-null bearing updates
+        // the display; null bearing leaves the previous value in place so
+        // the cell doesn't flap to "--" when the chipset momentarily drops
+        // the course. No LPF, no threshold, no state — what the GNSS engine
+        // says is what shows.
+        if (point.bearing != null) {
+            _status.update { it.copy(lastHeadingDegrees = point.bearing) }
+        }
 
         val gpsAlt = point.ele
         if (gpsAlt != null && kfActive) {
@@ -488,13 +507,17 @@ class BackgroundService : Service() {
     }
 
     private val locationListener = object : LocationListener {
-        override fun onLocationChanged(location: Location) { emitLocation(location) }
+        override fun onLocationChanged(location: Location) {
+            emitLocation(location, enrichSatellites = config.mode != RecordingMode.PASSIVE)
+        }
         override fun onProviderDisabled(provider: String) {}
         override fun onProviderEnabled(provider: String) {}
     }
 
     private val ephemerisListener = object : LocationListener {
-        override fun onLocationChanged(location: Location) { emitLocation(location) }
+        override fun onLocationChanged(location: Location) {
+            emitLocation(location, enrichSatellites = false)
+        }
         override fun onProviderDisabled(provider: String) {}
         override fun onProviderEnabled(provider: String) {}
     }
@@ -722,7 +745,6 @@ class BackgroundService : Service() {
 
             startForeground(NOTIFICATION_ID, buildPreviewNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
 
-            registerGnssCallback()
             applyBarometric()
             applyWakeLock()
             applyEphemeris()
@@ -744,6 +766,7 @@ class BackgroundService : Service() {
                 lastProvidedFix      = null,
                 lastAcceptedFix      = null,
                 lastEnqueuedFix      = null,
+                lastHeadingDegrees   = null,
                 liveDistanceM        = null,
                 currentBaroAltitudeM = null,
                 currentPressureHpa   = null,
@@ -788,7 +811,6 @@ class BackgroundService : Service() {
                 strategy = Background.strategyFor(config.mode, config.intervalMs)
                 altitudeFilter = buildFilter(config)
                 startForeground(NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
-                registerGnssCallback()
                 applyBarometric()
                 applyWakeLock()
                 applyEphemeris()
@@ -878,7 +900,14 @@ class BackgroundService : Service() {
         stopPrimaryListener()
         stopEphemerisWarmup()
         stopBarometric()
-        unregisterGnssCallback()
+        gnssStatusInFlight?.let {
+            locationManager.unregisterGnssStatusCallback(it)
+            gnssStatusInFlight = null
+        }
+        // gnssInfo is NOT cleared here — it represents "satellite state at
+        // last observation" and is useful to keep visible through brief
+        // stops (preview stop on screen-off, tab switch). It IS cleared by
+        // onDestroy (full status reset).
         fixScheduler.cancel()
         releaseSessionWakeLock()
         releaseFixWakeLock()
@@ -1072,7 +1101,11 @@ class BackgroundService : Service() {
         try {
             locationManager.getCurrentLocation(LocationManager.GPS_PROVIDER, null, mainExecutor) { location ->
                 fixTimeoutJob?.cancel()
-                if (location != null) emitLocation(location) else dispatchFixEvent(FixEvent.Timeout)
+                if (location != null) {
+                    emitLocation(location, enrichSatellites = true)
+                } else {
+                    dispatchFixEvent(FixEvent.Timeout)
+                }
             }
         } catch (e: SecurityException) {
             Log.e(TAG, "Location permission lost", e)
@@ -1138,22 +1171,46 @@ class BackgroundService : Service() {
 
     // ---- GNSS status ----
 
-    private fun registerGnssCallback() {
-        if (gnssCallbackRegistered) return
+    /**
+     * Register a one-shot GnssStatus.Callback, take one snapshot, and
+     * unregister. Called only from solicited fixes — see emitLocation's doc
+     * for why this must not be called from passive or ephemeris fixes.
+     *
+     * Only one callback exists at a time. If one is already pending, this
+     * is a no-op; the pending one will fire and unregister itself. No
+     * timeout: a registered callback that never fires costs nothing — it
+     * holds no engine state and isn't a resource to reclaim. It also
+     * doesn't force the engine to stay warm (unlike the previous
+     * service-lifetime callback, which did — that was why it produced
+     * passive fixes at ~1 Hz and why we don't do that anymore).
+     *
+     * Late-fire guard at the top of the callback: a callback that fires
+     * after teardownGps has cleared gnssStatusInFlight must not update the
+     * status line — it would be stale data from a session that's gone.
+     */
+    private fun fetchGnssStatusOnce() {
+        if (gnssStatusInFlight != null) return
         if (!hasLocationPermission()) return
-        try {
-            locationManager.registerGnssStatusCallback(mainExecutor, gnssStatusCallback)
-            gnssCallbackRegistered = true
-        } catch (e: SecurityException) {
-            Log.e(TAG, "Cannot register GNSS callback", e)
-        }
-    }
 
-    private fun unregisterGnssCallback() {
-        if (!gnssCallbackRegistered) return
-        locationManager.unregisterGnssStatusCallback(gnssStatusCallback)
-        gnssCallbackRegistered = false
-        _status.update { it.copy(gnssInfo = GnssInfo.EMPTY) }
+        val callback = object : GnssStatus.Callback() {
+            override fun onSatelliteStatusChanged(status: GnssStatus) {
+                if (gnssStatusInFlight !== this) return
+                locationManager.unregisterGnssStatusCallback(this)
+                gnssStatusInFlight = null
+                val counts = mutableMapOf<Int, MutableList<Boolean>>()
+                for (i in 0 until status.satelliteCount) {
+                    val type = status.getConstellationType(i)
+                    counts.getOrPut(type) { mutableListOf() }.add(status.usedInFix(i))
+                }
+                _status.update {
+                    it.copy(gnssInfo = GnssInfo(constellations = counts.mapValues { (_, sats) ->
+                        ConstellationCount(used = sats.count { it }, visible = sats.size)
+                    }))
+                }
+            }
+        }
+        gnssStatusInFlight = callback
+        locationManager.registerGnssStatusCallback(mainExecutor, callback)
     }
 
     // ---- Barometric altitude ----
