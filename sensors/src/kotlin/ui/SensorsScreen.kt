@@ -22,6 +22,8 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import de.perigon.companion.core.ui.AppTopBar
+import de.perigon.companion.sensors.nmea.NmeaContent
+import de.perigon.companion.sensors.nmea.NmeaViewModel
 import de.perigon.companion.sensors.ui.dashboard.GnssContent
 import de.perigon.companion.sensors.ui.dashboard.GsmContent
 import de.perigon.companion.sensors.ui.dashboard.KfContent
@@ -38,6 +40,7 @@ private enum class SensorsTab(val label: String) {
     Wifi("Wifi"),
     Gsm("GSM"),
     Kf("KF"),
+    Nmea("NMEA"),
 }
 
 /**
@@ -63,6 +66,11 @@ fun SensorsScreen(navController: NavController, initialTabId: String? = null) {
     // switches without restarting the recording pipeline's filter.
     val kfVm: KfViewModel = hiltViewModel()
 
+    // NMEA tab has its own ViewModel — it owns a private NmeaStream lease
+    // and a private Location listener, both independent of the dashboard
+    // VM and the recorder. Orthogonal per design §5.
+    val nmeaVm: NmeaViewModel = hiltViewModel()
+
     val backgroundGpsEnabled by vm.backgroundGpsEnabled.collectAsStateWithLifecycle()
 
     // Route-provided tab wins on first composition of this back-stack entry
@@ -85,6 +93,7 @@ fun SensorsScreen(navController: NavController, initialTabId: String? = null) {
         add(SensorsTab.Wifi)
         add(SensorsTab.Gsm)
         add(SensorsTab.Kf)
+        add(SensorsTab.Nmea)
     }
 
     LaunchedEffect(visibleTabs) {
@@ -158,6 +167,7 @@ fun SensorsScreen(navController: NavController, initialTabId: String? = null) {
                 SensorsTab.Wifi -> WifiContent(vm)
                 SensorsTab.Gsm -> GsmContent(vm)
                 SensorsTab.Kf -> KfContent(kfVm)
+                SensorsTab.Nmea -> NmeaContent(nmeaVm)
             }
         }
     }
