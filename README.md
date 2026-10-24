@@ -23,7 +23,7 @@ app/         App shell: activity, nav graph, feature wiring
 core/        DI, preferences, SAF, networking, navigation, UI
 posts/       Post editor, media prep, Jekyll publishing, site assets
 media/       Transform queue, image/video editing, EXIF, track rendering
-backup/      Pack-based backup to B2, restore, consolidation
+archive/     Pack-based backup to B2, consolidation, mirror to thumbdrive
 scaffold/    `companion.library` convention plugin for feature modules
 ```
 
