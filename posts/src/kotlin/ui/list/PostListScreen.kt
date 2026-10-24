@@ -30,13 +30,14 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import coil3.compose.AsyncImage
-import de.perigon.companion.core.ui.AppTopBar
 import de.perigon.companion.core.ui.NotificationObserver
+import de.perigon.companion.posts.PostsRoute
 import de.perigon.companion.posts.data.PostEntity
 import de.perigon.companion.posts.data.PostMediaEntity
 import de.perigon.companion.posts.data.MediaSourceStatus
 import de.perigon.companion.posts.data.ResolvedMedia
 import de.perigon.companion.posts.domain.PostPublishState
+import de.perigon.companion.posts.ui.PostsTopBar
 import de.perigon.companion.posts.ui.common.MediaSourceBadge
 
 @Composable
@@ -94,7 +95,7 @@ fun PostListScreen(
     }
 
     Scaffold(
-        topBar           = { AppTopBar(navController) },
+        topBar           = { PostsTopBar(navController, PostsRoute.Posts) },
         snackbarHost     = { SnackbarHost(snackbarHost) },
         floatingActionButton = {
             FloatingActionButton(onClick = onNewPost) { Icon(Icons.Default.Add, "New post") }

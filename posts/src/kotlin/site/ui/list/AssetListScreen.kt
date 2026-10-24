@@ -21,8 +21,8 @@ import de.perigon.companion.posts.site.domain.canDiff
 import de.perigon.companion.posts.site.domain.canEdit
 import de.perigon.companion.posts.site.domain.canPull
 import de.perigon.companion.posts.site.domain.canPush
-import de.perigon.companion.core.ui.AppTopBar
 import de.perigon.companion.core.ui.NotificationObserver
+import de.perigon.companion.posts.ui.PostsTopBar
 import de.perigon.companion.posts.PostsRoute as Route
 
 @Composable
@@ -45,7 +45,7 @@ fun AssetListScreen(
     }
 
     Scaffold(
-        topBar       = { AppTopBar(navController) },
+        topBar       = { PostsTopBar(navController, Route.Assets) },
         snackbarHost = { SnackbarHost(snackbarHost) },
     ) { padding ->
         Column(Modifier.padding(padding).fillMaxSize()) {

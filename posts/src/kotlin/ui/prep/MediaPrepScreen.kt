@@ -35,6 +35,7 @@ import de.perigon.companion.posts.domain.toTransformIntent
 import de.perigon.companion.posts.data.MediaSourceStatus
 import de.perigon.companion.posts.data.ResolvedMedia
 import de.perigon.companion.posts.ui.common.MediaSourceBadge
+import de.perigon.companion.posts.ui.PostsTopBar
 import de.perigon.companion.core.ui.AppTopBar
 import sh.calvin.reorderable.*
 
@@ -43,11 +44,17 @@ import sh.calvin.reorderable.*
  * NavGraph straight into the ViewModel; the post id comes from the route via
  * the ViewModel's SavedStateHandle. [onDone] leaves for the post editor —
  * where to go is NavGraph's decision, not this screen's.
+ *
+ * [showTabs] is true only for the tab root (postId = 0). When this screen is
+ * reached from an editor (postId = N), tabs are hidden: a stray tab tap would
+ * silently discard the in-progress edit session back to the tab root, and the
+ * user's mental model is "I'm inside a post", not "I'm on a Posts tab".
  */
 @Composable
 fun MediaPrepScreen(
     navController: NavController,
     onDone:        (postId: Long) -> Unit,
+    showTabs:      Boolean = true,
     viewModel:     MediaPrepViewModel = hiltViewModel(),
 ) {
     val state         by viewModel.state.collectAsStateWithLifecycle()
@@ -116,7 +123,15 @@ fun MediaPrepScreen(
     }
 
     Scaffold(
-        topBar = { AppTopBar(navController) },
+        topBar = {
+            if (showTabs) {
+                // Tab root: tab row + menu.
+                PostsTopBar(navController = navController, current = Route.MediaPrep())
+            } else {
+                // Child of an editor: same top bar as every other pushed screen.
+                AppTopBar(navController)
+            }
+        },
         snackbarHost = { SnackbarHost(snackbarHost) },
         floatingActionButton = {
             FloatingActionButton(onClick = {
