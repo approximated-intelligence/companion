@@ -2,7 +2,6 @@ package de.perigon.companion.sensors.ui.dashboard
 
 import android.Manifest
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -19,14 +18,12 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.core.geo.geoid.GeoidGrid
 import de.perigon.companion.sensors.data.TrackConfigPrefs
-import de.perigon.companion.sensors.data.TrackPrefs
 import de.perigon.companion.sensors.domain.AltitudeKalmanFilter
 import de.perigon.companion.sensors.domain.KalmanMode
 import de.perigon.companion.sensors.domain.KalmanModel
 import de.perigon.companion.sensors.domain.KalmanTuning
 import de.perigon.companion.sensors.domain.KfStepRecord
 import de.perigon.companion.sensors.domain.UpdateSource
-import de.perigon.companion.sensors.service.KfSandboxService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -82,14 +79,7 @@ data class KfUiState(
     // Tab-local: subtract geoid undulation from GPS altitude before feeding.
     // On by default because the recorder always applies it.
     val geoidEnabled: Boolean = true,
-    // PERSISTED across tab changes and app restarts via TrackPrefs, unlike
-    // the other toggles. Read from prefs at KfViewModel construction; written
-    // on every toggle. Rationale: the whole point of the wake-lock is to let
-    // the user leave the device unattended for hours; re-enabling it every
-    // time they enter the tab would defeat the purpose. The *active* lock is
-    // still session-scoped (started when the FGS starts, released when it
-    // stops); only the *preference* persists.
-    val wakeLockEnabled: Boolean = false,
+
     // Airplane mode for the GPS-only model's q_v selection. Ignored by the
     // fusion models in the sandbox — their baro exclusion is handled by the
     // baroEnabled toggle above. Only shown when model.hasBias is false.
@@ -198,7 +188,6 @@ class KfViewModel @Inject constructor(
     @param:ApplicationContext private val context: Context,
     private val geoidGrid: GeoidGrid,
     private val configPrefs: TrackConfigPrefs,
-    private val prefs: TrackPrefs,
 ) : ViewModel() {
 
     private val filter = AltitudeKalmanFilter(
@@ -209,12 +198,7 @@ class KfViewModel @Inject constructor(
         initialAirplaneMode = false,
     )
 
-    // Wake-lock preference is persisted; read synchronously from the warmed
-    // snapshot at construction, same as any other prefs read in the sensors
-    // module.
-    private val _state = MutableStateFlow(KfUiState(
-        wakeLockEnabled = prefs.isKfWakeLockEnabled(),
-    ))
+    private val _state = MutableStateFlow(KfUiState())
     val state: StateFlow<KfUiState> = _state.asStateFlow()
 
     private var locationListener: LocationListener? = null
@@ -222,12 +206,6 @@ class KfViewModel @Inject constructor(
     private var sensorManager: SensorManager? = null
     private var gnssActive = false
     private var baroActive = false
-
-    // FGS lifecycle tracking. Set true after a successful startForegroundService
-    // intent; cleared when we tell the service to stop. Used to skip action
-    // intents (wake-lock toggle) that would otherwise try to start the
-    // service as non-foreground while it is not running.
-    private var serviceStarted = false
 
     private var lastHistoryMs = 0L
     private val history = ArrayDeque<KfSample>(HISTORY_SIZE + 1)
@@ -279,27 +257,17 @@ class KfViewModel @Inject constructor(
         val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
         _state.update { it.copy(hasBarometer = sm.getDefaultSensor(Sensor.TYPE_PRESSURE) != null) }
 
-        // Always start both listeners. The baro listener is what feeds the
-        // raw pressure readout; whether its measurement is FUSED is the
-        // separate baroEnabled toggle. Starting/stopping the listener on a
-        // toggle would give the tab two different "baro is off" states that
-        // look the same in the UI but read differently in diagnostics.
-        startBaro()
+        // Baro sensor is started only when the active model fuses baro. The
+        // tab UI's "Baro sensor: off" line reflects this — a GPS-only model
+        // doesn't register the sensor because there is nothing to fuse
+        // against, and the power draw has no benefit.
+        if (_state.value.model.hasBaroMeasurement) startBaro()
         if (_state.value.gnssEnabled) startGnss()
-
-        // FGS: keeps the process high-priority so screen-off does not throttle
-        // location/sensor delivery. Permission-gated because Android 14+
-        // requires fine location to start a location-type FGS; if it isn't
-        // granted yet (RequireAccess gate is showing), startForegroundService
-        // would throw. The RequireAccess content block calls start() again
-        // after permission, which will succeed.
-        startSandboxService()
     }
 
     fun stop() {
         stopGnss()
         stopBaro()
-        stopSandboxService()
     }
 
     // ---- Toggles (all tab-local, none writes to config) ----
@@ -322,6 +290,10 @@ class KfViewModel @Inject constructor(
         if (_state.value.model == m) return
         val wasInit = filter.isInitialized()
         filter.setModel(m)
+        // Model swap may change whether baro is in the measurement map. Turn
+        // the pressure sensor on/off accordingly, so the sandbox never leaves
+        // it registered with a GPS-only model.
+        if (m.hasBaroMeasurement) startBaro() else stopBaro()
         // The smoother's backward chain cannot bridge a dimension change;
         // drop the buffer. History survives so the swap is visible on the
         // chart.
@@ -376,25 +348,6 @@ class KfViewModel @Inject constructor(
         // No clearFilterState: the filter guarantees non-de-initialization
         // on tuning-only change. If that ever changes, a post-condition
         // check would belong here rather than at every call site.
-    }
-
-    /**
-     * Toggle the sandbox FGS's wake-lock. PERSISTED via TrackPrefs — unlike
-     * the other tab toggles — because the wake-lock's purpose is overnight
-     * convergence, and re-enabling it each session would defeat the point.
-     * The *active* lock is still session-scoped: released when the tab is
-     * left, re-acquired when the tab is re-entered.
-     */
-    fun setWakeLockEnabled(enabled: Boolean) {
-        if (_state.value.wakeLockEnabled == enabled) return
-        _state.update { it.copy(wakeLockEnabled = enabled) }
-        viewModelScope.launch { prefs.setKfWakeLockEnabled(enabled) }
-        if (serviceStarted) {
-            context.startService(Intent(context, KfSandboxService::class.java).apply {
-                action = KfSandboxService.ACTION_SET_WAKELOCK
-                putExtra(KfSandboxService.EXTRA_WAKELOCK, enabled)
-            })
-        }
     }
 
     /**
@@ -560,51 +513,11 @@ class KfViewModel @Inject constructor(
         }
     }
 
-    // ---- FGS lifecycle ----
-
-    private fun startSandboxService() {
-        if (serviceStarted) return
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED) return
-        try {
-            context.startForegroundService(Intent(context, KfSandboxService::class.java).apply {
-                action = KfSandboxService.ACTION_START
-            })
-            serviceStarted = true
-            // Re-acquire the persisted wake-lock if it was enabled in a
-            // previous session. The active lock is session-scoped (released
-            // by ACTION_STOP) but the preference persists.
-            if (_state.value.wakeLockEnabled) {
-                context.startService(Intent(context, KfSandboxService::class.java).apply {
-                    action = KfSandboxService.ACTION_SET_WAKELOCK
-                    putExtra(KfSandboxService.EXTRA_WAKELOCK, true)
-                })
-            }
-        } catch (_: Exception) {
-            // FGS contract refused (permission revoked between check and call,
-            // or restrictive OEM policy). The sandbox still works with the
-            // screen on; without the FGS it will throttle when backgrounded.
-            serviceStarted = false
-        }
-    }
-
-    private fun stopSandboxService() {
-        if (!serviceStarted) return
-        try {
-            context.startService(Intent(context, KfSandboxService::class.java).apply {
-                action = KfSandboxService.ACTION_STOP
-            })
-        } catch (_: Exception) {
-            // Best effort; the service's own lifecycle will end when the
-            // process is next reclaimed.
-        }
-        serviceStarted = false
-    }
-
     // ---- Baro ----
 
     private fun startBaro() {
         if (baroActive) return
+        if (!_state.value.model.hasBaroMeasurement) return
         val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
         val pressure = sm.getDefaultSensor(Sensor.TYPE_PRESSURE) ?: return
 

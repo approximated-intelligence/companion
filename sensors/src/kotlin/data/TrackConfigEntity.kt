@@ -64,7 +64,27 @@ data class TrackConfigEntity(
     val autoStartTime: java.time.LocalTime get() = java.time.LocalTime.ofSecondOfDay(autoStartSeconds)
     val autoStopTime: java.time.LocalTime  get() = java.time.LocalTime.ofSecondOfDay(autoStopSeconds)
 
+    /**
+     * The hardware rate the recorder should actually use. While the Kalman
+     * filter is active, clamps to [KF_MAX_HARDWARE_INTERVAL_MS] — the
+     * filter's bias state needs frequent GPS samples to converge, and a
+     * slow rate (the "walked away" default of minutes) leaves b poorly
+     * determined for the session. When the filter is off, returns the
+     * user's chosen rate verbatim.
+     *
+     * The UI shows both: the user's rate on the chips, this effective rate
+     * in the note below them.
+     */
+    val effectiveHardwareIntervalMs: Long
+        get() = if (kalmanEnabled) minOf(hardwareIntervalMs, KF_MAX_HARDWARE_INTERVAL_MS)
+                else hardwareIntervalMs
+
     companion object {
+        // Hardware-rate ceiling while the Kalman filter is active. Bias is
+        // only observable on GPS samples; a 5-min GPS rate leaves b poorly
+        // determined. 1 s matches the KF sandbox's fixed rate.
+        const val KF_MAX_HARDWARE_INTERVAL_MS = 1000L
+
         const val DEFAULT_INTERVAL_MS           = 10_000L
         const val DEFAULT_HARDWARE_INTERVAL_MS  = 1_000L
         const val DEFAULT_FIX_TIMEOUT_MS        = 30_000L

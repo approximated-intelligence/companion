@@ -247,6 +247,18 @@ fun RecordingScreenContent(
                         Spacer(Modifier.height(4.dp))
                         Text("How often the GPS chip produces a fix. Lower = better accuracy and faster fixes, more battery.",
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (state.config.kalmanEnabled &&
+                            state.config.hardwareIntervalMs > TrackConfigEntity.KF_MAX_HARDWARE_INTERVAL_MS) {
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                "Effective: ${formatIntervalLabel(state.config.effectiveHardwareIntervalMs)} " +
+                                    "while the filter runs (bias needs frequent GPS to converge). " +
+                                    "Returns to ${formatIntervalLabel(state.config.hardwareIntervalMs)} " +
+                                    "when filtering is off.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
                     }
                 }
 
@@ -304,7 +316,7 @@ fun RecordingScreenContent(
 
             item { HorizontalDivider() }
             item { Text("Barometric altitude", style = MaterialTheme.typography.titleSmall) }
-            item { ToggleRow("Record barometric altitude", "MEMS pressure sensor via standard atmosphere. Adds relative climb precision; ~100 µA at 5 Hz.", state.config.recordBaroAltitude, vm::setRecordBaroAltitude) }
+            item { ToggleRow("Record barometric altitude", "MEMS pressure sensor via standard atmosphere. ~100 µA at 5 Hz. Controls per-point storage; the sensor also runs when the Kalman filter needs it, even with this off.", state.config.recordBaroAltitude, vm::setRecordBaroAltitude) }
 
             item { HorizontalDivider() }
             item { Text("Altitude filter", style = MaterialTheme.typography.titleSmall) }
@@ -771,18 +783,22 @@ private fun LiveCard(
     val eleM: Float? = lastProvidedFix?.ele
     val geoidM: Float? = lastProvidedFix?.undulation
     val wgs84M: Float? = if (eleM != null && geoidM != null) eleM + geoidM else null
+    // Sensor runs when per-point storage is on OR the KF model fuses baro.
+    // Showing "off" / "(no sensor)" when those are the actual states makes
+    // the line honest: previously the whole segment disappeared when
+    // recordBaroAltitude was off, leaving KF-on + storage-off users with no
+    // way to see whether the sensor was running.
+    val baroSensorRunning = baroEnabled || (kalmanEnabled && modelUsesBaro)
     val heightLine = buildString {
         append("GPS ").append(eleM?.let { "%.1f".format(it) } ?: "--")
         append(" · geoid ").append(geoidM?.let { "%.1f".format(it) } ?: "--")
         append(" · WGS84 ").append(wgs84M?.let { "%.1f".format(it) } ?: "--")
-        if (baroEnabled) {
-            append(" · ")
-            if (!hasBarometer) {
-                append("baro (no sensor)")
-            } else {
-                append(if (airplaneMode) "cabin " else "baro ")
-                append(currentBaroAltitudeM?.let { "%.1f".format(it) } ?: "--")
-            }
+        append(" · ")
+        when {
+            !hasBarometer -> append("baro (no sensor)")
+            !baroSensorRunning -> append("baro off")
+            airplaneMode -> append("cabin ").append(currentBaroAltitudeM?.let { "%.1f".format(it) } ?: "--")
+            else -> append("baro ").append(currentBaroAltitudeM?.let { "%.1f".format(it) } ?: "--")
         }
     }
 

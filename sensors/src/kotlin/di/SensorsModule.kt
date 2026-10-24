@@ -58,10 +58,5 @@ object SensorsModule {
     fun provideChannels(): Set<ChannelSpec> = setOf(
         ChannelSpec(SensorsChannels.RECORDER, "Background Track"),
         ChannelSpec(SensorsChannels.EXPORT, "GPX export"),
-        // Diagnostic channel for the KF sandbox's foreground service. LOW
-        // importance: no sound, no heads-up — the sandbox is used with the
-        // screen off for convergence, so any visible interruption would
-        // defeat the purpose.
-        ChannelSpec(SensorsChannels.KF_SANDBOX, "KF Sandbox"),
     )
 }

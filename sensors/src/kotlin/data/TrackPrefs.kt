@@ -52,19 +52,6 @@ class TrackPrefs @Inject constructor(
     fun observeShowDeprecatedModes(): Flow<Boolean> =
         store.data.map { it[Keys.SHOW_DEPRECATED_MODES] ?: false }.distinctUntilChanged()
 
-    // ---- KF sandbox wake-lock ----
-    // Persists the sandbox's wake-lock toggle across tab changes and app
-    // restarts. Unlike the other KF tab toggles (which are session-local
-    // in KfUiState and reset on tab change), this one has to survive
-    // leaving the tab: the whole point is overnight convergence with the
-    // screen off, and requiring the user to re-enable it each time they
-    // return would defeat the purpose. The *active* lock is still session-
-    // scoped — acquired when the sandbox FGS starts, released when it
-    // stops — so the battery cost is not paid outside the tab.
-    fun isKfWakeLockEnabled(): Boolean = store.snapshot()[Keys.KF_WAKELOCK] ?: false
-    suspend fun setKfWakeLockEnabled(enabled: Boolean) =
-        store.edit { set(Keys.KF_WAKELOCK, enabled) }
-
     // ---- GPX export folder (explicit export only; recordings live in the DB) ----
     fun gpxExportFolderUri(): String? = str(Keys.GPX_EXPORT_URI)
     fun gpxExportFolderLabel(): String? = str(Keys.GPX_EXPORT_LABEL)
@@ -101,7 +88,6 @@ class TrackPrefs @Inject constructor(
     private object Keys {
         val BACKGROUND_GPS        = booleanPreferencesKey("background_gps")
         val SHOW_DEPRECATED_MODES = booleanPreferencesKey("show_deprecated_modes")
-        val KF_WAKELOCK           = booleanPreferencesKey("kf_wakelock")
         val GPX_EXPORT_URI        = stringPreferencesKey("gpx_export_folder_uri")
         val GPX_EXPORT_LABEL      = stringPreferencesKey("gpx_export_folder_label")
         val COORD_FORMAT          = stringPreferencesKey("coord_format")

@@ -63,49 +63,6 @@ fun SensorsScreen(navController: NavController, initialTabId: String? = null) {
     // switches without restarting the recording pipeline's filter.
     val kfVm: KfViewModel = hiltViewModel()
 
-    // GNSS and telephony are both registered for the WHOLE Sensors screen.
-    //
-    //  - GNSS: the Raw tab's declination row reads `_gnssState` for a
-    //    position. Without hoisting, Raw would show `--` until the user
-    //    opened the GNSS tab, and the skyplot would freeze whenever the
-    //    tab was on another screen.
-    //  - Telephony: the accumulating cell map is what makes sparse cells
-    //    persist across tab switches and stale observations age out; a
-    //    per-tab scope would drop them between callbacks.
-    //
-    // Two effects, one per responsibility:
-    //
-    //  LifecycleResumeEffect — register on EVERY resume. This is what
-    //  catches a permission granted via system Settings while the app
-    //  was backgrounded: DisposableEffect does not re-fire on resume
-    //  (composition survives backgrounding), so without this, granting
-    //  telephony from Settings while on the Raw tab would leave the
-    //  callback unregistered until the user visited GNSS/GSM. Both
-    //  start calls are idempotent, so the normal already-registered
-    //  case is a no-op.
-    //
-    //  DO NOT add `vm.stopGnss()` / `vm.stopTelephony()` to the
-    //  onPauseOrDispose block. The empty body is intentional: NOT
-    //  unregistering on pause is what keeps the listeners feeding
-    //  across screen-off and backgrounding, so KF doesn't get a
-    //  corrupted dt on wake and cells don't drop between callbacks.
-    //
-    //  DisposableEffect — unregister only when the Sensors destination
-    //  leaves composition (navigate away, pop off back stack). That is
-    //  the only point at which the listeners genuinely should stop.
-    LifecycleResumeEffect(Unit) {
-        vm.startGnss()
-        vm.startTelephony()
-        onPauseOrDispose { /* intentionally empty — see comment above */ }
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            vm.stopGnss()
-            vm.stopTelephony()
-        }
-    }
-
     val backgroundGpsEnabled by vm.backgroundGpsEnabled.collectAsStateWithLifecycle()
 
     // Route-provided tab wins on first composition of this back-stack entry
@@ -132,6 +89,49 @@ fun SensorsScreen(navController: NavController, initialTabId: String? = null) {
 
     LaunchedEffect(visibleTabs) {
         if (selectedTab !in visibleTabs) selectedTab = visibleTabs.first()
+    }
+
+    // Listener registration is keyed on the visible tab, not on the screen.
+    // Before this, GNSS ran at 1 Hz for the WHOLE Sensors screen lifetime
+    // (including while the user was on the Track tab with the recorder
+    // holding an unrelated 5 min hardware rate), waking the CPU and
+    // feeding the recorder's passive-listener pipeline at a rate far above
+    // what the user asked for.
+    //
+    //  - GNSS: needed by GNSS (skyplot), Raw (declination), Gsm (cells).
+    //  - Telephony: needed by Gsm only.
+    //
+    // LifecycleResumeEffect keyed on selectedTab: re-fires on every tab
+    // change AND every resume. The start/stop calls are idempotent, so
+    // the resume-retry case (permission granted in Settings while
+    // backgrounded) is a no-op when already registered.
+    //
+    // DO NOT add stops to onPauseOrDispose. The empty body is intentional:
+    // not unregistering on pause keeps the listeners feeding across
+    // screen-off and backgrounding, so a GNSS tab return shows a live
+    // skyplot and Gsm cells don't drop between callbacks. The KF tab
+    // stops on pause instead (see KfContent) — different design, different
+    // rationale, both intentional.
+    //
+    // DisposableEffect: full unregister when the Sensors destination leaves
+    // composition (navigate away, pop off back stack).
+    LifecycleResumeEffect(selectedTab) {
+        val needsGnss = selectedTab == SensorsTab.Gnss ||
+            selectedTab == SensorsTab.Raw ||
+            selectedTab == SensorsTab.Gsm
+        if (needsGnss) vm.startGnss() else vm.stopGnss()
+
+        val needsTelephony = selectedTab == SensorsTab.Gsm
+        if (needsTelephony) vm.startTelephony() else vm.stopTelephony()
+
+        onPauseOrDispose { /* intentionally empty — see comment above */ }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            vm.stopGnss()
+            vm.stopTelephony()
+        }
     }
 
     Scaffold(

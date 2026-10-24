@@ -24,7 +24,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,7 +43,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import de.perigon.companion.core.ui.KeepScreenOn
 import de.perigon.companion.core.ui.ToggleRow
 import de.perigon.companion.core.ui.access.RequireAccess
 import de.perigon.companion.sensors.SensorsRequirements
@@ -95,20 +96,23 @@ data class ChartSeries(
 fun KfContent(vm: KfViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
 
-    // DisposableEffect, not LifecycleResumeEffect: the filter accumulates
-    // state across samples, and a gap in the input stream (screen-off,
-    // brief backgrounding) corrupts it via an oversized dt on the next
-    // predict(). Composition survives lifecycle pause but is disposed on
-    // tab switch, so this runs exactly while the KF tab is the selected
-    // content — which is the semantics we want.
+    // LifecycleResumeEffect: the sandbox runs only while this tab is the
+    // visibly-selected content. ON_PAUSE fires on tab switch, app
+    // backgrounding, and manual screen-off, so the filter stops in all
+    // three cases — the strictest reading of "only while the tab is
+    // shown". KeepScreenOn below prevents idle screen timeout from firing
+    // ON_PAUSE and stopping the filter mid-convergence.
     //
-    // start() also starts the foreground service (via the ViewModel) that
-    // keeps the process in FOREGROUND_SERVICE_LOCATION state with the
-    // screen off, so the filter can converge overnight. The service
-    // notification is mandatory on Android; see KfSandboxService.
-    DisposableEffect(Unit) {
+    // A previous version kept the filter running with the screen off via
+    // KfSandboxService (a foreground service). That service is deleted:
+    // the sandbox is a diagnostic, not a recorder. Leave it on the tab and
+    // the screen stays lit; turn the screen off and the filter stops — the
+    // alternative (run overnight in the background) was a feature the
+    // user did not ask for and had no visible cost until the battery died.
+    KeepScreenOn()
+    LifecycleResumeEffect(Unit) {
         vm.start()
-        onDispose { vm.stop() }
+        onPauseOrDispose { vm.stop() }
     }
 
     // Gate sits at the content level, not inside an item: the LazyColumn
@@ -191,9 +195,22 @@ fun KfContent(vm: KfViewModel) {
                     checked = state.gnssEnabled,
                     onCheckedChange = vm::setGnssEnabled,
                 )
+                // Rate is fixed in the sandbox — 1 s, same as the recorder's
+                // KF-clamped rate. Show it so the user knows what they are
+                // observing; there is no user override here because the
+                // sandbox's purpose is to show the filter under realistic
+                // KF conditions.
+                Text(
+                    "GNSS rate: 1s (fixed — the filter needs frequent GPS)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 16.dp, top = 2.dp),
+                )
             }
             // Baro toggle is hidden for no-baro models — baro isn't in that
-            // model's measurement map, so the toggle would be a lie.
+            // model's measurement map, so the toggle would be a lie. An
+            // explicit status line is shown when the toggle is hidden so
+            // the user can verify the sensor is actually off.
             if (modelHasBaro) {
                 item {
                     ToggleRow(
@@ -202,6 +219,15 @@ fun KfContent(vm: KfViewModel) {
                         checked = state.baroEnabled,
                         onCheckedChange = vm::setBaroEnabled,
                         enabled = state.hasBarometer,
+                    )
+                }
+            } else {
+                item {
+                    Text(
+                        "Baro sensor: off (this model doesn't fuse baro)",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp),
                     )
                 }
             }
@@ -229,21 +255,6 @@ fun KfContent(vm: KfViewModel) {
 
             item { HorizontalDivider() }
             item { Text("Sandbox", style = MaterialTheme.typography.titleSmall) }
-            item {
-                // The FGS runs whenever this tab is composed, so the filter
-                // keeps sampling with the screen off. The wake-lock is a
-                // secondary reinforcement for CPU during screen-off — it is
-                // not needed for the FGS contract, only to prevent the CPU
-                // from sleeping between sensor deliveries. Preference is
-                // persisted (TrackPrefs) so it survives tab changes and app
-                // restarts; the *active* lock is session-scoped.
-                ToggleRow(
-                    title = "Hold wake lock",
-                    subtitle = "Keeps the CPU awake while the tab is open. Required for reliable convergence with the screen off (the foreground service alone handles app-level throttling, not CPU sleep).",
-                    checked = state.wakeLockEnabled,
-                    onCheckedChange = vm::setWakeLockEnabled,
-                )
-            }
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     OutlinedButton(

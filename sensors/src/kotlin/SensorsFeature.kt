@@ -41,12 +41,15 @@ object SensorsRoute {
      * When null (the natural navigation case), SensorsScreen falls back to
      * its standard "Track if GPS enabled, GNSS otherwise" default.
      *
-     * A data class, not a data object, so the FGS notification (and any
-     * future deep link) can request a specific tab. The screen reads
-     * [initialTab] once as a rememberSaveable key; subsequent user tab taps
-     * override it without changing the route, so re-entering the same entry
-     * (e.g. back then forward through another tab) preserves the user's
-     * last choice.
+     * A data class, not a data object, so a notification or deep link can
+     * request a specific tab. The screen reads [initialTab] once as a
+     * rememberSaveable key; subsequent user tab taps override it without
+     * changing the route, so re-entering the same entry (e.g. back then
+     * forward through another tab) preserves the user's last choice.
+     *
+     * No current producer uses this param — the KfSandboxService that did
+     * is deleted. It stays for future deep links (e.g. "recording failed"
+     * notifications that want to land on the Track tab).
      */
     @Serializable data class Recording(val initialTab: String? = null)
 }
@@ -54,20 +57,11 @@ object SensorsRoute {
 object SensorsChannels {
     const val RECORDER   = "track_recorder"
     const val EXPORT     = "track_export"
-    const val KF_SANDBOX = "kf_sandbox"
 }
 
-/**
- * "navigate_to" values; RECORDING matches BackgroundService.NAV_RECORDING.
- *
- * KF_SANDBOX is used by the KF sandbox's FGS notification (see
- * KfSandboxService) to land the user directly on the KF tab instead of the
- * Sensors screen's default. Resolves through SensorsFeature.routeFor() to
- * SensorsRoute.Recording(initialTab = "Kf").
- */
+/** "navigate_to" values; RECORDING matches BackgroundService.NAV_RECORDING. */
 object SensorsTargets {
     const val RECORDING  = BackgroundService.NAV_RECORDING
-    const val KF_SANDBOX = "KfSandbox"
 }
 
 object SensorsRequirements {
@@ -164,8 +158,7 @@ class SensorsFeature @Inject constructor() : FeatureEntry {
     }
 
     override fun routeFor(navigateTo: String): Any? = when (navigateTo) {
-        SensorsTargets.RECORDING  -> SensorsRoute.Recording()
-        SensorsTargets.KF_SANDBOX -> SensorsRoute.Recording(initialTab = "Kf")
+        SensorsTargets.RECORDING -> SensorsRoute.Recording()
         else -> null
     }
 }

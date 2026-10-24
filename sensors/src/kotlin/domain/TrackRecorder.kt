@@ -1,6 +1,7 @@
 package de.perigon.companion.sensors.domain
 
 import de.perigon.companion.sensors.data.RecordingMode
+import de.perigon.companion.sensors.data.TrackConfigEntity
 
 data class BackgroundConfig(
     val mode: String,
@@ -20,6 +21,16 @@ data class BackgroundConfig(
     val iskfInverseHessian: Boolean = false,
     val kalmanTuning: KalmanTuning = KalmanTuning(),
 )
+
+/**
+ * The hardware rate the recorder should actually use, honoring the Kalman
+ * filter's tighter needs. See [TrackConfigEntity.effectiveHardwareIntervalMs]
+ * for the reasoning; this mirrors it for [BackgroundConfig].
+ */
+val BackgroundConfig.effectiveHardwareIntervalMs: Long
+    get() = if (kalmanEnabled)
+                minOf(hardwareIntervalMs, TrackConfigEntity.KF_MAX_HARDWARE_INTERVAL_MS)
+            else hardwareIntervalMs
 
 sealed class FixStrategy {
     data class Continuous(val minTimeMs: Long) : FixStrategy()

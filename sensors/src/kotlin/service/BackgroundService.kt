@@ -44,6 +44,7 @@ import de.perigon.companion.sensors.domain.FixState
 import de.perigon.companion.sensors.domain.FixStrategy
 import de.perigon.companion.sensors.domain.Background
 import de.perigon.companion.sensors.domain.BackgroundConfig
+import de.perigon.companion.sensors.domain.effectiveHardwareIntervalMs
 import de.perigon.companion.sensors.domain.KalmanMode
 import de.perigon.companion.sensors.domain.KalmanModel
 import de.perigon.companion.sensors.domain.KalmanTuning
@@ -631,9 +632,21 @@ class BackgroundService : Service() {
             when (effect) {
                 is FixEffect.ProvidedFix -> _status.update { it.copy(lastProvidedFix = effect.point) }
                 is FixEffect.AcceptFix   -> {
+                    // lastAcceptedFix is updated inside bufferPoint(), only
+                    // when the fix actually enters the buffer. The former
+                    // update-here-then-try-buffer pattern updated it even for
+                    // rate-rejected fixes, so the live card's "accepted" line
+                    // could show a fix that was never stored. "Accepted" now
+                    // implies "enqueued"; the two fields always advance
+                    // together — the honest reading of the provided →
+                    // accepted → enqueued chain.
                     val previousAccepted = _status.value.lastAcceptedFix
-                    _status.update { it.copy(lastAcceptedFix = effect.point) }
-                    if (recording) bufferPoint(effect.point, previousAccepted)
+                    if (recording) {
+                        bufferPoint(effect.point, previousAccepted)
+                    } else {
+                        // Preview-only: no buffer, so accept is terminal.
+                        _status.update { it.copy(lastAcceptedFix = effect.point) }
+                    }
                 }
                 is FixEffect.RequestGpsFix      -> requestSingleGpsFix()
                 is FixEffect.ScheduleNext       -> fixScheduler.schedule(strategy)
@@ -1026,7 +1039,7 @@ class BackgroundService : Service() {
         try {
             locationManager.requestLocationUpdates(
                 LocationManager.GPS_PROVIDER,
-                config.hardwareIntervalMs,
+                config.effectiveHardwareIntervalMs,
                 0f,
                 locationListener,
             )
@@ -1086,24 +1099,34 @@ class BackgroundService : Service() {
                 buf.setSegmentId(newSegId)
                 resetDistanceBaseline()
                 val enqueued = buf.add(point)
-                if (enqueued) accumulateLiveDistance(point)
-                _status.update {
-                    it.copy(
-                        pendingPoints   = buf.pendingCount(),
-                        lastEnqueuedFix = if (enqueued) point else it.lastEnqueuedFix,
-                    )
+                if (enqueued) {
+                    accumulateLiveDistance(point)
+                    _status.update {
+                        it.copy(
+                            pendingPoints   = buf.pendingCount(),
+                            lastAcceptedFix = point,
+                            lastEnqueuedFix = point,
+                        )
+                    }
+                } else {
+                    _status.update { it.copy(pendingPoints = buf.pendingCount()) }
                 }
             }
             return
         }
 
         val enqueued = buf.add(point)
-        if (enqueued) accumulateLiveDistance(point)
-        _status.update {
-            it.copy(
-                pendingPoints   = buf.pendingCount(),
-                lastEnqueuedFix = if (enqueued) point else it.lastEnqueuedFix,
-            )
+        if (enqueued) {
+            accumulateLiveDistance(point)
+            _status.update {
+                it.copy(
+                    pendingPoints   = buf.pendingCount(),
+                    lastAcceptedFix = point,
+                    lastEnqueuedFix = point,
+                )
+            }
+        } else {
+            _status.update { it.copy(pendingPoints = buf.pendingCount()) }
         }
         if (buf.shouldFlush()) {
             scope.launch {
@@ -1136,7 +1159,16 @@ class BackgroundService : Service() {
     // ---- Barometric altitude ----
 
     private fun applyBarometric() {
-        if (config.recordBaroAltitude && pressureSensor != null) {
+        // Sensor is needed when the user stores baro per point OR when the
+        // active KF model fuses baro. recordBaroAltitude is about storage;
+        // the model's hasBaroMeasurement declares whether baro is in its
+        // measurement map. Previously only recordBaroAltitude was checked,
+        // so KF-on + storage-off left the model waiting for a baro update
+        // that never came — silent misconfiguration, b never converges.
+        val needed = (config.recordBaroAltitude ||
+            (config.kalmanEnabled && config.kalmanModel.hasBaroMeasurement)) &&
+            pressureSensor != null
+        if (needed) {
             sensorManager.registerListener(pressureListener, pressureSensor, SensorManager.SENSOR_DELAY_NORMAL)
         } else {
             stopBarometric()
