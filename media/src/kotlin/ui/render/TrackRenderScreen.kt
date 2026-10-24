@@ -94,10 +94,11 @@ fun TrackRenderScreen(
                 )
                 is TrackRenderUiState.Rendering -> LoadingContent("Rendering track…")
                 is TrackRenderUiState.Done      -> DoneContent(
-                    outputUri   = s.outputUri,
-                    tracks      = s.tracks,
-                    onAddToPost = { onNavigateToMediaPrep(s.outputUri) },
-                    onReset     = { viewModel.reset() },
+                    outputUri    = s.outputUri,
+                    tracks       = s.tracks,
+                    failedTiles  = s.failedTiles,
+                    onAddToPost  = { onNavigateToMediaPrep(s.outputUri) },
+                    onReset      = { viewModel.reset() },
                 )
                 is TrackRenderUiState.Error     -> ErrorContent(s.message, onRetry = { viewModel.reset() })
             }
@@ -326,6 +327,7 @@ private fun LoadedContent(
 private fun DoneContent(
     outputUri:   Uri,
     tracks:      List<GpxTrack>,
+    failedTiles: Int,
     onAddToPost: () -> Unit,
     onReset:     () -> Unit,
 ) {
@@ -336,6 +338,31 @@ private fun DoneContent(
             contentScale       = ContentScale.Fit,
             modifier           = Modifier.fillMaxWidth().aspectRatio(1f),
         )
+        // Only failed tiles warn. Genuine coverage gaps (offline map, high
+        // zoom, small track) render silently; alerting on them would cry
+        // wolf on every render outside the tile source's coverage.
+        if (failedTiles > 0) {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        "$failedTiles tile(s) couldn't be fetched",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                    Text(
+                        "The map has gaps where the network failed during rendering. " +
+                            "The image was still saved. Render again for a clean result.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
+            }
+        }
         tracks.forEach { track -> TrackStats(track) }
         Text("Saved to DCIM/RenderedTracks", style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)

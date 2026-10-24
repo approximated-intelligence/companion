@@ -8,13 +8,30 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
+ * The outcome of fetching one tile. A `Bitmap?` cannot distinguish "this
+ * source has no tile here" (a coverage gap, normal for an offline map at the
+ * edges) from "fetching failed" (network, IO, parse — actionable). The
+ * renderer needs both counts separately: coverage gaps are silent, fetch
+ * failures are not.
+ */
+sealed interface TileResult {
+    data class Present(val bitmap: Bitmap) : TileResult
+
+    /** Not in this source's coverage (e.g. SQLite row absent, out of zoom range). */
+    data object Absent : TileResult
+
+    /** Fetching failed — actionable (network flaky, IO error, parse error). */
+    data class Failed(val reason: String, val cause: Throwable? = null) : TileResult
+}
+
+/**
  * Provides map tiles for track rendering.
  * Implementations: [SqliteTileSource] (local OsmAnd DB), [NetworkTileSource] (HTTP).
  */
 interface TileSource : AutoCloseable {
     val minZoom: Int
     val maxZoom: Int
-    fun getTile(z: Int, x: Int, y: Int): Bitmap?
+    fun getTile(z: Int, x: Int, y: Int): TileResult
 }
 
 /**
@@ -51,15 +68,21 @@ class SqliteTileSource private constructor(
         }
     }
 
-    override fun getTile(z: Int, x: Int, y: Int): Bitmap? {
+    override fun getTile(z: Int, x: Int, y: Int): TileResult {
         val osmandZ = 17 - z
-        db.rawQuery(
-            "SELECT image FROM tiles WHERE z = ? AND x = ? AND y = ? AND s = 0 LIMIT 1",
-            arrayOf(osmandZ.toString(), x.toString(), y.toString()),
-        ).use { c ->
-            if (!c.moveToFirst()) return null
-            val blob = c.getBlob(0) ?: return null
-            return BitmapFactory.decodeByteArray(blob, 0, blob.size)
+        try {
+            db.rawQuery(
+                "SELECT image FROM tiles WHERE z = ? AND x = ? AND y = ? AND s = 0 LIMIT 1",
+                arrayOf(osmandZ.toString(), x.toString(), y.toString()),
+            ).use { c ->
+                if (!c.moveToFirst()) return TileResult.Absent
+                val blob = c.getBlob(0) ?: return TileResult.Absent
+                val bitmap = BitmapFactory.decodeByteArray(blob, 0, blob.size)
+                    ?: return TileResult.Failed("decode returned null")
+                return TileResult.Present(bitmap)
+            }
+        } catch (e: Exception) {
+            return TileResult.Failed("SQLite read failed: ${e.message}", e)
         }
     }
 
@@ -88,7 +111,7 @@ class NetworkTileSource(
 
     private val isQuadkey: Boolean = "{q}" in urlTemplate
 
-    override fun getTile(z: Int, x: Int, y: Int): Bitmap? {
+    override fun getTile(z: Int, x: Int, y: Int): TileResult {
         val url = buildUrl(z, x, y)
         return fetchBitmap(url)
     }
@@ -121,16 +144,22 @@ class NetworkTileSource(
             }
         }
 
-        private fun fetchBitmap(url: String): Bitmap? {
+        private fun fetchBitmap(url: String): TileResult {
             val conn = URL(url).openConnection() as HttpURLConnection
             return try {
                 conn.connectTimeout = 10_000
                 conn.readTimeout = 10_000
                 conn.setRequestProperty("User-Agent", "PerigonCompanion/1.0")
-                if (conn.responseCode != 200) return null
-                conn.inputStream.use { BitmapFactory.decodeStream(it) }
-            } catch (_: Exception) {
-                null
+                val code = conn.responseCode
+                if (code != 200) return TileResult.Failed("HTTP $code")
+                val bitmap = conn.inputStream.use { BitmapFactory.decodeStream(it) }
+                    ?: return TileResult.Failed("decode returned null")
+                TileResult.Present(bitmap)
+            } catch (e: Exception) {
+                // Previously swallowed into null, making network failures
+                // indistinguishable from absent tiles: the rendered map
+                // silently had holes and reported success.
+                TileResult.Failed("${e.javaClass.simpleName}: ${e.message}", e)
             } finally {
                 conn.disconnect()
             }

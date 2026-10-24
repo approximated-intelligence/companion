@@ -19,6 +19,18 @@ private const val START_COLOR  = 0xFF00C853.toInt()
 private const val END_COLOR    = 0xFFD50000.toInt()
 
 /**
+ * What [renderTracks] produced, plus how much of the background is missing.
+ * Callers surface [failedTiles] to the user; [missingTiles] alone is a
+ * coverage gap (normal for a bounded tile source) and stays silent. See
+ * [de.perigon.companion.media.domain.StitchResult] for the same split.
+ */
+data class RenderResult(
+    val bitmap: Bitmap,
+    val missingTiles: Int = 0,
+    val failedTiles:  Int = 0,
+)
+
+/**
  * Render one or more GPX tracks to a square Bitmap.
  * All tracks share the same projection (merged bounds).
  * If a TileSource is provided, stitches map tiles as background.
@@ -33,15 +45,15 @@ fun renderTracks(
     tracks:     List<GpxTrack>,
     tileSource: TileSource? = null,
     outputPx:   Int = OUTPUT_PX,
-): Bitmap {
+): RenderResult {
     require(tracks.isNotEmpty() && tracks.any { !it.isEmpty }) { "Cannot render empty tracks" }
     val nonEmpty = tracks.filter { !it.isEmpty }
     return if (tileSource != null) renderWithTiles(nonEmpty, tileSource, outputPx)
-           else renderWhiteBackground(nonEmpty, outputPx)
+           else RenderResult(renderWhiteBackground(nonEmpty, outputPx))
 }
 
 /** Convenience for single-track callers. */
-fun renderTrack(track: GpxTrack, tileSource: TileSource? = null, outputPx: Int = OUTPUT_PX): Bitmap =
+fun renderTrack(track: GpxTrack, tileSource: TileSource? = null, outputPx: Int = OUTPUT_PX): RenderResult =
     renderTracks(listOf(track), tileSource, outputPx)
 
 private fun mergeBounds(tracks: List<GpxTrack>): GpxTrack.Bounds {
@@ -54,7 +66,7 @@ private fun mergeBounds(tracks: List<GpxTrack>): GpxTrack.Bounds {
     )
 }
 
-private fun renderWithTiles(tracks: List<GpxTrack>, tileSource: TileSource, outputPx: Int): Bitmap {
+private fun renderWithTiles(tracks: List<GpxTrack>, tileSource: TileSource, outputPx: Int): RenderResult {
     val bounds = mergeBounds(tracks)
     val stitch = stitchTiles(tileSource, bounds, outputPx)
     val canvas = Canvas(stitch.bitmap)
@@ -62,7 +74,7 @@ private fun renderWithTiles(tracks: List<GpxTrack>, tileSource: TileSource, outp
         val projectedSegments = track.segments.map { seg -> seg.map { stitch.project(it) } }
         drawTrackOverlay(canvas, projectedSegments)
     }
-    return stitch.bitmap
+    return RenderResult(stitch.bitmap, stitch.missingTiles, stitch.failedTiles)
 }
 
 private fun renderWhiteBackground(tracks: List<GpxTrack>, outputPx: Int): Bitmap {

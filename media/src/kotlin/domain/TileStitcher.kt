@@ -6,17 +6,26 @@ import android.graphics.Rect
 import androidx.core.graphics.createBitmap
 import de.perigon.companion.core.geo.LatLon
 import kotlin.math.*
+import de.perigon.companion.media.network.TileResult
 import de.perigon.companion.media.network.TileSource
 
 private const val TILE_SIZE = 256
 
 /**
- * Result of stitching tiles: a background bitmap and a function
- * to project lat/lon to pixel coordinates within that bitmap.
+ * Result of stitching tiles: a background bitmap, a projection function,
+ * and counts of what did not render.
+ *
+ * [missingTiles] is absent + failed — every grid cell that got no bitmap.
+ * [failedTiles] is the subset where the fetch errored. Callers must warn
+ * on failedTiles only; coverage gaps are expected for a bounded source
+ * (an offline map at 5 min hardware rate covers a tiny area at high zoom)
+ * and warning on them would cry wolf on every render outside coverage.
  */
 data class StitchResult(
     val bitmap:   Bitmap,
     val project:  (LatLon) -> Pair<Float, Float>,
+    val missingTiles: Int = 0,
+    val failedTiles:  Int = 0,
 )
 
 /**
@@ -96,13 +105,28 @@ fun stitchTiles(
     val raw    = createBitmap(rawW, rawH)
     val canvas = Canvas(raw)
 
+    var missingTiles = 0
+    var failedTiles  = 0
     for (ty in tileYMin..tileYMax) {
         for (tx in tileXMin..tileXMax) {
-            val tile = tileSource.getTile(zoom, tx, ty) ?: continue
-            val px   = (tx - tileXMin) * TILE_SIZE
-            val py   = (ty - tileYMin) * TILE_SIZE
-            canvas.drawBitmap(tile, px.toFloat(), py.toFloat(), null)
-            tile.recycle()
+            when (val result = tileSource.getTile(zoom, tx, ty)) {
+                is TileResult.Present -> {
+                    val px = (tx - tileXMin) * TILE_SIZE
+                    val py = (ty - tileYMin) * TILE_SIZE
+                    canvas.drawBitmap(result.bitmap, px.toFloat(), py.toFloat(), null)
+                    result.bitmap.recycle()
+                }
+                TileResult.Absent -> missingTiles++
+                is TileResult.Failed -> {
+                    missingTiles++
+                    failedTiles++
+                    android.util.Log.w(
+                        "TileStitcher",
+                        "tile $zoom/$tx/$ty failed: ${result.reason}",
+                        result.cause,
+                    )
+                }
+            }
         }
     }
 
@@ -137,7 +161,7 @@ fun stitchTiles(
         x to y
     }
 
-    return StitchResult(output, project)
+    return StitchResult(output, project, missingTiles, failedTiles)
 }
 
 // --- Slippy map math (EPSG:3857 tile scheme) ---

@@ -48,7 +48,16 @@ sealed class TrackRenderUiState {
     data object Parsing                                              : TrackRenderUiState()
     data class  Loaded(val tracks: List<GpxTrack>)                  : TrackRenderUiState()
     data object Rendering                                            : TrackRenderUiState()
-    data class  Done(val outputUri: Uri, val tracks: List<GpxTrack>): TrackRenderUiState()
+    data class  Done(
+        val outputUri: Uri,
+        val tracks: List<GpxTrack>,
+        // Counts from the stitcher; the screen warns on failedTiles only.
+        // missingTiles covers genuine coverage gaps (normal for an offline
+        // map at 5 min hardware rate covering a tiny high-zoom area) and is
+        // silent.
+        val missingTiles: Int = 0,
+        val failedTiles:  Int = 0,
+    ) : TrackRenderUiState()
     data class  Error(val message: String)                          : TrackRenderUiState()
 }
 
@@ -214,22 +223,27 @@ class TrackRenderViewModel @Inject constructor(
             _state.value = withContext(Dispatchers.IO) {
                 try {
                     val tileSource = loadTileSource()
-                    val bitmap = try {
+                    val result = try {
                         renderTracks(loaded.tracks, tileSource)
                     } finally {
                         tileSource?.close()
                     }
                     val name  = "TRK_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())}.jpg"
                     val bytes = ByteArrayOutputStream()
-                        .also { bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }
+                        .also { result.bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }
                         .toByteArray()
-                    bitmap.recycle()
+                    result.bitmap.recycle()
                     val dcim = folderGrants.uri(FolderKeys.DCIM)?.let(Uri::parse)
                         ?: error("DCIM folder not granted")
                     val uri = writeFileFromStream(
                         context, dcim, listOf(RENDERS_FOLDER), name, "image/jpeg", ByteArrayInputStream(bytes),
                     )
-                    TrackRenderUiState.Done(uri, loaded.tracks)
+                    TrackRenderUiState.Done(
+                        outputUri = uri,
+                        tracks = loaded.tracks,
+                        missingTiles = result.missingTiles,
+                        failedTiles = result.failedTiles,
+                    )
                 } catch (e: Exception) {
                     TrackRenderUiState.Error(e.message ?: "Render failed")
                 }
