@@ -30,8 +30,24 @@ object MediaRoute {
 }
 
 /**
+ * `navigate_to` values a notification may carry. Route class names are not
+ * user-facing strings — these are what producers put into PendingIntent
+ * extras, so they must survive renames of [MediaRoute] entries.
+ */
+object MediaTargets {
+    const val QUEUE        = "Queue"
+    const val TRACK_RENDER = "TrackRender"
+}
+
+/**
  * Media owns transforms and rendering. Consumes GPX (from shares, or from
  * :sensors via the RecordedTrackSource contract in :core); produces JPEG.
+ *
+ * Also owns the transform Queue: [MediaRoute.Queue] is the single diagnostic
+ * surface for every consumer of TransformQueue — posts publish and archive
+ * consolidation alike. It is a Media menu item and a Media `navigate_to`
+ * target, not a Posts one, because the pipeline it reports on belongs to no
+ * single feature.
  */
 class MediaFeature @Inject constructor(
     private val inbox: Optional<MediaInbox>,
@@ -85,6 +101,19 @@ class MediaFeature @Inject constructor(
         route.endsWith("MediaRoute.TrackRender") -> "Track Render"
         route.endsWith("MediaRoute.Queue") -> "Queue"
         else -> null
+    }
+
+    /**
+     * Queue and TrackRender as deep-link targets. `navigate_to = "Queue"`
+     * lands here — the queue is a Media-owned diagnostic, so a notification
+     * from a publish or consolidate worker that wants to point the user at
+     * pending transform work resolves to the same surface regardless of
+     * which feature submitted the job.
+     */
+    override fun routeFor(navigateTo: String): Any? = when (navigateTo) {
+        MediaTargets.QUEUE        -> MediaRoute.Queue
+        MediaTargets.TRACK_RENDER -> MediaRoute.TrackRender
+        else                      -> null
     }
 
     override fun shareRoute(mimeType: String?): Any? {
