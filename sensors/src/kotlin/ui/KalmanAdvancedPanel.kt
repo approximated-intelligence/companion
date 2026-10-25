@@ -306,6 +306,16 @@ fun KalmanAdvancedPanel(
                         onChange = { onChange(tuning.copy(gpsOnlySigmaM = it.toFloat())) },
                         onReset  = { onChange(tuning.copy(gpsOnlySigmaM = null)) },
                     )
+                    if (tuning.gpsOnlySigmaM != null) {
+                        val sourceLabel =
+                            if (sourceType == GnssSourceType.NMEA) "NMEA" else "Location"
+                        Text(
+                            "Override active — Reset reverts to the $sourceLabel " +
+                                "default (${formatTuningValue(gpsOnlyDefault.toDouble(), "m")}).",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 if (onPromote != null && !tuning.isDefault) {
                     OutlinedButton(
