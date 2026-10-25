@@ -97,8 +97,9 @@ data class TrackConfigEntity(
         // by isValidLoggingRate() — 15 s logging with 10 s hardware is
         // hidden, not silently rounded.
         val HARDWARE_INTERVAL_OPTIONS_MS        = listOf(
-            1_000L, 2_000L, 5_000L, 10_000L, 15_000L,
-            30_000L, 60_000L, 120_000L, 300_000L,
+            1_000L, 2_000L, 5_000L, 10_000L, 15_000L, 30_000L,
+            60_000L, 120_000L, 300_000L, 600_000L, 900_000L,
+            1_800_000L, 3_600_000L,
         )
         val INTERVAL_OPTIONS_MS                 = listOf(
             1_000L, 2_000L, 5_000L, 10_000L, 15_000L, 30_000L,
