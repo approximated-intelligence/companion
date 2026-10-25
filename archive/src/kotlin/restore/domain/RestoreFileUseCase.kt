@@ -13,6 +13,7 @@ import de.perigon.companion.archive.domain.ArchivePartEncryptor
 import de.perigon.companion.archive.domain.ArchivePaxWriter
 import de.perigon.companion.archive.data.RestoreSelectionEntity
 import de.perigon.companion.core.network.S3Backend
+import de.perigon.companion.core.saf.DriveInfo
 import de.perigon.companion.core.saf.navigateOrCreate
 import de.perigon.companion.core.saf.setMtime
 import de.perigon.companion.core.util.toHex
@@ -164,6 +165,7 @@ interface RestoreProgressListener {
 suspend fun restoreSelectedFiles(
     context: Context,
     b2: S3Backend,
+    drives: List<DriveInfo>,
     senderPk: ByteArray,
     recipientSk: ByteArray,
     sodium: com.goterl.lazysodium.LazySodiumAndroid,
@@ -219,7 +221,8 @@ suspend fun restoreSelectedFiles(
         val to      = partNumber.toLong()       * BackupOrchestrator.PART_WIRE_SIZE - 1
 
         val wireData = try {
-            retryWithBackoff { b2.getRange(packKey, from, to) }
+            readPackRangeFromDrives(context, drives, packKey, from, to)
+                ?: retryWithBackoff { b2.getRange(packKey, from, to) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
