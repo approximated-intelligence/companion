@@ -141,6 +141,8 @@ class NmeaGnssSource @Inject constructor(
 
     override suspend fun requestSingleFix(timeoutMs: Long): GnssFix? =
         withTimeoutOrNull(timeoutMs) {
+            if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) return@withTimeoutOrNull null
             // Acquire temporary leases if the source isn't already
             // running. Both are ref-counted, so concurrent continuous
             // sessions are undisturbed.
@@ -182,6 +184,11 @@ class NmeaGnssSource @Inject constructor(
      */
     private fun warmUpEngine(lm: LocationManager) {
         if (warmupListener != null) return
+        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED) {
+            _state.value = GnssSourceState.Error("Location permission required")
+            return
+        }
         val listener = object : LocationListener {
             override fun onLocationChanged(location: Location) { /* discarded */ }
             override fun onProviderEnabled(provider: String) {}
