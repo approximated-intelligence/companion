@@ -10,6 +10,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.core.di.ApplicationScope
 import de.perigon.companion.core.geo.CoordFormat
 import de.perigon.companion.core.prefs.SnapshotStore
+import de.perigon.companion.sensors.middleware.GnssSourceType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -37,7 +38,8 @@ class TrackPrefs @Inject constructor(
 
     // ---- Background GPS ----
     fun isBackgroundGpsEnabled(): Boolean = store.snapshot()[Keys.BACKGROUND_GPS] ?: false
-    suspend fun setBackgroundGpsEnabled(enabled: Boolean) = store.edit { set(Keys.BACKGROUND_GPS, enabled) }
+    suspend fun setBackgroundGpsEnabled(enabled: Boolean) =
+        store.edit { set(Keys.BACKGROUND_GPS, enabled) }
     fun observeBackgroundGps(): Flow<Boolean> =
         store.data.map { it[Keys.BACKGROUND_GPS] ?: false }.distinctUntilChanged()
 
@@ -52,42 +54,45 @@ class TrackPrefs @Inject constructor(
     fun observeShowDeprecatedModes(): Flow<Boolean> =
         store.data.map { it[Keys.SHOW_DEPRECATED_MODES] ?: false }.distinctUntilChanged()
 
+    // ---- GNSS data source (user toggle for the middleware) ----
+    fun gnssSourceType(): GnssSourceType =
+        parseSourceType(store.snapshot()[Keys.GNSS_SOURCE_TYPE])
+    suspend fun setGnssSourceType(type: GnssSourceType) =
+        store.edit { set(Keys.GNSS_SOURCE_TYPE, type.name) }
+    fun observeGnssSourceType(): Flow<GnssSourceType> =
+        store.data.map { parseSourceType(it[Keys.GNSS_SOURCE_TYPE]) }.distinctUntilChanged()
+
+    private fun parseSourceType(raw: String?): GnssSourceType =
+        if (raw == null) GnssSourceType.LOCATION
+        else runCatching { GnssSourceType.valueOf(raw) }.getOrDefault(GnssSourceType.LOCATION)
+
     // ---- GPX export folder (explicit export only; recordings live in the DB) ----
     fun gpxExportFolderUri(): String? = str(Keys.GPX_EXPORT_URI)
     fun gpxExportFolderLabel(): String? = str(Keys.GPX_EXPORT_LABEL)
-
     suspend fun setGpxExportFolder(uri: String, label: String) = store.edit {
         set(Keys.GPX_EXPORT_URI, uri)
         set(Keys.GPX_EXPORT_LABEL, label)
     }
-
     suspend fun clearGpxExportFolder() = store.edit {
-        remove(Keys.GPX_EXPORT_URI)
-        remove(Keys.GPX_EXPORT_LABEL)
+        remove(Keys.GPX_EXPORT_URI); remove(Keys.GPX_EXPORT_LABEL)
     }
 
-    // ---- GNSS coordinate display format ----
-    fun coordFormat(): CoordFormat =
-        parseCoordFormat(store.snapshot()[Keys.COORD_FORMAT])
-
+    // ---- Coord format ----
+    fun coordFormat(): CoordFormat = parseCoordFormat(store.snapshot()[Keys.COORD_FORMAT])
     fun observeCoordFormat(): Flow<CoordFormat> =
-        store.data
-            .map { parseCoordFormat(it[Keys.COORD_FORMAT]) }
-            .distinctUntilChanged()
-
+        store.data.map { parseCoordFormat(it[Keys.COORD_FORMAT]) }.distinctUntilChanged()
     suspend fun setCoordFormat(format: CoordFormat) =
         store.edit { set(Keys.COORD_FORMAT, format.name) }
-
-    private fun parseCoordFormat(raw: String?): CoordFormat {
-        if (raw == null) return CoordFormat.DD
-        return runCatching { CoordFormat.valueOf(raw) }.getOrDefault(CoordFormat.DD)
-    }
+    private fun parseCoordFormat(raw: String?): CoordFormat =
+        if (raw == null) CoordFormat.DD
+        else runCatching { CoordFormat.valueOf(raw) }.getOrDefault(CoordFormat.DD)
 
     suspend fun clear() = store.edit { this.clear() }
 
     private object Keys {
         val BACKGROUND_GPS        = booleanPreferencesKey("background_gps")
         val SHOW_DEPRECATED_MODES = booleanPreferencesKey("show_deprecated_modes")
+        val GNSS_SOURCE_TYPE      = stringPreferencesKey("gnss_source_type")
         val GPX_EXPORT_URI        = stringPreferencesKey("gpx_export_folder_uri")
         val GPX_EXPORT_LABEL      = stringPreferencesKey("gpx_export_folder_label")
         val COORD_FORMAT          = stringPreferencesKey("coord_format")
