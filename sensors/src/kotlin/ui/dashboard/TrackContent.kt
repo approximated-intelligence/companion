@@ -387,6 +387,7 @@ fun TrackContent(
                         model = state.config.kalmanModel,
                         tuning = state.config.toKalmanTuning(),
                         onChange = vm::setKalmanTuning,
+                        sourceType = state.sourceType,
                     )
                 }
             }

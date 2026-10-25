@@ -95,6 +95,7 @@ data class ChartSeries(
 @Composable
 fun KfContent(vm: KfViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val sourceType by vm.sourceType.collectAsStateWithLifecycle()
 
     // LifecycleResumeEffect: the sandbox runs only while this tab is the
     // visibly-selected content. ON_PAUSE fires on tab switch, app
@@ -302,6 +303,7 @@ fun KfContent(vm: KfViewModel) {
                     tuning = state.tuning,
                     onChange = vm::setTuning,
                     onPromote = vm::applyToTrackSettings,
+                    sourceType = sourceType,
                 )
             }
 

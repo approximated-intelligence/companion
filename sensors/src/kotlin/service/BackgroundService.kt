@@ -351,10 +351,18 @@ class BackgroundService : Service() {
      */
     private fun gpsMeasurementSigma(fix: GnssFix): Float {
         if (kfActive && !altitudeFilter.hasBaroMeasurement) {
-            return config.kalmanTuning.gpsOnlySigmaM
-                ?: KalmanTuning.DEFAULT_GPS_ONLY_SIGMA_M
+            // User override wins for both sources.
+            config.kalmanTuning.gpsOnlySigmaM?.let { return it }
+            // Source-aware default: the two upstream filters fail
+            // differently (NMEA chip overshoots after going deaf,
+            // Location HAL plateaus), so one constant is wrong for at
+            // least one of them. See KalmanTuning KDoc.
+            return when (fix.source) {
+                GnssSourceType.NMEA -> KalmanTuning.DEFAULT_GPS_ONLY_SIGMA_M_NMEA
+                GnssSourceType.LOCATION -> KalmanTuning.DEFAULT_GPS_ONLY_SIGMA_M_LOCATION
+            }
         }
-        return when (gnssController.sourceType.value) {
+        return when (fix.source) {
             GnssSourceType.NMEA ->
                 // GST residual σ is the solution's own noise estimate; the
                 // design §4 says the floor's reason disappears when GST is

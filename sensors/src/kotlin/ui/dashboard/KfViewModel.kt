@@ -210,6 +210,14 @@ class KfViewModel @Inject constructor(
     private val _state = MutableStateFlow(KfUiState())
     val state: StateFlow<KfUiState> = _state.asStateFlow()
 
+    /**
+     * Session source setting, exposed for the Advanced panel's GPS-only σ
+     * default display. The filter's σ selection is separate and per-fix
+     * (see onFix, keyed on `fix.source`); this field only informs the UI
+     * about which default the filter will use.
+     */
+    val sourceType: StateFlow<GnssSourceType> = gnssController.sourceType
+
     private var gnssSession: GnssSession? = null
     private var gnssFixJob: Job? = null
 
@@ -615,8 +623,11 @@ class KfViewModel @Inject constructor(
 
         val vAcc: Float = if (!filter.hasBaroMeasurement) {
             _state.value.tuning.gpsOnlySigmaM
-                ?: KalmanTuning.DEFAULT_GPS_ONLY_SIGMA_M
-        } else when (gnssController.sourceType.value) {
+                ?: when (fix.source) {
+                    GnssSourceType.NMEA -> KalmanTuning.DEFAULT_GPS_ONLY_SIGMA_M_NMEA
+                    GnssSourceType.LOCATION -> KalmanTuning.DEFAULT_GPS_ONLY_SIGMA_M_LOCATION
+                }
+        } else when (fix.source) {
             GnssSourceType.NMEA ->
                 fix.sigma.verticalM?.toFloat() ?: GPS_VERTICAL_DEFAULT_M
             GnssSourceType.LOCATION -> {

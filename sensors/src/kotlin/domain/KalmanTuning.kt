@@ -87,8 +87,14 @@ data class KalmanTuning(
                 gpsOnlySigmaM == null
 
     companion object {
-        /** 3/4-state accel process noise q_v, m²/s³. Historical 0.2² = 0.04. */
-        const val DEFAULT_ACCEL_NOISE_Q = 0.04
+        /**
+         * 3/4-state accel process noise q_v, m²/s³. σ_a ≈ 0.32 m/s²
+         * (was σ_a = 0.2, q_v = 0.04). The old value needed ~50 samples
+         * to reflect a sustained acceleration in v_z, which reads as
+         * sluggish; 0.10 roughly halves that. Don't exceed ~0.12 — higher
+         * values inflate innovations and make the aircon CUSUM twitchy.
+         */
+        const val DEFAULT_ACCEL_NOISE_Q = 0.10
         /**
          * Shared bias process noise q_b, m²/s. Middle ground for mixed
          * car/bike/wild use: ~3× the pure-weather rate (3e-4, from notes
@@ -133,15 +139,14 @@ data class KalmanTuning(
         const val DEFAULT_GPS_VERTICAL_MIN_M: Float = 10f
 
         /**
-         * GPS-only ground q_v, m²/s³. Principled from
-         * q_v ≈ σ_a² · Δt for a 1 s sample interval and σ_a ≈ 0.1 m/s² —
-         * the typical sustained vertical acceleration of a cyclist or a
-         * car on a mountain road. Under-tracks stairs by design
-         * (σ_a ≈ 0.5 m/s² would want ~0.25); stairs slope is inherently
-         * noisy at any q_v, and over-tightening for that case makes hills
-         * lag.
+         * GPS-only ground q_v, m²/s³. Paired with the source-aware
+         * DEFAULT_GPS_ONLY_SIGMA_M_* below: at R ≈ 1–4 m², q_v = 0.03
+         * gives α ≈ 0.15–0.2 — absorbs a real climb in several samples
+         * while rejecting short excursions. The old 0.01 paired with the
+         * old R = 0.25 put α ≈ 0.4, i.e. the filter followed the chip
+         * almost 1:1.
          */
-        const val DEFAULT_GPS_ONLY_ACCEL_Q = 0.01
+        const val DEFAULT_GPS_ONLY_ACCEL_Q = 0.03
 
         /**
          * GPS-only airplane q_v, m²/s³. Takeoff ramp: σ_a ≈ 0.4 m/s²
@@ -154,13 +159,22 @@ data class KalmanTuning(
         const val DEFAULT_GPS_ONLY_ACCEL_Q_AIRPLANE = 0.5
 
         /**
-         * GPS-only measurement σ, m. Uniform quantization error over a
-         * 1 m bin has variance 1/12 ≈ 0.083 m², σ ≈ 0.29 m. A slightly
-         * larger 0.5 m accounts for the chip's internal smoothing and
-         * any small per-sample noise atop the quantization. NOT
-         * verticalAccuracyMeters — that field describes the chip's
-         * underlying estimate, not the reported series' noise.
+         * GPS-only measurement σ, m. NOT the quantization step: GST (NMEA)
+         * and verticalAccuracyMeters (Location) describe the chip's own
+         * confidence in its solution, which under-reports when the chip's
+         * filter goes deaf and then overshoots. R must reflect what the
+         * reported series actually does during that window, not what the
+         * chip claims about itself.
+         *
+         * Source-specific only because the two upstream filters produce
+         * different quantization and plateau behaviour (NMEA ~0.1 m steps,
+         * Location ~1 m steps plus HAL plateau smoothing). The values are
+         * empirical starting points, not measured artifact amplitudes —
+         * tune via gpsOnlySigmaM if the filter still tracks overshoot.
          */
-        const val DEFAULT_GPS_ONLY_SIGMA_M: Float = 0.5f
+        const val DEFAULT_GPS_ONLY_SIGMA_M_NMEA: Float = 1.0f
+        const val DEFAULT_GPS_ONLY_SIGMA_M_LOCATION: Float = 2.0f
+        /** Back-compat alias for the Location default. */
+        const val DEFAULT_GPS_ONLY_SIGMA_M: Float = DEFAULT_GPS_ONLY_SIGMA_M_LOCATION
     }
 }

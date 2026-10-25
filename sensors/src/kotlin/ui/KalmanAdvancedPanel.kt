@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import de.perigon.companion.sensors.domain.KalmanModel
 import de.perigon.companion.sensors.domain.KalmanTuning
+import de.perigon.companion.sensors.middleware.GnssSourceType
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.ln
@@ -85,8 +86,23 @@ fun KalmanAdvancedPanel(
     onChange: (KalmanTuning) -> Unit,
     modifier: Modifier = Modifier,
     onPromote: (() -> Unit)? = null,
+    /**
+     * Active GNSS source, used to resolve the GPS-only σ default that the
+     * slider displays. Null → Location default. This parameter only makes
+     * the "(default)" label match reality; the filter's actual R is
+     * source-resolved independently, in
+     * BackgroundService.gpsMeasurementSigma and KfViewModel.onFix. Without
+     * it, an NMEA user sees "2.00 m (default)" while the filter runs at
+     * 3.0 m.
+     */
+    sourceType: GnssSourceType? = null,
 ) {
     var expanded by remember { mutableStateOf(false) }
+    val gpsOnlyDefault = if (sourceType == GnssSourceType.NMEA) {
+        KalmanTuning.DEFAULT_GPS_ONLY_SIGMA_M_NMEA
+    } else {
+        KalmanTuning.DEFAULT_GPS_ONLY_SIGMA_M_LOCATION
+    }
 
     Column(modifier.fillMaxWidth()) {
         Row(
@@ -278,14 +294,15 @@ fun KalmanAdvancedPanel(
                     // verticalAccuracyMeters — see KalmanTuning.gpsOnlySigmaM.
                     TuningSlider(
                         title = "GPS measurement precision (σ_gps)",
-                        explanation = "Per-sample noise of the *reported* altitude series. " +
-                            "Not verticalAccuracyMeters — that describes the chip's estimate, " +
-                            "not the reported series' noise. Quantization-limited chips are " +
-                            "typically ~0.3–1 m; ~0.5 m is a good default.",
+                        explanation = "Per-sample noise of the *reported* altitude " +
+                            "series. Not the quantization step: the chip's own filter " +
+                            "can go deaf and then overshoot, and the reported accuracy " +
+                            "under-reports those excursions. Override applies to both " +
+                            "NMEA and Location.",
                         value = tuning.gpsOnlySigmaM?.toDouble(),
-                        default = KalmanTuning.DEFAULT_GPS_ONLY_SIGMA_M.toDouble(),
+                        default = gpsOnlyDefault.toDouble(),
                         units = "m",
-                        range = 0.1..5.0,
+                        range = 0.1..10.0,
                         onChange = { onChange(tuning.copy(gpsOnlySigmaM = it.toFloat())) },
                         onReset  = { onChange(tuning.copy(gpsOnlySigmaM = null)) },
                     )
