@@ -31,6 +31,16 @@ import java.nio.ByteBuffer
 // Permission helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Every tree URI for which this app holds a persisted write grant. This is
+ * the set backup/restore writes to; [enumerateConnectedDrives] further
+ * requires read and a mounted removable volume.
+ */
+fun listGrantedTrees(context: Context): List<Uri> =
+    context.contentResolver.persistedUriPermissions
+        .filter { it.isWritePermission }
+        .map { it.uri }
+
 fun hasDcimWriteGrant(context: Context, dcimUri: String?): Boolean {
     if (dcimUri.isNullOrBlank()) return false
     val uri = dcimUri.toUri()
@@ -161,7 +171,13 @@ private fun rootDocumentId(treeUri: Uri): String? = try {
     null
 }
 
-private fun queryDisplayName(context: Context, treeUri: Uri, documentId: String): String? {
+/**
+ * Provider-reported display name of a document. The only way for a caller
+ * to verify that the name passed to [createDocument] survived provider
+ * rewriting; also the reader used by [walkDocumentTree] to seed the root
+ * prefix when the caller supplies none.
+ */
+internal fun queryDisplayName(context: Context, treeUri: Uri, documentId: String): String? {
     val docUri = documentUriInTree(treeUri, documentId)
     val cursor = try {
         context.contentResolver.query(
@@ -299,6 +315,78 @@ fun listSubfolder(
 // ---------------------------------------------------------------------------
 // Navigation and file creation
 // ---------------------------------------------------------------------------
+
+/**
+ * Create a document under [parentDocId] within [treeUri].
+ *
+ * Provider contract: the resulting name may differ from [displayName] — the
+ * provider substitutes or appends the extension derived from [mimeType]
+ * (FileUtils.splitFileName) when [displayName] has none, or has one that
+ * maps to a different MIME, and it appends " (N)" on a name collision.
+ * Callers needing an exact name must pass one whose extension already maps
+ * to [mimeType] (e.g. `.txt` for `text/plain`), or verify with
+ * [queryDisplayName] and re-rename.
+ */
+fun createDocument(
+    context: Context,
+    treeUri: Uri,
+    parentDocId: String,
+    mimeType: String,
+    displayName: String,
+): Uri? = DocumentsContract.createDocument(
+    context.contentResolver,
+    documentUriInTree(treeUri, parentDocId),
+    mimeType,
+    displayName,
+)
+
+/** Delete by URI. True on success, false on any failure (logged). */
+fun deleteDocument(context: Context, uri: Uri): Boolean = try {
+    DocumentsContract.deleteDocument(context.contentResolver, uri)
+} catch (e: Exception) {
+    Log.w("Documents", "delete failed: $uri", e)
+    false
+}
+
+/** Delete by tree + document id. */
+fun deleteDocument(context: Context, treeUri: Uri, docId: String): Boolean =
+    deleteDocument(context, documentUriInTree(treeUri, docId))
+
+/**
+ * Rename a document. Same provider name-rewriting contract as
+ * [createDocument]. Returns the document's new URI, or null on failure.
+ */
+fun renameDocument(context: Context, uri: Uri, newName: String): Uri? = try {
+    DocumentsContract.renameDocument(context.contentResolver, uri, newName)
+} catch (e: Exception) {
+    Log.w("Documents", "rename failed: $uri -> $newName", e)
+    null
+}
+
+/**
+ * Doc id of the child directory [name] under [parentDocId] in [treeUri];
+ * created if absent. Throws if a non-directory occupies the name — silently
+ * returning a document id for a file would corrupt the caller's path.
+ */
+fun findOrCreateChildDirectory(
+    context: Context,
+    treeUri: Uri,
+    parentDocId: String,
+    name: String,
+): String {
+    val existing = findChildByName(context, treeUri, parentDocId, name)
+    if (existing != null) {
+        if (!existing.isDirectory) error("'$name' exists but is not a directory")
+        return existing.documentId
+    }
+    val created = DocumentsContract.createDocument(
+        context.contentResolver,
+        documentUriInTree(treeUri, parentDocId),
+        DocumentsContract.Document.MIME_TYPE_DIR,
+        name,
+    ) ?: error("Cannot create folder '$name'")
+    return DocumentsContract.getDocumentId(created)
+}
 
 private fun navigateToId(context: Context, treeUri: Uri, subfolders: List<String>): String? {
     var currentId = rootDocumentId(treeUri) ?: return null
@@ -517,6 +605,14 @@ fun setMtime(context: Context, uri: Uri, mtime: Long) {
 // ---------------------------------------------------------------------------
 // Query helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Provider-reported MIME type of a document, or null if none (e.g. `file://`
+ * URIs, or a document the provider has no type for). Wraps the `getType`
+ * IPC — not cheap.
+ */
+fun mimeTypeOf(context: Context, uri: Uri): String? =
+    context.contentResolver.getType(uri)
 
 /**
  * Collect display names of all files in a subfolder of a SAF tree.
