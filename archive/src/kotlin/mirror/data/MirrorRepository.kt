@@ -31,11 +31,26 @@ import javax.inject.Singleton
 
 private const val TAG = "MirrorRepository"
 
+/**
+ * MIME for SUMS files. Deliberately a type that [android.webkit.MimeTypeMap]
+ * cannot resolve: the SAF provider's `FileUtils.splitFileName` appends
+ * `getExtensionFromMimeType(mimeType)` when the display name has no
+ * extension, so `text/plain` produced `T<epoch>.txt` regardless of the name
+ * passed to createDocument. With no registered extension the provider keeps
+ * the bare `T<epoch>` name. The read path still accepts a `.txt` suffix
+ * (see [NEW_SUMS_NAME]) for files written before this change and for any
+ * provider that appends one anyway.
+ */
+private const val SUMS_MIME = "application/x-companion-sums"
+
 // Name patterns. Real providers mutate the name in two ways: they append a
 // MIME-derived extension when the display name has none (text/plain ->
 // ".txt"), and they silently add " (N)" on a name collision. Both mutations
 // are handled below, so files this code has ever written — with or without
-// an extension, with or without a collision suffix — are recognized.
+// an extension, with or without a collision suffix — are recognized. New
+// T-files avoid the extension appending entirely by using SUMS_MIME (see
+// its doc); the ".txt" alternatives below remain for files written by the
+// previous text/plain writer.
 //
 //   000001               000001.txt
 //   000001 (1)           000001 (1).txt
@@ -181,7 +196,7 @@ class MirrorRepository @Inject constructor(
      *   1. Read every existing legacy file (short / suffixed, with or without
      *      provider-appended extension) and merge into a single map. Current
      *      entries override historical values for the same path.
-     *   2. Create a new `T<epochms>.txt` file with the merged content.
+     *   2. Create a new `T<epochms>` file with the merged content.
      *   3. Only after a successful write, delete the legacy files that were
      *      merged in. If the write fails, nothing is deleted.
      *
@@ -222,7 +237,7 @@ class MirrorRepository @Inject constructor(
         val docUri = DocumentsContract.createDocument(
             ctx.contentResolver,
             documentUriInTree(driveRoot, sumsDocId),
-            "text/plain",
+            SUMS_MIME,
             name,
         )
         if (docUri == null) {
@@ -280,14 +295,23 @@ class MirrorRepository @Inject constructor(
     /**
      * Pick a SUMS filename that does not already exist. Uses epoch-ms as the
      * base; bumps past any in-process previously used value and any file
-     * actually present on disk. The `.txt` suffix is explicit so providers
-     * that infer from text/plain do not append their own extension.
+     * actually present on disk.
+     *
+     * The returned name is bare `T<epoch>` (no suffix) because [writeSums]
+     * creates the file with [SUMS_MIME], a MIME type the provider cannot
+     * map to an extension. Checking both the bare and the legacy `.txt`
+     * form means a file left by the previous text/plain writer still counts
+     * as a collision, so a fresh epoch never overwrites it.
      */
     private fun pickSumsName(driveRoot: Uri, sumsDocId: String): String {
+        val existing = queryChildren(ctx, driveRoot, sumsDocId)
+            .filter { !it.isDirectory }
+            .map { it.name }
+            .toSet()
         var ts = maxOf(System.currentTimeMillis(), lastSumsTimestamp + 1L)
         while (true) {
-            val name = "T%013d.txt".format(ts)
-            if (findChildByName(ctx, driveRoot, sumsDocId, name) == null) {
+            val name = "T%013d".format(ts)
+            if (name !in existing && "$name.txt" !in existing) {
                 lastSumsTimestamp = ts
                 return name
             }
