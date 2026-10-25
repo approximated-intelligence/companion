@@ -12,7 +12,6 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.location.GnssStatus
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -26,32 +25,41 @@ import dagger.hilt.android.AndroidEntryPoint
 import de.perigon.companion.core.di.ApplicationScope
 import de.perigon.companion.core.feature.NotificationIds
 import de.perigon.companion.core.feature.RequestCodes
+import de.perigon.companion.core.geo.geoid.GeoidGrid
 import de.perigon.companion.core.ui.CoreIcons
 import de.perigon.companion.core.ui.navigatePendingIntent
 import de.perigon.companion.sensors.SensorsChannels
-import de.perigon.companion.core.geo.geoid.GeoidGrid
 import de.perigon.companion.sensors.data.RecordingMode
 import de.perigon.companion.sensors.data.TrackConfigEntity
 import de.perigon.companion.sensors.data.TrackConfigPrefs
 import de.perigon.companion.sensors.data.TrackPointBuffer
 import de.perigon.companion.sensors.data.TrackPointEntity
+import de.perigon.companion.sensors.data.TrackPrefs
 import de.perigon.companion.sensors.data.TrackRepository
 import de.perigon.companion.sensors.data.toKalmanTuning
 import de.perigon.companion.sensors.domain.AltitudeKalmanFilter
+import de.perigon.companion.sensors.domain.Background
+import de.perigon.companion.sensors.domain.BackgroundConfig
 import de.perigon.companion.sensors.domain.FixEffect
 import de.perigon.companion.sensors.domain.FixEvent
 import de.perigon.companion.sensors.domain.FixState
 import de.perigon.companion.sensors.domain.FixStrategy
-import de.perigon.companion.sensors.domain.Background
-import de.perigon.companion.sensors.domain.BackgroundConfig
-import de.perigon.companion.sensors.domain.effectiveHardwareIntervalMs
 import de.perigon.companion.sensors.domain.KalmanMode
 import de.perigon.companion.sensors.domain.KalmanModel
 import de.perigon.companion.sensors.domain.KalmanTuning
+import de.perigon.companion.sensors.domain.effectiveHardwareIntervalMs
 import de.perigon.companion.sensors.domain.fixTransition
 import de.perigon.companion.sensors.domain.formatIntervalLabel
 import de.perigon.companion.sensors.domain.formatModeLabel
-import de.perigon.companion.sensors.data.TrackPrefs
+import de.perigon.companion.sensors.gnss.Position
+import de.perigon.companion.sensors.gnss.SatelliteObservation
+import de.perigon.companion.sensors.gnss.UTCDateTime
+import de.perigon.companion.sensors.middleware.Dop
+import de.perigon.companion.sensors.middleware.GnssController
+import de.perigon.companion.sensors.middleware.GnssFix
+import de.perigon.companion.sensors.middleware.GnssSession
+import de.perigon.companion.sensors.middleware.GnssSourceType
+import de.perigon.companion.sensors.middleware.Sigma
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -70,95 +78,105 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.time.LocalDate
 import javax.inject.Inject
 
+/**
+ * Recorder status. All values are populated through the middleware's
+ * [GnssFix] stream in CONTINUOUS mode, through single-fix requests in
+ * SINGLE_FIX / ALARM modes, and through a legacy passive listener in
+ * PASSIVE mode (the middleware has no passive source).
+ *
+ * Barometric altitude and the Kalman filter operate independently — the
+ * sensor listener is not GNSS, and the KF's `updateGps` is fed from the
+ * fix that arrived through whichever path is active.
+ */
 data class RecordingStatus(
-    val isRecording:           Boolean           = false,
-    val previewActive:         Boolean           = false,
-    val lastProvidedFix:       TrackPointEntity? = null,
-    val lastAcceptedFix:       TrackPointEntity? = null,
-    val lastEnqueuedFix:       TrackPointEntity? = null,
-    val liveDistanceM:         Float?            = null,
+    val isRecording: Boolean = false,
+    val previewActive: Boolean = false,
+    val lastProvidedFix: TrackPointEntity? = null,
+    val lastAcceptedFix: TrackPointEntity? = null,
+    val lastEnqueuedFix: TrackPointEntity? = null,
+    val liveDistanceM: Float? = null,
     // Hardware fact, set once at service start. False on phones without a
     // pressure sensor, and briefly false before onCreate has run.
-    val hasBarometer:          Boolean           = false,
+    val hasBarometer: Boolean = false,
     // Raw ISA barometric altitude (no offset applied). This is exactly what
     // the sensor produces via SensorManager.getAltitude(1013.25, P).
-    val currentBaroAltitudeM:  Float?            = null,
+    val currentBaroAltitudeM: Float? = null,
     // Live pressure reading. Feeds QFE and the KF's baro measurement.
-    val currentPressureHpa:    Float?            = null,
+    val currentPressureHpa: Float? = null,
     // KF-fused MSL altitude.
-    val kalmanAltitudeM:       Float?            = null,
+    val kalmanAltitudeM: Float? = null,
     // KF vertical speed (m/s, positive = up). In the 3/4/GPS-2-state model
     // this is the v_z state; in the 2-state model it is derived from the
     // cascade position-difference velocity filter inside the KF. Non-null
     // from the first measurement pair after seed in either model.
-    val verticalSpeedMps:      Float?            = null,
+    val verticalSpeedMps: Float? = null,
     // slope = 100 * v_z / v_h. Null when v_h is below the minimum slope
     // speed (0.5 m/s), or before v_z is available.
-    val slopePercent:          Float?            = null,
+    val slopePercent: Float? = null,
     // QNH (barometric sea-level pressure). Null before the KF has seeded
     // from a 3D GPS fix. Not cleared on model swap or airplane-mode entry —
     // the last-known-good outside QNH remains useful, and it will be
     // overwritten by the next post-reseed baro tick. Null for the GPS
     // 2-state model, which has no bias state.
-    val currentQnhHpa:         Float?            = null,
+    val currentQnhHpa: Float? = null,
     // The KF's estimate of the barometric bias b. Positive means rawBaro
     // reads higher than true altitude (weather low-pressure system, or
     // aircon on in a car). This is the calibration "offset" — not a stored
     // config value, just a live state estimate. Null for the GPS 2-state
     // model, which has no bias state.
-    val kalmanBiasM:           Float?            = null,
+    val kalmanBiasM: Float? = null,
     // Bias rate v_b (m/s). State in 4-state, cascade in 2/3-state. Positive
     // means the raw baro reading is rising relative to true altitude
     // (aircon heating up, or a high-pressure system pushing pressure up).
-    val kalmanBiasRateMps:     Float?            = null,
+    val kalmanBiasRateMps: Float? = null,
     // KF covariance diagonals as standard deviations, exposed for the KF
     // debug tab. σ(h) is the altitude uncertainty, σ(b) the bias uncertainty.
-    val kalmanAltitudeSigmaM:  Float?            = null,
-    val kalmanBiasSigmaM:      Float?            = null,
+    val kalmanAltitudeSigmaM: Float? = null,
+    val kalmanBiasSigmaM: Float? = null,
     // Last innovation (measurement minus prediction) per source, in metres.
     // Positive = measurement above prediction. Diagnostics only.
-    val lastGpsInnovationM:    Float?            = null,
-    val lastBaroInnovationM:   Float?            = null,
+    val lastGpsInnovationM: Float? = null,
+    val lastBaroInnovationM: Float? = null,
     // CUSUM accumulators on the normalized baro innovation. Either crossing
     // its threshold (~8) is the aircon detector firing.
-    val airconCusumPos:        Float?            = null,
-    val airconCusumNeg:        Float?            = null,
+    val airconCusumPos: Float? = null,
+    val airconCusumNeg: Float? = null,
     // True when either CUSUM accumulator crosses its threshold. Aircon
     // shows up as a step in v_b (cabin HVAC), which the CUSUM on baro
     // innovations detects as a sustained bias — a violation of the model's
     // constant-v_b prediction.
-    val airconDetected:        Boolean           = false,
-    val pendingPoints:         Int               = 0,
-    val gnssInfo:              GnssInfo          = GnssInfo.EMPTY,
+    val airconDetected: Boolean = false,
+    val pendingPoints: Int = 0,
+    val gnssInfo: GnssInfo = GnssInfo.EMPTY,
     // Last non-null bearing from the chipset, unfiltered. Null-bearing
     // fixes keep the previous value so the cell doesn't flap to "--" when
     // the chipset momentarily drops the course. Reset on preview stop and
     // on service teardown; survives pause→resume and stop→preview, because
     // in both cases the display is still showing a live session.
-    val lastHeadingDegrees:    Float?            = null,
+    val lastHeadingDegrees: Float? = null,
 )
 
 @AndroidEntryPoint
 class BackgroundService : Service() {
 
     companion object {
-        const val ACTION_START         = "de.perigon.companion.track.START"
-        const val ACTION_STOP          = "de.perigon.companion.track.STOP"
-        const val ACTION_PAUSE         = "de.perigon.companion.track.PAUSE"
-        const val ACTION_NEW_SEGMENT   = "de.perigon.companion.track.NEW_SEGMENT"
-        const val ACTION_FIX_DUE       = "de.perigon.companion.track.FIX_DUE"
-        const val ACTION_FLUSH         = "de.perigon.companion.track.FLUSH"
+        const val ACTION_START = "de.perigon.companion.track.START"
+        const val ACTION_STOP = "de.perigon.companion.track.STOP"
+        const val ACTION_PAUSE = "de.perigon.companion.track.PAUSE"
+        const val ACTION_NEW_SEGMENT = "de.perigon.companion.track.NEW_SEGMENT"
+        const val ACTION_FIX_DUE = "de.perigon.companion.track.FIX_DUE"
+        const val ACTION_FLUSH = "de.perigon.companion.track.FLUSH"
         const val ACTION_PREVIEW_START = "de.perigon.companion.track.PREVIEW_START"
-        const val ACTION_PREVIEW_STOP  = "de.perigon.companion.track.PREVIEW_STOP"
-        const val ACTION_CALIBRATE     = "de.perigon.companion.track.CALIBRATE"
-        const val EXTRA_CALIB_REF_ALT  = "calib_ref_alt"
-        const val EXTRA_NAVIGATE_TO    = "navigate_to"
-        const val NAV_RECORDING        = "BackgroundService"
+        const val ACTION_PREVIEW_STOP = "de.perigon.companion.track.PREVIEW_STOP"
+        const val ACTION_CALIBRATE = "de.perigon.companion.track.CALIBRATE"
+        const val EXTRA_CALIB_REF_ALT = "calib_ref_alt"
+        const val EXTRA_NAVIGATE_TO = "navigate_to"
+        const val NAV_RECORDING = "BackgroundService"
 
-        private const val TAG                  = "BackgroundService"
-        private const val CHANNEL_ID           = SensorsChannels.RECORDER
-        private const val NOTIFICATION_ID      = NotificationIds.TRACK
-        private const val STOP_REQUEST_CODE    = RequestCodes.TRACK
+        private const val TAG = "BackgroundService"
+        private const val CHANNEL_ID = SensorsChannels.RECORDER
+        private const val NOTIFICATION_ID = NotificationIds.TRACK
+        private const val STOP_REQUEST_CODE = RequestCodes.TRACK
         private const val CONTENT_REQUEST_CODE = RequestCodes.TRACK + 1
         private const val PREVIEW_STOP_REQUEST_CODE = RequestCodes.TRACK + 2
 
@@ -172,33 +190,30 @@ class BackgroundService : Service() {
         // extends rather than stacks.
         private const val SESSION_WAKELOCK_LEASE_MS = 60 * 60 * 1000L
         private const val SESSION_WAKELOCK_RENEW_MS = SESSION_WAKELOCK_LEASE_MS / 2
-
         private const val BARO_STATUS_INTERVAL_MS = 1_000L
-
         private const val GPS_VERTICAL_FALLBACK_FACTOR = 3f
         private const val GPS_VERTICAL_DEFAULT_M = 15f
-
         private const val MIN_SPEED_FOR_SLOPE_MPS = 0.5f
 
         private val _status = MutableStateFlow(RecordingStatus())
         val status: StateFlow<RecordingStatus> = _status.asStateFlow()
 
-        val isRecording          get() = _status.map { it.isRecording }
-        val previewActive        get() = _status.map { it.previewActive }
-        val lastProvidedFix      get() = _status.map { it.lastProvidedFix }
-        val lastAcceptedFix      get() = _status.map { it.lastAcceptedFix }
-        val lastEnqueuedFix      get() = _status.map { it.lastEnqueuedFix }
-        val liveDistanceM        get() = _status.map { it.liveDistanceM }
-        val hasBarometer         get() = _status.map { it.hasBarometer }
+        val isRecording get() = _status.map { it.isRecording }
+        val previewActive get() = _status.map { it.previewActive }
+        val lastProvidedFix get() = _status.map { it.lastProvidedFix }
+        val lastAcceptedFix get() = _status.map { it.lastAcceptedFix }
+        val lastEnqueuedFix get() = _status.map { it.lastEnqueuedFix }
+        val liveDistanceM get() = _status.map { it.liveDistanceM }
+        val hasBarometer get() = _status.map { it.hasBarometer }
         val currentBaroAltitudeM get() = _status.map { it.currentBaroAltitudeM }
-        val currentQnhHpa        get() = _status.map { it.currentQnhHpa }
-        val verticalSpeedMps     get() = _status.map { it.verticalSpeedMps }
-        val slopePercent         get() = _status.map { it.slopePercent }
-        val kalmanBiasM          get() = _status.map { it.kalmanBiasM }
-        val kalmanBiasRateMps    get() = _status.map { it.kalmanBiasRateMps }
-        val airconDetected       get() = _status.map { it.airconDetected }
-        val pendingPoints        get() = _status.map { it.pendingPoints }
-        val gnssInfo             get() = _status.map { it.gnssInfo }
+        val currentQnhHpa get() = _status.map { it.currentQnhHpa }
+        val verticalSpeedMps get() = _status.map { it.verticalSpeedMps }
+        val slopePercent get() = _status.map { it.slopePercent }
+        val kalmanBiasM get() = _status.map { it.kalmanBiasM }
+        val kalmanBiasRateMps get() = _status.map { it.kalmanBiasRateMps }
+        val airconDetected get() = _status.map { it.airconDetected }
+        val pendingPoints get() = _status.map { it.pendingPoints }
+        val gnssInfo get() = _status.map { it.gnssInfo }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -207,6 +222,7 @@ class BackgroundService : Service() {
     @Inject lateinit var repository: TrackRepository
     @Inject lateinit var configPrefs: TrackConfigPrefs
     @Inject lateinit var geoidGrid: GeoidGrid
+    @Inject lateinit var gnssController: GnssController
     @Inject @ApplicationScope lateinit var appScope: CoroutineScope
 
     private lateinit var fixScheduler: FixScheduler
@@ -224,37 +240,53 @@ class BackgroundService : Service() {
 
     private var buffer: TrackPointBuffer? = null
     private var wakeLock: PowerManager.WakeLock? = null
-    private var config   = BackgroundConfig(
-        mode                   = RecordingMode.CONTINUOUS,
-        intervalMs             = 10_000L,
-        hardwareIntervalMs     = 1_000L,
-        fixTimeoutMs           = 30_000L,
-        maxInaccuracyM         = 50f,
-        keepEphemerisWarm      = true,
-        holdWakeLock           = true,
-        recordBaroAltitude     = false,
-        kalmanEnabled          = false,
-        airplaneMode           = false,
+    private var config = BackgroundConfig(
+        mode = RecordingMode.CONTINUOUS,
+        intervalMs = 10_000L,
+        hardwareIntervalMs = 1_000L,
+        fixTimeoutMs = 30_000L,
+        maxInaccuracyM = 50f,
+        keepEphemerisWarm = true,
+        holdWakeLock = true,
+        recordBaroAltitude = false,
+        kalmanEnabled = false,
+        airplaneMode = false,
         autoSplitOnDayRollover = true,
-        autoSegmentGapMs       = TrackConfigEntity.DEFAULT_AUTO_SEGMENT_GAP_MS,
-        kalmanModel            = KalmanModel.THREE_STATE,
-        kalmanMode             = KalmanMode.GAUSSIAN,
-        iskfInverseHessian     = false,
-        kalmanTuning           = KalmanTuning(),
+        autoSegmentGapMs = TrackConfigEntity.DEFAULT_AUTO_SEGMENT_GAP_MS,
+        kalmanModel = KalmanModel.THREE_STATE,
+        kalmanMode = KalmanMode.GAUSSIAN,
+        iskfInverseHessian = false,
+        kalmanTuning = KalmanTuning(),
     )
     private var strategy: FixStrategy = FixStrategy.Continuous(10_000L)
-    private var trackId     = 0L
-    private var segmentId   = 0L
+    private var trackId = 0L
+    private var segmentId = 0L
     private var currentDate = ""
-    private var recording   = false
-    private var previewing  = false
-    private var configJob:  Job? = null
-    private var ephemerisWarmupActive  = false
-    private var sessionWakeLockHeld    = false
+    private var recording = false
+    private var previewing = false
+    private var configJob: Job? = null
+    private var ephemerisWarmupActive = false
+    private var sessionWakeLockHeld = false
     private var sessionWakeLockJob: Job? = null
     private var fixTimeoutJob: Job? = null
     private var fixState: FixState = FixState.Idle
     private var recordingStartElapsedNanos: Long = 0L
+
+    // ---- Middleware ----
+    private var gnssSession: GnssSession? = null
+    private var gnssFixJob: Job? = null
+
+    // ---- Legacy paths (PASSIVE mode + ephemeris warmup) ----
+    // The middleware has no passive source; when mode == PASSIVE, the
+    // recorder owns a listener directly and builds fixes via
+    // [buildPassiveFix]. Warm-up (keepEphemerisWarm) is a separate concern
+    // — it registers a passive listener to keep the chip fresh between
+    // cycles in SINGLE_FIX / ALARM modes.
+    private var passiveListener: LocationListener? = null
+    private var passiveActive = false
+    private var ephemerisListener: LocationListener? = null
+
+    private var lastFixRealtimeNanos: Long = -1L
 
     private val isSingleFixMode: Boolean
         get() = config.mode == RecordingMode.SINGLE_FIX || config.mode == RecordingMode.ALARM
@@ -312,21 +344,36 @@ class BackgroundService : Service() {
      * (quantization-limited), not the chip's reported vertical accuracy.
      * The 10 m fusion floor is the wrong value for them.
      *
-     * For the fusion models: the existing logic — floored
-     * verticalAccuracyMeters (or accuracy × 3 as fallback).
+     * For the fusion models: NMEA mode uses GST verbatim (design §4: the
+     * floor's reason disappears when GST is present); LOCATION mode uses
+     * floored verticalAccuracyMeters (or accuracy × 3 as fallback), because
+     * Pixel HALs underreport vertical accuracy during plateaus.
      */
-    private fun gpsMeasurementSigma(location: Location, point: TrackPointEntity): Float {
+    private fun gpsMeasurementSigma(fix: GnssFix): Float {
         if (kfActive && !altitudeFilter.hasBaroMeasurement) {
             return config.kalmanTuning.gpsOnlySigmaM
                 ?: KalmanTuning.DEFAULT_GPS_ONLY_SIGMA_M
         }
-        val floor = gpsVerticalFloor()
-        return when {
-            location.hasVerticalAccuracy() ->
-                maxOf(location.verticalAccuracyMeters, floor)
-            point.accuracyM != null ->
-                maxOf(point.accuracyM * GPS_VERTICAL_FALLBACK_FACTOR, floor)
-            else -> GPS_VERTICAL_DEFAULT_M
+        return when (gnssController.sourceType.value) {
+            GnssSourceType.NMEA ->
+                // GST residual σ is the solution's own noise estimate; the
+                // design §4 says the floor's reason disappears when GST is
+                // present. Use the value verbatim; fall back to the
+                // conservative default only when the chipset emits no GST.
+                fix.sigma.verticalM?.toFloat() ?: GPS_VERTICAL_DEFAULT_M
+            GnssSourceType.LOCATION -> {
+                // Location σ is a HAL-model value, known optimistic during
+                // stationary plateaus on Pixel HALs. Apply the user floor.
+                val floor = config.kalmanTuning.gpsVerticalMinM
+                    ?: KalmanTuning.DEFAULT_GPS_VERTICAL_MIN_M
+                when {
+                    fix.sigma.verticalM != null ->
+                        maxOf(fix.sigma.verticalM.toFloat(), floor)
+                    fix.sigma.horizontalM != null ->
+                        maxOf(fix.sigma.horizontalM.toFloat() * GPS_VERTICAL_FALLBACK_FACTOR, floor)
+                    else -> GPS_VERTICAL_DEFAULT_M
+                }
+            }
         }
     }
 
@@ -340,18 +387,18 @@ class BackgroundService : Service() {
     private fun clearKfStatus() {
         _status.update {
             it.copy(
-                kalmanAltitudeM      = null,
-                verticalSpeedMps     = null,
-                slopePercent         = null,
-                kalmanBiasM          = null,
-                kalmanBiasRateMps    = null,
+                kalmanAltitudeM = null,
+                verticalSpeedMps = null,
+                slopePercent = null,
+                kalmanBiasM = null,
+                kalmanBiasRateMps = null,
                 kalmanAltitudeSigmaM = null,
-                kalmanBiasSigmaM     = null,
-                lastGpsInnovationM   = null,
-                lastBaroInnovationM  = null,
-                airconCusumPos       = null,
-                airconCusumNeg       = null,
-                airconDetected       = false,
+                kalmanBiasSigmaM = null,
+                lastGpsInnovationM = null,
+                lastBaroInnovationM = null,
+                airconCusumPos = null,
+                airconCusumNeg = null,
+                airconDetected = false,
             )
         }
     }
@@ -372,27 +419,42 @@ class BackgroundService : Service() {
      * altitude solution during plateaus. The recorded `accuracyM` field
      * stores the raw reported accuracy, not this floored value — the floor
      * is a modelling choice for the filter, not a claim about the raw GPS.
+     *
+     * NOT USED — orphaned. The NMEA-vs-LOCATION σ policy lives in
+     * [gpsMeasurementSigma], where the floor expression is inlined because
+     * only the LOCATION branch applies it (NMEA trusts GST verbatim, per
+     * design §4). Kept for this KDoc: the floor's meaning and its default
+     * are still the canonical explanation. No caller today; delete if a
+     * future reader might assume it is invoked.
      */
     private fun gpsVerticalFloor(): Float =
         config.kalmanTuning.gpsVerticalMinM ?: KalmanTuning.DEFAULT_GPS_VERTICAL_MIN_M
 
-    private fun convert(location: Location): TrackPointEntity {
-        val undulation = geoidGrid.undulation(location.latitude, location.longitude)
+    /**
+     * Convert a unified fix into the point stored in the DB. Fields absent
+     * from the fix (because the active source does not provide them) are
+     * stored as null — no cross-source fabrication.
+     */
+    private fun convertFix(fix: GnssFix): TrackPointEntity {
         val storeBaro = config.recordBaroAltitude && !config.airplaneMode
         return TrackPointEntity(
-            segmentId  = 0L,
-            lat        = location.latitude,
-            lon        = location.longitude,
-            ele        = if (location.hasAltitude()) (location.altitude - undulation).toFloat() else null,
-            undulation = undulation,
-            baroAlt    = if (storeBaro) lastBaroPressureHpa?.let(::rawBaroAltitude) else null,
-            accuracyM  = if (location.hasAccuracy()) location.accuracy else null,
-            speedMs    = if (location.hasSpeed()) location.speed else null,
-            bearing    = if (location.hasBearing()) location.bearing else null,
-            time       = location.time,
-            provider   = location.provider ?: "gps",
+            segmentId = 0L,
+            lat = fix.position.lat,
+            lon = fix.position.lon,
+            ele = fix.altitudeMslM?.toFloat(),
+            undulation = if (fix.altitudeWgs84M != null && fix.altitudeMslM != null)
+                (fix.altitudeWgs84M - fix.altitudeMslM).toFloat()
+            else null,
+            baroAlt = if (storeBaro) lastBaroPressureHpa?.let(::rawBaroAltitude) else null,
+            accuracyM = fix.sigma.horizontalM?.toFloat(),
+            speedMs = fix.speedMps?.toFloat(),
+            bearing = fix.courseDeg?.toFloat(),
+            time = fix.timestamp.toInstant().toEpochMilli(),
+            provider = fix.source.name.lowercase(),
         )
     }
+
+    // ===== Barometric sensor (unchanged in structure — pure sensor) =====
 
     private val pressureListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent) {
@@ -420,21 +482,21 @@ class BackgroundService : Service() {
                 _status.update {
                     it.copy(
                         currentBaroAltitudeM = baroRaw,
-                        currentPressureHpa   = p,
-                        kalmanAltitudeM      = kfAlt,
-                        verticalSpeedMps     = altitudeFilter.verticalSpeed(),
+                        currentPressureHpa = p,
+                        kalmanAltitudeM = kfAlt,
+                        verticalSpeedMps = altitudeFilter.verticalSpeed(),
                         // QNH not cleared in airplane mode — the last pre-
                         // airplane outside reading is the last-known-good.
-                        currentQnhHpa        = qnh ?: it.currentQnhHpa,
-                        kalmanBiasM          = altitudeFilter.bias(),
-                        kalmanBiasRateMps    = altitudeFilter.biasRate(),
+                        currentQnhHpa = qnh ?: it.currentQnhHpa,
+                        kalmanBiasM = altitudeFilter.bias(),
+                        kalmanBiasRateMps = altitudeFilter.biasRate(),
                         kalmanAltitudeSigmaM = altitudeFilter.altitudeSigma(),
-                        kalmanBiasSigmaM     = altitudeFilter.biasSigma(),
-                        lastGpsInnovationM   = altitudeFilter.lastGpsInnovationM(),
-                        lastBaroInnovationM  = altitudeFilter.lastBaroInnovationM(),
-                        airconCusumPos       = cusum?.first,
-                        airconCusumNeg       = cusum?.second,
-                        airconDetected       = baroFused && altitudeFilter.airconDetected(),
+                        kalmanBiasSigmaM = altitudeFilter.biasSigma(),
+                        lastGpsInnovationM = altitudeFilter.lastGpsInnovationM(),
+                        lastBaroInnovationM = altitudeFilter.lastBaroInnovationM(),
+                        airconCusumPos = cusum?.first,
+                        airconCusumNeg = cusum?.second,
+                        airconDetected = baroFused && altitudeFilter.airconDetected(),
                     )
                 }
                 updateSlope(_status.value.lastProvidedFix?.speedMs)
@@ -443,111 +505,53 @@ class BackgroundService : Service() {
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
     }
 
-    private var lastFixRealtimeNanos: Long = -1L
+    // ===== Passive-mode LocationListener (recording fallback) =====
 
-    private var gnssStatusInFlight: GnssStatus.Callback? = null
+    private val passiveLocationListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) {
+            emitFix(buildPassiveFix(location))
+        }
+        override fun onProviderEnabled(provider: String) {}
+        override fun onProviderDisabled(provider: String) {}
+    }
+
+    // ===== Ephemeris warm-up LocationListener =====
 
     /**
-     * [enrichSatellites] is true only for fixes we solicited: continuous
-     * primary (GPS_PROVIDER) and single/alarm one-shots. It must be false
-     * for passive and ephemeris fixes.
-     *
-     * The reason: enrichment needs a GnssStatus.Callback, and a callback
-     * keeps the GNSS engine producing at hardware rate (~1 Hz) for several
-     * seconds after unregistration. During that tail, the passive
-     * listener receives fixes. If those fixes are themselves enriched, we
-     * register a fresh callback at the tail's edge and the engine never
-     * cools — the very thing "passive" must not do.
-     *
-     * Enriching only solicited fixes gives the satellite display the user's
-     * chosen cadence (5 min, or 1 s with KF on) and leaves passive
-     * strictly opportunistic: speed display still updates at Osmand's rate
-     * when Osmand is running, but the engine does not warm because of our
-     * own enrichment.
+     * The warm-up listener only exists to keep the GNSS engine warm
+     * between single-fix cycles in SINGLE_FIX / ALARM modes. It does not
+     * produce points — its Location payload is discarded. In CONTINUOUS
+     * and PASSIVE modes it is not registered.
      */
-    private fun emitLocation(location: Location, enrichSatellites: Boolean) {
-        val ts = location.elapsedRealtimeNanos
-        if (ts == lastFixRealtimeNanos) return
-        if (ts < recordingStartElapsedNanos) return
-        lastFixRealtimeNanos = ts
-
-        if (enrichSatellites) fetchGnssStatusOnce()
-
-        val point = convert(location)
-
-        // Heading: raw from the fix, no filtering. Non-null bearing updates
-        // the display; null bearing leaves the previous value in place so
-        // the cell doesn't flap to "--" when the chipset momentarily drops
-        // the course. No LPF, no threshold, no state — what the GNSS engine
-        // says is what shows.
-        if (point.bearing != null) {
-            _status.update { it.copy(lastHeadingDegrees = point.bearing) }
-        }
-
-        val gpsAlt = point.ele
-        if (gpsAlt != null && kfActive) {
-            val vAcc = gpsMeasurementSigma(location, point)
-            altitudeFilter.updateGps(gpsAlt, vAcc)
-            _status.update {
-                it.copy(
-                    kalmanAltitudeM      = altitudeFilter.altitude(),
-                    verticalSpeedMps     = altitudeFilter.verticalSpeed(),
-                    kalmanBiasM          = altitudeFilter.bias(),
-                    kalmanBiasRateMps    = altitudeFilter.biasRate(),
-                    kalmanAltitudeSigmaM = altitudeFilter.altitudeSigma(),
-                    kalmanBiasSigmaM     = altitudeFilter.biasSigma(),
-                    lastGpsInnovationM   = altitudeFilter.lastGpsInnovationM(),
-                    lastBaroInnovationM  = altitudeFilter.lastBaroInnovationM(),
-                )
-            }
-        }
-
-        dispatchFixEvent(FixEvent.FixProvided(point))
-        updateSlope(point.speedMs)
-    }
-
-    private val locationListener = object : LocationListener {
-        override fun onLocationChanged(location: Location) {
-            emitLocation(location, enrichSatellites = config.mode != RecordingMode.PASSIVE)
-        }
-        override fun onProviderDisabled(provider: String) {}
+    private val ephemerisLocationListener = object : LocationListener {
+        override fun onLocationChanged(location: Location) { /* discarded */ }
         override fun onProviderEnabled(provider: String) {}
-    }
-
-    private val ephemerisListener = object : LocationListener {
-        override fun onLocationChanged(location: Location) {
-            emitLocation(location, enrichSatellites = false)
-        }
         override fun onProviderDisabled(provider: String) {}
-        override fun onProviderEnabled(provider: String) {}
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
-        locationManager     = getSystemService(LocationManager::class.java)
+        locationManager = getSystemService(LocationManager::class.java)
         notificationManager = getSystemService(NotificationManager::class.java)
-        sensorManager       = getSystemService(SensorManager::class.java)
-        pressureSensor      = sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE)
-        // Hardware fact, set once here and carried through status. False on
-        // phones with no pressure sensor — the UI uses this to hide the
-        // calibration row and to say "no sensor" rather than "--".
+        sensorManager = getSystemService(SensorManager::class.java)
+        pressureSensor = sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE)
         _status.update { it.copy(hasBarometer = pressureSensor != null) }
-        fixScheduler        = FixScheduler(this) { dispatchFixEvent(FixEvent.StartCycle) }
+        fixScheduler = FixScheduler(this) { dispatchFixEvent(FixEvent.StartCycle) }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START         -> startRecording()
-            ACTION_STOP          -> stopRecording()
-            ACTION_PAUSE         -> pauseRecording()
-            ACTION_NEW_SEGMENT   -> newSegment()
-            ACTION_FLUSH         -> flushBuffer()
-            ACTION_FIX_DUE       -> onFixDue()
+            ACTION_START -> startRecording()
+            ACTION_STOP -> stopRecording()
+            ACTION_PAUSE -> pauseRecording()
+            ACTION_NEW_SEGMENT -> newSegment()
+            ACTION_FLUSH -> flushBuffer()
+            ACTION_FIX_DUE -> onFixDue()
             ACTION_PREVIEW_START -> startPreview()
-            ACTION_PREVIEW_STOP  -> stopPreview()
-            ACTION_CALIBRATE     -> {
+            ACTION_PREVIEW_STOP -> stopPreview()
+            ACTION_CALIBRATE -> {
                 val ref = intent.getFloatExtra(EXTRA_CALIB_REF_ALT, Float.NaN)
                 if (!ref.isNaN()) calibrateBaro(ref)
             }
@@ -555,7 +559,7 @@ class BackgroundService : Service() {
         return START_STICKY
     }
 
-    // ---- Calibration ----
+    // ===== Calibration (unchanged) =====
 
     /**
      * One-shot KF seeding. Does NOT store a persistent offset anywhere —
@@ -573,19 +577,10 @@ class BackgroundService : Service() {
      * seed an un-fed filter.
      */
     private fun calibrateBaro(refAltM: Float) {
-        if (!kfActive) {
-            Log.w(TAG, "Calibration ignored: Kalman filter disabled")
-            return
-        }
-        if (config.airplaneMode) {
-            Log.w(TAG, "Calibration disabled in airplane mode")
-            return
-        }
+        if (!kfActive) { Log.w(TAG, "Calibration ignored: Kalman filter disabled"); return }
+        if (config.airplaneMode) { Log.w(TAG, "Calibration disabled in airplane mode"); return }
         val pressure = lastBaroPressureHpa
-        if (pressure == null) {
-            Log.w(TAG, "Cannot calibrate: no baro reading yet")
-            return
-        }
+        if (pressure == null) { Log.w(TAG, "Cannot calibrate: no baro reading yet"); return }
         val rawBaro = rawBaroAltitude(pressure)
         altitudeFilter.resetWithAltitude(refAltM, rawBaro)
 
@@ -594,26 +589,26 @@ class BackgroundService : Service() {
         _status.update {
             it.copy(
                 currentBaroAltitudeM = rawBaro,
-                currentPressureHpa   = pressure,
-                kalmanAltitudeM      = refAltM,
-                verticalSpeedMps     = altitudeFilter.verticalSpeed(),
-                currentQnhHpa        = qnh ?: it.currentQnhHpa,
-                kalmanBiasM          = altitudeFilter.bias(),
-                kalmanBiasRateMps    = altitudeFilter.biasRate(),
+                currentPressureHpa = pressure,
+                kalmanAltitudeM = refAltM,
+                verticalSpeedMps = altitudeFilter.verticalSpeed(),
+                currentQnhHpa = qnh ?: it.currentQnhHpa,
+                kalmanBiasM = altitudeFilter.bias(),
+                kalmanBiasRateMps = altitudeFilter.biasRate(),
                 kalmanAltitudeSigmaM = altitudeFilter.altitudeSigma(),
-                kalmanBiasSigmaM     = altitudeFilter.biasSigma(),
-                lastGpsInnovationM   = altitudeFilter.lastGpsInnovationM(),
-                lastBaroInnovationM  = altitudeFilter.lastBaroInnovationM(),
-                airconCusumPos       = cusum.first,
-                airconCusumNeg       = cusum.second,
-                airconDetected       = altitudeFilter.airconDetected(),
+                kalmanBiasSigmaM = altitudeFilter.biasSigma(),
+                lastGpsInnovationM = altitudeFilter.lastGpsInnovationM(),
+                lastBaroInnovationM = altitudeFilter.lastBaroInnovationM(),
+                airconCusumPos = cusum.first,
+                airconCusumNeg = cusum.second,
+                airconDetected = altitudeFilter.airconDetected(),
             )
         }
         Log.i(TAG, "Calibrated KF: ref=%.2fm rawBaro=%.2fm bias=%.2fm"
             .format(refAltM, rawBaro, altitudeFilter.bias() ?: 0f))
     }
 
-    // ---- Core state machine ----
+    // ===== Core state machine =====
 
     /**
      * FIX_DUE arrives from [FixAlarmReceiver] via startForegroundService.
@@ -641,9 +636,9 @@ class BackgroundService : Service() {
     private fun dispatchFixEvent(event: FixEvent) {
         if (!recording && !previewing && event !is FixEvent.Cancel) return
         val transition = fixTransition(
-            state           = fixState,
-            event           = event,
-            maxInaccuracyM  = config.maxInaccuracyM,
+            state = fixState,
+            event = event,
+            maxInaccuracyM = config.maxInaccuracyM,
             isSingleFixMode = isSingleFixMode,
         )
         fixState = transition.state
@@ -654,7 +649,7 @@ class BackgroundService : Service() {
         for (effect in effects) {
             when (effect) {
                 is FixEffect.ProvidedFix -> _status.update { it.copy(lastProvidedFix = effect.point) }
-                is FixEffect.AcceptFix   -> {
+                is FixEffect.AcceptFix -> {
                     // lastAcceptedFix is updated inside bufferPoint(), only
                     // when the fix actually enters the buffer. The former
                     // update-here-then-try-buffer pattern updated it even for
@@ -671,11 +666,11 @@ class BackgroundService : Service() {
                         _status.update { it.copy(lastAcceptedFix = effect.point) }
                     }
                 }
-                is FixEffect.RequestGpsFix      -> requestSingleGpsFix()
-                is FixEffect.ScheduleNext       -> fixScheduler.schedule(strategy)
+                is FixEffect.RequestGpsFix -> requestSingleGpsFix()
+                is FixEffect.ScheduleNext -> fixScheduler.schedule(strategy)
                 is FixEffect.AcquireFixWakeLock -> acquireFixWakeLock()
                 is FixEffect.ReleaseFixWakeLock -> releaseFixWakeLock()
-                is FixEffect.SkipCycle          -> Log.d(TAG, "Skipping fix cycle: ${effect.reason}")
+                is FixEffect.SkipCycle -> Log.d(TAG, "Skipping fix cycle: ${effect.reason}")
             }
         }
     }
@@ -686,7 +681,7 @@ class BackgroundService : Service() {
      * position-difference filter's output in 2-state — so this function
      * does not need to know which model is active. Null when v_z is not
      * available yet, when v_h is too small for a meaningful slope, or when
-     * the Kalman filter is disabled (verticalSpeedMps stays null).
+     * the Kalman filter is disabled.
      */
     private fun updateSlope(groundSpeedMps: Float?) {
         val vz = _status.value.verticalSpeedMps
@@ -694,20 +689,19 @@ class BackgroundService : Service() {
             _status.update { it.copy(slopePercent = null) }
             return
         }
-        val slope = 100f * vz / groundSpeedMps
-        _status.update { it.copy(slopePercent = slope) }
+        _status.update { it.copy(slopePercent = 100f * vz / groundSpeedMps) }
     }
 
-    // ---- Live distance accumulation ----
+    // ===== Live distance =====
 
     private fun haversineM(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
-        val r    = 6_371_000.0
+        val r = 6_371_000.0
         val dLat = Math.toRadians(lat2 - lat1)
         val dLon = Math.toRadians(lon2 - lon1)
-        val h    = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                   Math.cos(Math.toRadians(lat1)) *
-                   Math.cos(Math.toRadians(lat2)) *
-                   Math.sin(dLon / 2) * Math.sin(dLon / 2)
+        val h = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(Math.toRadians(lat1)) *
+                Math.cos(Math.toRadians(lat2)) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2)
         return 2 * r * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h))
     }
 
@@ -720,11 +714,9 @@ class BackgroundService : Service() {
         lastDistanceFix = point
     }
 
-    private fun resetDistanceBaseline() {
-        lastDistanceFix = null
-    }
+    private fun resetDistanceBaseline() { lastDistanceFix = null }
 
-    // ---- Preview ----
+    // ===== Preview =====
 
     private fun startPreview() {
         if (recording || previewing) return
@@ -732,14 +724,14 @@ class BackgroundService : Service() {
         if (!hasLocationPermission()) { Log.w(TAG, "No location permission for preview"); stopSelf(); return }
 
         previewing = true
-        fixState  = FixState.Idle
+        fixState = FixState.Idle
         recordingStartElapsedNanos =
             SystemClock.elapsedRealtimeNanos() - config.fixTimeoutMs * 1_000_000L
         _status.update { it.copy(previewActive = true) }
 
         scope.launch {
-            val cfg  = configPrefs.get()
-            config   = cfg.toRecorderConfig()
+            val cfg = configPrefs.get()
+            config = cfg.toRecorderConfig()
             strategy = Background.strategyFor(config.mode, config.intervalMs)
             altitudeFilter = buildFilter(config)
 
@@ -762,34 +754,34 @@ class BackgroundService : Service() {
         resetDistanceBaseline()
         _status.update {
             it.copy(
-                previewActive        = false,
-                lastProvidedFix      = null,
-                lastAcceptedFix      = null,
-                lastEnqueuedFix      = null,
-                lastHeadingDegrees   = null,
-                liveDistanceM        = null,
+                previewActive = false,
+                lastProvidedFix = null,
+                lastAcceptedFix = null,
+                lastEnqueuedFix = null,
+                lastHeadingDegrees = null,
+                liveDistanceM = null,
                 currentBaroAltitudeM = null,
-                currentPressureHpa   = null,
-                kalmanAltitudeM      = null,
-                currentQnhHpa        = null,
-                verticalSpeedMps     = null,
-                slopePercent         = null,
-                kalmanBiasM          = null,
-                kalmanBiasRateMps    = null,
+                currentPressureHpa = null,
+                kalmanAltitudeM = null,
+                currentQnhHpa = null,
+                verticalSpeedMps = null,
+                slopePercent = null,
+                kalmanBiasM = null,
+                kalmanBiasRateMps = null,
                 kalmanAltitudeSigmaM = null,
-                kalmanBiasSigmaM     = null,
-                lastGpsInnovationM   = null,
-                lastBaroInnovationM  = null,
-                airconCusumPos       = null,
-                airconCusumNeg       = null,
-                airconDetected       = false,
+                kalmanBiasSigmaM = null,
+                lastGpsInnovationM = null,
+                lastBaroInnovationM = null,
+                airconCusumPos = null,
+                airconCusumNeg = null,
+                airconDetected = false,
             )
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
-    // ---- Recording lifecycle ----
+    // ===== Recording lifecycle =====
 
     private fun startRecording() {
         if (recording) return
@@ -797,17 +789,17 @@ class BackgroundService : Service() {
         if (!hasLocationPermission()) { Log.w(TAG, "No location permission"); stopSelf(); return }
 
         val wasPreviewing = previewing
-        recording  = true
+        recording = true
         previewing = false
-        fixState   = FixState.Idle
+        fixState = FixState.Idle
         recordingStartElapsedNanos =
             SystemClock.elapsedRealtimeNanos() - config.fixTimeoutMs * 1_000_000L
         _status.update { it.copy(isRecording = true, previewActive = false) }
 
         scope.launch {
             if (!wasPreviewing) {
-                val cfg  = configPrefs.get()
-                config   = cfg.toRecorderConfig()
+                val cfg = configPrefs.get()
+                config = cfg.toRecorderConfig()
                 strategy = Background.strategyFor(config.mode, config.intervalMs)
                 altitudeFilter = buildFilter(config)
                 startForeground(NOTIFICATION_ID, buildNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
@@ -818,8 +810,8 @@ class BackgroundService : Service() {
                 observeConfigChanges()
             }
             val (tId, sId) = repository.startRecording(config.autoSplitOnDayRollover)
-            trackId     = tId
-            segmentId   = sId
+            trackId = tId
+            segmentId = sId
             currentDate = LocalDate.now().toString()
             buffer = TrackPointBuffer(repository, config.intervalMs, config.mode).also {
                 it.setSegmentId(segmentId)
@@ -839,9 +831,9 @@ class BackgroundService : Service() {
      */
     private fun pauseRecording() {
         if (!recording) return
-        recording  = false
+        recording = false
         previewing = true
-        val capturedBuffer  = buffer
+        val capturedBuffer = buffer
         val capturedTrackId = trackId
         buffer = null
         resetDistanceBaseline()
@@ -856,21 +848,21 @@ class BackgroundService : Service() {
 
     private fun stopRecording() {
         if (!recording) return
-        recording  = false
+        recording = false
         previewing = true
-        val capturedBuffer  = buffer
+        val capturedBuffer = buffer
         val capturedTrackId = trackId
-        buffer    = null
-        trackId   = 0L
+        buffer = null
+        trackId = 0L
         segmentId = 0L
         currentDate = ""
         resetDistanceBaseline()
         _status.update {
             it.copy(
-                isRecording     = false,
-                previewActive   = true,
+                isRecording = false,
+                previewActive = true,
                 lastEnqueuedFix = null,
-                liveDistanceM   = null,
+                liveDistanceM = null,
             )
         }
         appScope.launch {
@@ -893,21 +885,31 @@ class BackgroundService : Service() {
         }
     }
 
+    /**
+     * Full teardown of GNSS resources. Closes the middleware session
+     * (continuous), stops the passive listener (passive), and cancels the
+     * ephemeris warm-up listener.
+     */
     private fun teardownGps() {
         dispatchFixEvent(FixEvent.Cancel)
         fixTimeoutJob?.cancel(); fixTimeoutJob = null
         configJob?.cancel(); configJob = null
-        stopPrimaryListener()
+
+        gnssFixJob?.cancel(); gnssFixJob = null
+        gnssSession?.close(); gnssSession = null
+
+        passiveListener?.let { locationManager.removeUpdates(it) }
+        passiveListener = null
+        passiveActive = false
+
         stopEphemerisWarmup()
         stopBarometric()
-        gnssStatusInFlight?.let {
-            locationManager.unregisterGnssStatusCallback(it)
-            gnssStatusInFlight = null
-        }
+
         // gnssInfo is NOT cleared here — it represents "satellite state at
         // last observation" and is useful to keep visible through brief
         // stops (preview stop on screen-off, tab switch). It IS cleared by
         // onDestroy (full status reset).
+
         fixScheduler.cancel()
         releaseSessionWakeLock()
         releaseFixWakeLock()
@@ -920,7 +922,7 @@ class BackgroundService : Service() {
         }
     }
 
-    // ---- Config observation ----
+    // ===== Config observation =====
 
     private fun observeConfigChanges() {
         configJob?.cancel()
@@ -928,9 +930,7 @@ class BackgroundService : Service() {
             configPrefs.observe()
                 .map { it.toRecorderConfig() }
                 .distinctUntilChanged()
-                .collect { newConfig ->
-                    if (newConfig != config) applyConfigChange(newConfig)
-                }
+                .collect { newConfig -> if (newConfig != config) applyConfigChange(newConfig) }
         }
     }
 
@@ -1005,7 +1005,6 @@ class BackgroundService : Service() {
                     clearKfStatus()
                 }
             }
-
             altitudeFilter.setModelAndTuning(newConfig.kalmanModel, newConfig.kalmanTuning)
             if (!altitudeFilter.isInitialized()) clearKfStatus()
             if (config.kalmanMode != newConfig.kalmanMode) {
@@ -1018,12 +1017,20 @@ class BackgroundService : Service() {
 
         dispatchFixEvent(FixEvent.Cancel)
         fixTimeoutJob?.cancel(); fixTimeoutJob = null
-        config   = newConfig
+        config = newConfig
         strategy = Background.strategyFor(config.mode, config.intervalMs)
         buffer?.updateConfig(config.mode, config.intervalMs)
-        stopPrimaryListener()
+
+        // Tear down the current GNSS path before restarting with the new
+        // one. Each path is stopped by its own teardown function.
+        gnssFixJob?.cancel(); gnssFixJob = null
+        gnssSession?.close(); gnssSession = null
+        passiveListener?.let { locationManager.removeUpdates(it) }
+        passiveListener = null
+        passiveActive = false
         fixScheduler.cancel()
         stopEphemerisWarmup()
+
         applyBarometric()
         applyWakeLock()
         applyEphemeris()
@@ -1034,15 +1041,15 @@ class BackgroundService : Service() {
         )
     }
 
-    // ---- Fix cycle ----
+    // ===== Fix cycle =====
 
     private fun beginFixCycle() {
         checkDayRollover()
         when (strategy) {
-            is FixStrategy.Continuous    -> startContinuousUpdates()
+            is FixStrategy.Continuous -> startContinuousUpdates()
             is FixStrategy.DelayedSingle -> dispatchFixEvent(FixEvent.StartCycle)
-            is FixStrategy.AlarmSingle   -> dispatchFixEvent(FixEvent.StartCycle)
-            is FixStrategy.Passive       -> startPassiveUpdates()
+            is FixStrategy.AlarmSingle -> dispatchFixEvent(FixEvent.StartCycle)
+            is FixStrategy.Passive -> startPassiveUpdates()
         }
     }
 
@@ -1055,7 +1062,7 @@ class BackgroundService : Service() {
             buffer?.flushRemaining()
             _status.update { it.copy(pendingPoints = 0) }
             val (tId, sId) = repository.handleDayRollover(config.autoSplitOnDayRollover)
-            trackId   = tId
+            trackId = tId
             segmentId = sId
             buffer?.setSegmentId(segmentId)
             resetDistanceBaseline()
@@ -1063,62 +1070,173 @@ class BackgroundService : Service() {
         }
     }
 
+    /**
+     * CONTINUOUS: acquire a middleware session at the configured hardware
+     * interval. Every fix from the active source flows through
+     * [emitFix]. The middleware throttles delivery at the minimum interval
+     * across all sessions — if another consumer (GNSS tab) holds a faster
+     * session, we get their faster cadence and rely on TrackPointBuffer's
+     * own `intervalMs` rate filter for storage spacing.
+     */
     private fun startContinuousUpdates() {
         if (!hasLocationPermission()) return
-        try {
-            locationManager.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER,
-                config.effectiveHardwareIntervalMs,
-                0f,
-                locationListener,
-            )
-        } catch (e: SecurityException) {
-            Log.e(TAG, "Location permission lost", e)
-            stopRecording()
+        if (gnssSession != null) return
+
+        gnssSession = gnssController.acquire(config.effectiveHardwareIntervalMs)
+        gnssFixJob = scope.launch {
+            gnssController.fixes.collect { fix -> emitFix(fix) }
         }
     }
 
+    /**
+     * PASSIVE: middleware has no passive source. Register a listener
+     * directly — the same shape the recorder has always used in this mode.
+     * Fixes go through [emitFix] via [buildPassiveFix], so the rest of
+     * the pipeline is uniform.
+     */
     private fun startPassiveUpdates() {
         if (!hasLocationPermission()) return
+        if (passiveActive) return
         try {
             locationManager.requestLocationUpdates(
-                LocationManager.PASSIVE_PROVIDER, 0L, 0f, locationListener)
+                LocationManager.PASSIVE_PROVIDER, 0L, 0f, passiveLocationListener)
+            passiveListener = passiveLocationListener
+            passiveActive = true
         } catch (e: SecurityException) {
             Log.e(TAG, "Location permission lost", e)
             stopRecording()
         }
     }
 
-    // ---- Single GPS fix ----
+    // ===== Single GPS fix (SINGLE_FIX / ALARM modes) =====
 
+    /**
+     * One-shot fix via the middleware. The controller delegates to the
+     * active source's `requestSingleFix`, which warms the engine and
+     * waits for one complete fix — or times out.
+     */
     private fun requestSingleGpsFix() {
         if (!hasLocationPermission()) { dispatchFixEvent(FixEvent.Timeout); return }
         fixTimeoutJob?.cancel()
         fixTimeoutJob = scope.launch {
-            delay(config.fixTimeoutMs)
-            dispatchFixEvent(FixEvent.Timeout)
-        }
-        try {
-            locationManager.getCurrentLocation(LocationManager.GPS_PROVIDER, null, mainExecutor) { location ->
-                fixTimeoutJob?.cancel()
-                if (location != null) {
-                    emitLocation(location, enrichSatellites = true)
-                } else {
-                    dispatchFixEvent(FixEvent.Timeout)
-                }
+            val fix = withTimeoutOrNull(config.fixTimeoutMs) {
+                gnssController.requestSingleFix(config.fixTimeoutMs)
             }
-        } catch (e: SecurityException) {
-            Log.e(TAG, "Location permission lost", e)
-            fixTimeoutJob?.cancel()
-            releaseFixWakeLock()
+            fixTimeoutJob = null
+            if (fix != null) {
+                emitFix(fix)
+            } else {
+                dispatchFixEvent(FixEvent.Timeout)
+            }
         }
     }
 
-    private fun stopPrimaryListener() {
-        locationManager.removeUpdates(locationListener)
+    // ===== Fix emission (unified across modes) =====
+
+    /**
+     * Route a fix into the state machine, buffer, and filter.
+     *
+     * Runs for every fix from every path — continuous via middleware,
+     * single-fix via middleware, passive via legacy listener. Everything
+     * downstream (FixStateMachine, TrackPointBuffer, KF, distance
+     * accumulation) sees only [TrackPointEntity], so source identity does
+     * not leak past this point.
+     */
+    private fun emitFix(fix: GnssFix) {
+        val ts = fix.monotonicNanos
+        if (ts == lastFixRealtimeNanos) return
+        if (ts < recordingStartElapsedNanos) return
+        lastFixRealtimeNanos = ts
+
+        val point = convertFix(fix)
+
+        // Heading: raw from the fix, no filtering. Non-null bearing updates
+        // the display; null bearing leaves the previous value in place so
+        // the cell doesn't flap to "--" when the chipset momentarily drops
+        // the course. No LPF, no threshold, no state — what the GNSS engine
+        // says is what shows.
+        if (point.bearing != null) {
+            _status.update { it.copy(lastHeadingDegrees = point.bearing) }
+        }
+
+        // Satellites: unified from fix. In LOCATION mode, from
+        // GnssStatus.Callback; in NMEA mode, from GSV + GSA.
+        val gnssInfo = gnssInfoFrom(fix)
+        if (gnssInfo.constellations.isNotEmpty()) {
+            _status.update { it.copy(gnssInfo = gnssInfo) }
+        }
+
+        // Kalman filter GPS update.
+        val gpsAlt = point.ele
+        if (gpsAlt != null && kfActive) {
+            val vAcc = gpsMeasurementSigma(fix)
+            altitudeFilter.updateGps(gpsAlt, vAcc)
+            _status.update {
+                it.copy(
+                    kalmanAltitudeM = altitudeFilter.altitude(),
+                    verticalSpeedMps = altitudeFilter.verticalSpeed(),
+                    kalmanBiasM = altitudeFilter.bias(),
+                    kalmanBiasRateMps = altitudeFilter.biasRate(),
+                    kalmanAltitudeSigmaM = altitudeFilter.altitudeSigma(),
+                    kalmanBiasSigmaM = altitudeFilter.biasSigma(),
+                    lastGpsInnovationM = altitudeFilter.lastGpsInnovationM(),
+                    lastBaroInnovationM = altitudeFilter.lastBaroInnovationM(),
+                )
+            }
+        }
+
+        dispatchFixEvent(FixEvent.FixProvided(point))
+        updateSlope(point.speedMs)
     }
 
-    // ---- Point buffering ----
+    private fun gnssInfoFrom(fix: GnssFix): GnssInfo {
+        if (fix.satellites.isEmpty()) return GnssInfo.EMPTY
+        val grouped = fix.satellites.groupBy { it.constellation }
+        return GnssInfo(
+            constellations = grouped.mapValues { (_, sats) ->
+                ConstellationCount(
+                    used = sats.count { it.usedInFix },
+                    visible = sats.size,
+                )
+            }
+        )
+    }
+
+    /**
+     * Build a GnssFix from a Location for the PASSIVE path. Not used in
+     * CONTINUOUS or SINGLE_FIX modes — those get full fidelity fixes
+     * from the middleware. Passive has no satellite enrichment (that is
+     * the nature of the passive provider: another app owns the engine).
+     */
+    private fun buildPassiveFix(location: Location): GnssFix {
+        val undulation = geoidGrid.undulation(location.latitude, location.longitude)
+        val altWgs84 = if (location.hasAltitude()) location.altitude else null
+        return GnssFix(
+            source = GnssSourceType.LOCATION,
+            timestamp = UTCDateTime.fromEpochMillis(location.time),
+            monotonicNanos = location.elapsedRealtimeNanos,
+            position = Position(location.latitude, location.longitude),
+            altitudeMslM = altWgs84?.minus(undulation),
+            altitudeWgs84M = altWgs84,
+            speedMps = if (location.hasSpeed()) location.speed.toDouble() else null,
+            courseDeg = if (location.hasBearing()) location.bearing.toDouble() else null,
+            magVarDeg = null,
+            fixQuality = null,
+            fixDimension = null,
+            satellitesUsed = null,
+            satellites = emptyList(),
+            dop = Dop.NONE,
+            sigma = Sigma(
+                horizontalM = if (location.hasAccuracy()) location.accuracy.toDouble() else null,
+                verticalM = if (location.hasVerticalAccuracy())
+                    location.verticalAccuracyMeters.toDouble() else null,
+            ),
+            sbasActive = false,
+            sourceLocation = location,
+        )
+    }
+
+    // ===== Point buffering (unchanged) =====
 
     private fun bufferPoint(point: TrackPointEntity, previousAccepted: TrackPointEntity?) {
         val buf = buffer ?: return
@@ -1136,7 +1254,7 @@ class BackgroundService : Service() {
                     accumulateLiveDistance(point)
                     _status.update {
                         it.copy(
-                            pendingPoints   = buf.pendingCount(),
+                            pendingPoints = buf.pendingCount(),
                             lastAcceptedFix = point,
                             lastEnqueuedFix = point,
                         )
@@ -1153,7 +1271,7 @@ class BackgroundService : Service() {
             accumulateLiveDistance(point)
             _status.update {
                 it.copy(
-                    pendingPoints   = buf.pendingCount(),
+                    pendingPoints = buf.pendingCount(),
                     lastAcceptedFix = point,
                     lastEnqueuedFix = point,
                 )
@@ -1169,51 +1287,7 @@ class BackgroundService : Service() {
         }
     }
 
-    // ---- GNSS status ----
-
-    /**
-     * Register a one-shot GnssStatus.Callback, take one snapshot, and
-     * unregister. Called only from solicited fixes — see emitLocation's doc
-     * for why this must not be called from passive or ephemeris fixes.
-     *
-     * Only one callback exists at a time. If one is already pending, this
-     * is a no-op; the pending one will fire and unregister itself. No
-     * timeout: a registered callback that never fires costs nothing — it
-     * holds no engine state and isn't a resource to reclaim. It also
-     * doesn't force the engine to stay warm (unlike the previous
-     * service-lifetime callback, which did — that was why it produced
-     * passive fixes at ~1 Hz and why we don't do that anymore).
-     *
-     * Late-fire guard at the top of the callback: a callback that fires
-     * after teardownGps has cleared gnssStatusInFlight must not update the
-     * status line — it would be stale data from a session that's gone.
-     */
-    private fun fetchGnssStatusOnce() {
-        if (gnssStatusInFlight != null) return
-        if (!hasLocationPermission()) return
-
-        val callback = object : GnssStatus.Callback() {
-            override fun onSatelliteStatusChanged(status: GnssStatus) {
-                if (gnssStatusInFlight !== this) return
-                locationManager.unregisterGnssStatusCallback(this)
-                gnssStatusInFlight = null
-                val counts = mutableMapOf<Int, MutableList<Boolean>>()
-                for (i in 0 until status.satelliteCount) {
-                    val type = status.getConstellationType(i)
-                    counts.getOrPut(type) { mutableListOf() }.add(status.usedInFix(i))
-                }
-                _status.update {
-                    it.copy(gnssInfo = GnssInfo(constellations = counts.mapValues { (_, sats) ->
-                        ConstellationCount(used = sats.count { it }, visible = sats.size)
-                    }))
-                }
-            }
-        }
-        gnssStatusInFlight = callback
-        locationManager.registerGnssStatusCallback(mainExecutor, callback)
-    }
-
-    // ---- Barometric altitude ----
+    // ===== Barometric (unchanged in structure) =====
 
     private fun applyBarometric() {
         // Sensor is needed when the user stores baro per point OR when the
@@ -1239,20 +1313,20 @@ class BackgroundService : Service() {
         _status.update {
             it.copy(
                 currentBaroAltitudeM = null,
-                currentPressureHpa   = null,
-                currentQnhHpa        = null,
-                kalmanBiasM          = null,
-                kalmanBiasRateMps    = null,
-                kalmanBiasSigmaM     = null,
-                lastBaroInnovationM  = null,
-                airconCusumPos       = null,
-                airconCusumNeg       = null,
-                airconDetected       = false,
+                currentPressureHpa = null,
+                currentQnhHpa = null,
+                kalmanBiasM = null,
+                kalmanBiasRateMps = null,
+                kalmanBiasSigmaM = null,
+                lastBaroInnovationM = null,
+                airconCusumPos = null,
+                airconCusumNeg = null,
+                airconDetected = false,
             )
         }
     }
 
-    // ---- Wake lock ----
+    // ===== Wake lock (unchanged) =====
 
     private fun ensureWakeLock(): PowerManager.WakeLock {
         if (wakeLock == null) {
@@ -1299,7 +1373,7 @@ class BackgroundService : Service() {
         wakeLock?.let { if (it.isHeld) it.release() }
     }
 
-    // ---- Ephemeris ----
+    // ===== Ephemeris warm-up (unchanged) =====
 
     private fun applyEphemeris() {
         stopEphemerisWarmup()
@@ -1307,7 +1381,9 @@ class BackgroundService : Service() {
         if (!config.keepEphemerisWarm) return
         if (!hasLocationPermission()) return
         try {
-            locationManager.requestLocationUpdates(LocationManager.PASSIVE_PROVIDER, 0L, 0f, ephemerisListener)
+            locationManager.requestLocationUpdates(
+                LocationManager.PASSIVE_PROVIDER, 0L, 0f, ephemerisLocationListener)
+            ephemerisListener = ephemerisLocationListener
             ephemerisWarmupActive = true
         } catch (e: SecurityException) {
             Log.e(TAG, "Ephemeris warmup failed", e)
@@ -1316,11 +1392,12 @@ class BackgroundService : Service() {
 
     private fun stopEphemerisWarmup() {
         if (!ephemerisWarmupActive) return
-        locationManager.removeUpdates(ephemerisListener)
+        ephemerisListener?.let { locationManager.removeUpdates(it) }
+        ephemerisListener = null
         ephemerisWarmupActive = false
     }
 
-    // ---- Notification ----
+    // ===== Notifications (unchanged) =====
 
     private fun buildNotification(): Notification {
         val modeLabel = formatModeLabel(config.mode)
@@ -1357,7 +1434,7 @@ class BackgroundService : Service() {
             .build()
     }
 
-    // ---- Lifecycle ----
+    // ===== Lifecycle =====
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         if (!recording) {
@@ -1369,7 +1446,7 @@ class BackgroundService : Service() {
     }
 
     override fun onDestroy() {
-        recording  = false
+        recording = false
         previewing = false
         teardownGps()
         val capturedBuffer = buffer
@@ -1386,20 +1463,20 @@ class BackgroundService : Service() {
 }
 
 private fun TrackConfigEntity.toRecorderConfig() = BackgroundConfig(
-    mode                   = mode,
-    intervalMs             = intervalMs,
-    hardwareIntervalMs     = hardwareIntervalMs,
-    fixTimeoutMs           = fixTimeoutMs,
-    maxInaccuracyM         = maxInaccuracyM,
-    keepEphemerisWarm      = keepEphemerisWarm,
-    holdWakeLock           = holdWakeLock,
-    recordBaroAltitude     = recordBaroAltitude,
-    kalmanEnabled          = kalmanEnabled,
-    airplaneMode           = airplaneMode,
+    mode = mode,
+    intervalMs = intervalMs,
+    hardwareIntervalMs = hardwareIntervalMs,
+    fixTimeoutMs = fixTimeoutMs,
+    maxInaccuracyM = maxInaccuracyM,
+    keepEphemerisWarm = keepEphemerisWarm,
+    holdWakeLock = holdWakeLock,
+    recordBaroAltitude = recordBaroAltitude,
+    kalmanEnabled = kalmanEnabled,
+    airplaneMode = airplaneMode,
     autoSplitOnDayRollover = autoSplitOnDayRollover,
-    autoSegmentGapMs       = autoSegmentGapMs,
-    kalmanModel            = kalmanModel,
-    kalmanMode             = kalmanMode,
-    iskfInverseHessian     = iskfInverseHessian,
-    kalmanTuning           = toKalmanTuning(),
+    autoSegmentGapMs = autoSegmentGapMs,
+    kalmanModel = kalmanModel,
+    kalmanMode = kalmanMode,
+    iskfInverseHessian = iskfInverseHessian,
+    kalmanTuning = toKalmanTuning(),
 )
