@@ -141,6 +141,11 @@ fun KfContent(vm: KfViewModel) {
         val modelHasBias = state.model.hasBias
         val modelHasBaro = state.model.hasBaroMeasurement
 
+        // Determines if the baro input is actually being fused. If the model
+        // doesn't support baro, or the user has disabled it via the toggle,
+        // we shouldn't plot it.
+        val baroPlotted = modelHasBaro && state.baroEnabled
+
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -207,6 +212,7 @@ fun KfContent(vm: KfViewModel) {
                     modifier = Modifier.padding(start = 16.dp, top = 2.dp),
                 )
             }
+
             // Baro toggle is hidden for no-baro models — baro isn't in that
             // model's measurement map, so the toggle would be a lie. An
             // explicit status line is shown when the toggle is hidden so
@@ -231,6 +237,7 @@ fun KfContent(vm: KfViewModel) {
                     )
                 }
             }
+
             item {
                 ToggleRow(
                     title = "Apply geoid to GPS height",
@@ -239,6 +246,7 @@ fun KfContent(vm: KfViewModel) {
                     onCheckedChange = vm::setGeoidEnabled,
                 )
             }
+
             // Airplane mode for no-baro models only: switches the model's
             // q_v. Fusion models don't need this — their baro exclusion is
             // handled by the "Feed barometer" toggle above.
@@ -389,14 +397,17 @@ fun KfContent(vm: KfViewModel) {
                 // in the dedicated charts below.
                 KfChart(
                     title = "Heights (m)",
-                    series = listOf(
-                        ChartSeries("h", COLOR_H, samples.map { it.h }),
-                        ChartSeries("baro", COLOR_BARO, samples.map { it.baroInput }),
-                        ChartSeries("gps", COLOR_GPS, samples.map { it.gpsInput }),
-                    ),
+                    series = buildList {
+                        add(ChartSeries("h", COLOR_H, samples.map { it.h }))
+                        if (baroPlotted) {
+                            add(ChartSeries("baro", COLOR_BARO, samples.map { it.baroInput }))
+                        }
+                        add(ChartSeries("gps", COLOR_GPS, samples.map { it.gpsInput }))
+                    },
                     windowSeconds = windowSec,
                 )
             }
+
             item {
                 // Difference chart for h: h's absolute scale varies (stationary
                 // vs. climbing vs. descending), so overlaying h and h* would
@@ -418,6 +429,7 @@ fun KfContent(vm: KfViewModel) {
                     windowSeconds = windowSec,
                 )
             }
+
             item {
                 // v_z with its ±σ band. The band visualizes the filter's
                 // own confidence in the velocity estimate: a band much wider
@@ -439,7 +451,8 @@ fun KfContent(vm: KfViewModel) {
                     windowSeconds = windowSec,
                 )
             }
-            if (modelHasBias) {
+
+            if (baroPlotted) {
                 item {
                     // Overlay chart, not difference. For a slow-moving state like
                     // b, the RTS correction is a predictable ramp — the smoother
@@ -508,6 +521,7 @@ fun KfContent(vm: KfViewModel) {
                     )
                 }
             }
+
             item {
                 KfChart(
                     title = "Uncertainty (m)",
@@ -520,12 +534,13 @@ fun KfContent(vm: KfViewModel) {
                     windowSeconds = windowSec,
                 )
             }
+
             item {
                 KfChart(
                     title = "Innovation (m)",
                     series = buildList {
                         add(ChartSeries("Δgps", COLOR_DGPS, samples.map { it.deltaGps }))
-                        if (modelHasBias) {
+                        if (baroPlotted) {
                             add(ChartSeries("Δbaro", COLOR_DBARO, samples.map { it.deltaBaro }))
                         }
                     },
@@ -533,6 +548,7 @@ fun KfContent(vm: KfViewModel) {
                     windowSeconds = windowSec,
                 )
             }
+
             // NIS² GPS is valid for EVERY model — it is the normalized
             // squared GPS innovation, a pure GPS statistic that has nothing
             // to do with whether the model fuses baro. It is one of the
@@ -549,7 +565,7 @@ fun KfContent(vm: KfViewModel) {
                     title = "Innovation consistency (NIS²)",
                     series = buildList {
                         add(ChartSeries("gps", COLOR_DGPS, samples.map { it.nisGps }))
-                        if (modelHasBias) {
+                        if (baroPlotted) {
                             add(ChartSeries("baro", COLOR_DBARO, samples.map { it.nisBaro }))
                         }
                     },
@@ -565,10 +581,11 @@ fun KfContent(vm: KfViewModel) {
                     modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
                 )
             }
+
             // CUSUM is intrinsically a baro detector — it tests baro
             // innovations, so hiding it for no-baro models is honest, not
             // a bug.
-            if (modelHasBias) {
+            if (baroPlotted) {
                 item {
                     // CUSUM on the normalized baro innovation. Two accumulators
                     // (positive and negative drift) share a threshold line. A
