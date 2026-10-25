@@ -10,6 +10,8 @@ import de.perigon.companion.core.feature.RecordedTrackSource
 import de.perigon.companion.core.feature.RecordedTrackSummary
 import de.perigon.companion.core.prefs.FolderGrants
 import de.perigon.companion.core.prefs.FolderKeys
+import de.perigon.companion.core.saf.openInputStreamRaw
+import de.perigon.companion.core.saf.persistSafGrant
 import de.perigon.companion.core.saf.writeFileFromStream
 import de.perigon.companion.core.ui.SnackbarChannel
 import de.perigon.companion.media.data.RenderPrefs
@@ -109,11 +111,10 @@ class TrackRenderViewModel @Inject constructor(
 
     fun setTileSource(uri: Uri, displayName: String) {
         viewModelScope.launch {
-            context.contentResolver.takePersistableUriPermission(
-                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            persistSafGrant(context, uri)
             val copied = withContext(Dispatchers.IO) {
                 val cacheFile = SqliteTileSource.cacheFile(context.cacheDir)
-                val input = context.contentResolver.openInputStream(uri) ?: return@withContext false
+                val input = openInputStreamRaw(context, uri) ?: return@withContext false
                 input.use { cacheFile.outputStream().use { out -> it.copyTo(out) } }
                 true
             }
@@ -185,7 +186,7 @@ class TrackRenderViewModel @Inject constructor(
             _state.value = withContext(Dispatchers.IO) {
                 try {
                     val tracks = uris.mapNotNull { uri ->
-                        context.contentResolver.openInputStream(uri)?.use { parseGpx(it) }
+                        openInputStreamRaw(context, uri)?.use { parseGpx(it) }
                             ?.takeIf { !it.isEmpty }
                     }
                     if (tracks.isEmpty()) TrackRenderUiState.Error("No valid track points found")

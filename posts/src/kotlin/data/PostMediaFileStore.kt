@@ -2,20 +2,24 @@ package de.perigon.companion.posts.data
 
 import android.content.Context
 import android.net.Uri
-import android.provider.DocumentsContract
 import android.util.Log
 import android.webkit.MimeTypeMap
 import androidx.core.net.toUri
 import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.core.prefs.FolderGrants
 import de.perigon.companion.core.prefs.FolderKeys
+import de.perigon.companion.core.saf.deleteDocument
+import de.perigon.companion.core.saf.documentIdOf
 import de.perigon.companion.core.saf.documentUriInTree
 import de.perigon.companion.core.saf.findChildByName
-import de.perigon.companion.core.saf.findFile
+import de.perigon.companion.core.saf.findFileId
 import de.perigon.companion.core.saf.hasPersistedWriteGrant
 import de.perigon.companion.core.saf.isReadable as canRead
-import de.perigon.companion.core.saf.navigateOrCreate
+import de.perigon.companion.core.saf.mimeTypeOf
+import de.perigon.companion.core.saf.navigateOrCreateId
+import de.perigon.companion.core.saf.openInputStreamRaw
 import de.perigon.companion.core.saf.queryChildren
+import de.perigon.companion.core.saf.treeDocumentId
 import de.perigon.companion.core.saf.writeFile
 import de.perigon.companion.core.saf.writeFileFromStream
 import de.perigon.companion.core.util.copyWithSha256
@@ -89,8 +93,8 @@ class PostMediaFileStore @Inject constructor(
         if (uriStr.isBlank()) return false
         val tree = treeUri() ?: return false
         if (!uriStr.startsWith(tree.toString())) return false
-        val treeId = runCatching { DocumentsContract.getTreeDocumentId(tree) }.getOrNull() ?: return false
-        val docId = runCatching { DocumentsContract.getDocumentId(uriStr.toUri()) }.getOrNull() ?: return false
+        val treeId = treeDocumentId(tree) ?: return false
+        val docId = runCatching { documentIdOf(uriStr.toUri()) }.getOrNull() ?: return false
         return folderWithinTree(treeId, docId) == folders
     }
 
@@ -108,10 +112,10 @@ class PostMediaFileStore @Inject constructor(
 
     /** Document id of the (created-if-needed) PostMedia folder, plus one-time .nomedia provisioning. */
     private fun postMediaFolderId(treeUri: Uri): String? {
-        val rootId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull() ?: return null
+        val rootId = treeDocumentId(treeUri) ?: return null
         val folderId = findChildByName(ctx, treeUri, rootId, SUBFOLDER)?.documentId
             ?: runCatching {
-                navigateOrCreate(ctx, treeUri, listOf(SUBFOLDER))
+                navigateOrCreateId(ctx, treeUri, listOf(SUBFOLDER))
                 findChildByName(ctx, treeUri, rootId, SUBFOLDER)?.documentId
             }.onFailure { Log.w(TAG, "cannot create $SUBFOLDER", it) }.getOrNull()
             ?: return null
@@ -125,7 +129,7 @@ class PostMediaFileStore @Inject constructor(
 
     /** Lookup only — never creates. */
     private fun existingOriginalsFolderId(treeUri: Uri): String? {
-        val rootId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull() ?: return null
+        val rootId = treeDocumentId(treeUri) ?: return null
         val postMedia = findChildByName(ctx, treeUri, rootId, SUBFOLDER) ?: return null
         return findChildByName(ctx, treeUri, postMedia.documentId, ORIGINALS)?.documentId
     }
@@ -142,7 +146,7 @@ class PostMediaFileStore @Inject constructor(
 
     // ---- Query ----
 
-    fun queryMimeType(uri: Uri): String? = ctx.contentResolver.getType(uri)
+    fun queryMimeType(uri: Uri): String? = mimeTypeOf(ctx, uri)
 
     /** Processed copy first, then the original; missing media is broken, not "look elsewhere". */
     fun resolveDisplayMedia(entity: PostMediaEntity): ResolvedMedia = when {
@@ -190,12 +194,7 @@ class PostMediaFileStore @Inject constructor(
     /** Delete an imported original; refuses anything outside PostMedia/Originals. */
     suspend fun deleteOriginalIfOwned(uriStr: String): Boolean = withContext(Dispatchers.IO) {
         if (!isOriginalUri(uriStr)) return@withContext false
-        try {
-            DocumentsContract.deleteDocument(ctx.contentResolver, uriStr.toUri())
-        } catch (e: Exception) {
-            Log.w(TAG, "cannot delete original $uriStr", e)
-            false
-        }
+        deleteDocument(ctx, uriStr.toUri())
     }
 
     private fun findOriginalByName(tree: Uri, name: String): String? {
@@ -260,7 +259,8 @@ class PostMediaFileStore @Inject constructor(
         if (hash.isBlank()) return null
         val tree = treeUri() ?: return null
         val ext = if (mimeType.startsWith("video")) "mp4" else "jpg"
-        return findFile(ctx, tree, listOf(SUBFOLDER), "$hash.$ext")?.uri
+        val docId = findFileId(ctx, tree, listOf(SUBFOLDER), "$hash.$ext") ?: return null
+        return documentUriInTree(tree, docId)
     }
 
     /** file:// only for this app's own temp files (frame grabs); everything else via the resolver. */
@@ -268,7 +268,7 @@ class PostMediaFileStore @Inject constructor(
         val uri = uriStr.toUri()
         return when (uri.scheme) {
             "file" -> uri.path?.let(::File)?.takeIf { it.exists() }?.inputStream()
-            else -> ctx.contentResolver.openInputStream(uri)
+            else -> openInputStreamRaw(ctx, uri)
         }
     }
 
@@ -281,7 +281,7 @@ class PostMediaFileStore @Inject constructor(
             .map { child ->
                 PostMediaFileInfo(
                     path = child.name,
-                    uri = DocumentsContract.buildDocumentUriUsingTree(tree, child.documentId).toString(),
+                    uri = documentUriInTree(tree, child.documentId).toString(),
                     mtime = child.mtime,
                     size = child.size ?: 0L,
                 )

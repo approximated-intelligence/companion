@@ -10,6 +10,7 @@ import androidx.work.WorkManager
 import androidx.work.ExistingWorkPolicy
 import de.perigon.companion.sensors.data.TrackPrefs
 import de.perigon.companion.core.geo.CoordFormat
+import de.perigon.companion.core.saf.persistSafGrant
 import de.perigon.companion.core.ui.SnackbarChannel
 import de.perigon.companion.sensors.data.CurrentTrackState
 import de.perigon.companion.sensors.data.RecordingMode
@@ -625,8 +626,7 @@ class TrackViewModel @Inject constructor(
 
     fun setGpxExportFolder(uri: Uri, displayName: String) {
         viewModelScope.launch {
-            ctx.contentResolver.takePersistableUriPermission(
-                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            persistSafGrant(ctx, uri, write = true)
             appPrefs.setGpxExportFolder(uri.toString(), displayName)
             _state.update { it.copy(gpxExportFolderUri = uri.toString(), gpxExportFolderLabel = displayName) }
         }

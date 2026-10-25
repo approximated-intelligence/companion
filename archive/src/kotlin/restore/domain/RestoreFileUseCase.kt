@@ -2,10 +2,8 @@ package de.perigon.companion.archive.restore.domain
 
 import android.content.Context
 import android.net.Uri
-import android.provider.DocumentsContract
 import android.util.Log
 import androidx.core.net.toUri
-import androidx.documentfile.provider.DocumentFile
 import de.perigon.companion.archive.data.BackupFileEntity
 import de.perigon.companion.archive.backup.domain.BackupOrchestrator
 import de.perigon.companion.archive.backup.domain.PACK_DRIVE_ROOT
@@ -15,8 +13,14 @@ import de.perigon.companion.archive.domain.ArchivePaxWriter
 import de.perigon.companion.archive.data.RestoreSelectionEntity
 import de.perigon.companion.core.network.S3Backend
 import de.perigon.companion.core.saf.DriveInfo
-import de.perigon.companion.core.saf.navigateOrCreate
+import de.perigon.companion.core.saf.createDocument
+import de.perigon.companion.core.saf.deleteDocument
+import de.perigon.companion.core.saf.documentUriInTree
+import de.perigon.companion.core.saf.findChildByName
+import de.perigon.companion.core.saf.navigateOrCreateId
+import de.perigon.companion.core.saf.openOutputStream
 import de.perigon.companion.core.saf.readRangeFromFirstRoot
+import de.perigon.companion.core.saf.renameDocument
 import de.perigon.companion.core.saf.setMtime
 import de.perigon.companion.core.util.toHex
 import java.io.OutputStream
@@ -76,7 +80,7 @@ class FileAccum(
     val sha256: String,
     val realSize: Long,
     val dest: SafDest,
-    val doc: DocumentFile,
+    val docUri: Uri,
     val out: DigestOutputStream,
     var written: Long = 0,
 )
@@ -90,15 +94,18 @@ fun openFileAccum(
     realSize: Long,
     dest: SafDest,
 ): FileAccum? {
-    val folder  = navigateOrCreate(context, dest.treeUri, dest.subfolders)
+    val folderId = navigateOrCreateId(context, dest.treeUri, dest.subfolders)
     val tmpName = "${dest.displayName}.tmp"
-    folder.findFile(tmpName)?.delete()
-    val doc = folder.createFile("application/octet-stream", tmpName) ?: run {
-        Log.e(TAG, "$path: Cannot create tmp file")
-        return null
+    findChildByName(context, dest.treeUri, folderId, tmpName)?.let { existing ->
+        deleteDocument(context, dest.treeUri, existing.documentId)
     }
-    val rawOut: OutputStream = context.contentResolver.openOutputStream(doc.uri) ?: run {
-        doc.delete()
+    val docUri = createDocument(context, dest.treeUri, folderId, "application/octet-stream", tmpName)
+        ?: run {
+            Log.e(TAG, "$path: Cannot create tmp file")
+            return null
+        }
+    val rawOut: OutputStream = openOutputStream(context, docUri) ?: run {
+        deleteDocument(context, docUri)
         Log.e(TAG, "$path: Cannot open output stream")
         return null
     }
@@ -109,7 +116,7 @@ fun openFileAccum(
         sha256   = sha256,
         realSize = realSize,
         dest     = dest,
-        doc      = doc,
+        docUri   = docUri,
         out      = DigestOutputStream(rawOut, MessageDigest.getInstance("SHA-256")),
     )
 }
@@ -118,27 +125,26 @@ fun finalizeFileAccum(context: Context, acc: FileAccum): String? {
     try {
         acc.out.close()
     } catch (e: Exception) {
-        acc.doc.delete()
+        deleteDocument(context, acc.docUri)
         return "${acc.path}: stream close failed: ${e.message}"
     }
     val actual = acc.out.messageDigest.digest().toHex()
     if (actual != acc.sha256) {
-        acc.doc.delete()
+        deleteDocument(context, acc.docUri)
         return "${acc.path}: SHA-256 mismatch (expected ${acc.sha256.take(8)}… got ${actual.take(8)}…)"
     }
-    val folder = navigateOrCreate(context, acc.dest.treeUri, acc.dest.subfolders)
-    folder.findFile(acc.dest.displayName)?.delete()
-    try {
-        DocumentsContract.renameDocument(
-            context.contentResolver,
-            acc.doc.uri,
-            acc.dest.displayName,
-        )
-    } catch (e: Exception) {
-        acc.doc.delete()
-        return "${acc.path}: rename failed: ${e.message}"
+    val folderId = navigateOrCreateId(context, acc.dest.treeUri, acc.dest.subfolders)
+    findChildByName(context, acc.dest.treeUri, folderId, acc.dest.displayName)?.let { existing ->
+        deleteDocument(context, acc.dest.treeUri, existing.documentId)
     }
-    setMtime(context, folder.findFile(acc.dest.displayName) ?: acc.doc, acc.mtime)
+    val renamedUri = renameDocument(context, acc.docUri, acc.dest.displayName)
+    if (renamedUri == null) {
+        deleteDocument(context, acc.docUri)
+        return "${acc.path}: rename failed"
+    }
+    val finalUri = findChildByName(context, acc.dest.treeUri, folderId, acc.dest.displayName)
+        ?.let { documentUriInTree(acc.dest.treeUri, it.documentId) }
+    setMtime(context, finalUri ?: renamedUri, acc.mtime)
     return null
 }
 
@@ -229,7 +235,7 @@ suspend fun restoreSelectedFiles(
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Failed to fetch pack=$packNumber part=$partNumber: ${e.message}")
-            currentAccum?.let { it.doc.delete(); errors += "${it.path}: abandoned due to fetch failure" }
+            currentAccum?.let { deleteDocument(context, it.docUri); errors += "${it.path}: abandoned due to fetch failure" }
             currentAccum = null
             for (chunk in partChunks) {
                 if (chunk.fileOffset == 0L) {
@@ -244,7 +250,7 @@ suspend fun restoreSelectedFiles(
         val plaintext = ArchivePartEncryptor.unseal(wireData, senderPk, recipientSk, sodium)
         if (plaintext == null) {
             Log.e(TAG, "unseal FAILED pack=$packNumber part=$partNumber")
-            currentAccum?.let { it.doc.delete(); errors += "${it.path}: abandoned due to decryption failure" }
+            currentAccum?.let { deleteDocument(context, it.docUri); errors += "${it.path}: abandoned due to decryption failure" }
             currentAccum = null
             for (chunk in partChunks) {
                 if (chunk.fileOffset == 0L) {
@@ -295,7 +301,7 @@ suspend fun restoreSelectedFiles(
             val dataEnd   = dataStart + chunk.chunkBytes.toInt()
             if (dataEnd > plaintext.size) {
                 errors += "${chunk.path}: chunk extends beyond part boundary"
-                acc.doc.delete()
+                deleteDocument(context, acc.docUri)
                 currentAccum = null
                 continue
             }
@@ -304,7 +310,7 @@ suspend fun restoreSelectedFiles(
                 acc.out.write(plaintext, dataStart, chunk.chunkBytes.toInt())
                 acc.written += chunk.chunkBytes
             } catch (e: Exception) {
-                acc.doc.delete()
+                deleteDocument(context, acc.docUri)
                 errors += "${acc.path}: write failed: ${e.message}"
                 currentAccum = null
                 continue

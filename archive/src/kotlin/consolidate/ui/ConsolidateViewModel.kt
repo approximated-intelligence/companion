@@ -3,7 +3,6 @@ package de.perigon.companion.archive.consolidate.ui
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.provider.DocumentsContract
 import android.util.Log
 import androidx.compose.runtime.Immutable
 import androidx.core.net.toUri
@@ -36,8 +35,10 @@ import de.perigon.companion.core.prefs.FolderGrants
 import de.perigon.companion.core.prefs.FolderKeys
 import de.perigon.companion.core.saf.ScannedFile
 import de.perigon.companion.core.saf.collectFileNames
+import de.perigon.companion.core.saf.deleteDocument
 import de.perigon.companion.core.saf.isReadable
 import de.perigon.companion.core.saf.listSubfolder
+import de.perigon.companion.core.saf.mimeTypeOf
 import de.perigon.companion.core.saf.openInputStream
 import de.perigon.companion.core.ui.SnackbarChannel
 import kotlinx.coroutines.CoroutineScope
@@ -260,7 +261,7 @@ class ConsolidateViewModel @Inject constructor(
 
     fun showPreview(uri: String) {
         val contentUri = uri.toUri()
-        val mime = ctx.contentResolver.getType(contentUri) ?: "image/*"
+        val mime = mimeTypeOf(ctx, contentUri) ?: "image/*"
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(contentUri, mime)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -339,7 +340,7 @@ class ConsolidateViewModel @Inject constructor(
 
             withContext(Dispatchers.IO) {
                 for ((index, item) in items.withIndex()) {
-                    if (deleteSafDocument(item.uri.toUri())) deletedIds += item.id else failed++
+                    if (deleteDocument(ctx, item.uri.toUri())) deletedIds += item.id else failed++
                     _state.update { it.copy(deleteProgress = DeleteProgress(index + 1, items.size)) }
                 }
             }
@@ -354,13 +355,6 @@ class ConsolidateViewModel @Inject constructor(
                 else -> "Deleted ${deletedIds.size} file(s), $failed failed"
             })
         }
-    }
-
-    private fun deleteSafDocument(uri: Uri): Boolean = try {
-        DocumentsContract.deleteDocument(ctx.contentResolver, uri)
-    } catch (e: Exception) {
-        Log.w(TAG, "delete failed: $uri", e)
-        false
     }
 
     // ── View controls ──

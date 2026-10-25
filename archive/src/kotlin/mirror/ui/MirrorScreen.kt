@@ -1,6 +1,5 @@
 package de.perigon.companion.archive.mirror.ui
 
-import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -58,6 +57,7 @@ import de.perigon.companion.core.feature.isSatisfied
 import de.perigon.companion.core.prefs.FolderKeys
 import de.perigon.companion.core.saf.driveUuidOf
 import de.perigon.companion.core.saf.isExternalVolume
+import de.perigon.companion.core.saf.persistSafGrant
 import de.perigon.companion.core.ui.DriveEjectButton
 import de.perigon.companion.core.ui.NotificationObserver
 import de.perigon.companion.core.ui.SectionHeader
@@ -135,10 +135,7 @@ fun MirrorScreen(
             return@rememberLauncherForActivityResult
         }
         try {
-            ctx.contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
-            )
+            persistSafGrant(ctx, uri, write = true)
             drivesRefreshKey++
             scope.launch { snackbar.showSnackbar("Drive added") }
         } catch (e: Exception) {

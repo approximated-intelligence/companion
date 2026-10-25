@@ -28,8 +28,10 @@ import de.perigon.companion.archive.data.ArchivePrefs
 import de.perigon.companion.archive.data.ArchiveSecrets
 import de.perigon.companion.core.prefs.FolderGrants
 import de.perigon.companion.core.prefs.FolderKeys
+import de.perigon.companion.core.saf.deleteDocument
 import de.perigon.companion.core.saf.DriveInfo
 import de.perigon.companion.core.saf.enumerateConnectedDrives
+import de.perigon.companion.core.saf.listGrantedTrees
 import de.perigon.companion.core.saf.readRangeFromFirstRoot
 import de.perigon.companion.core.util.fromHex
 import de.perigon.companion.core.network.S3Backend
@@ -255,7 +257,7 @@ class RestoreWorker @AssistedInject constructor(
             if (plaintext == null) {
                 Log.e(TAG, "unseal FAILED pack=$packPos part=$partNum")
                 errors += "Pack $packPos part $partNum: decryption failed"
-                currentFile?.let { it.doc.delete(); errors += "${it.path}: abandoned due to decryption failure" }
+                currentFile?.let { deleteDocument(applicationContext, it.docUri); errors += "${it.path}: abandoned due to decryption failure" }
                 currentFile = null
                 break
             }
@@ -324,7 +326,7 @@ class RestoreWorker @AssistedInject constructor(
                                 acc.out.write(plaintext, offset, dataInThisPart.toInt())
                                 acc.written += dataInThisPart
                             } catch (e: Exception) {
-                                acc.doc.delete()
+                                deleteDocument(applicationContext, acc.docUri)
                                 errors += "${acc.path}: write failed: ${e.message}"
                                 currentFile = null
                             }
@@ -375,22 +377,20 @@ class RestoreWorker @AssistedInject constructor(
 
     private fun buildSafGrants(dcimUri: String?): Map<String, Uri> {
         val grants = mutableMapOf<String, Uri>()
+        val granted = listGrantedTrees(applicationContext)
 
         if (dcimUri != null) {
             val uri = dcimUri.toUri()
-            val perms = applicationContext.contentResolver.persistedUriPermissions
-            if (perms.any { it.uri == uri && it.isWritePermission }) {
+            if (uri in granted) {
                 grants["DCIM"] = uri
             }
         }
 
-        applicationContext.contentResolver.persistedUriPermissions
-            .filter { it.isWritePermission }
-            .forEach { perm ->
-                val path = perm.uri.path ?: return@forEach
-                val root = path.substringAfterLast(':').substringBefore('/')
-                if (root.isNotEmpty()) grants.putIfAbsent(root, perm.uri)
-            }
+        granted.forEach { treeUri ->
+            val path = treeUri.path ?: return@forEach
+            val root = path.substringAfterLast(':').substringBefore('/')
+            if (root.isNotEmpty()) grants.putIfAbsent(root, treeUri)
+        }
 
         return grants
     }

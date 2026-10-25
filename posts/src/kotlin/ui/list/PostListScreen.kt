@@ -30,6 +30,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import coil3.compose.AsyncImage
+import de.perigon.companion.core.saf.persistSafGrant
 import de.perigon.companion.core.ui.NotificationObserver
 import de.perigon.companion.posts.PostsRoute
 import de.perigon.companion.posts.data.PostEntity
@@ -62,11 +63,7 @@ fun PostListScreen(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         if (uri != null) {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                    android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
-            )
+            persistSafGrant(context, uri, write = true)
             pendingPublishPostId?.let { vm.retryPublish(it) }
         }
         pendingPublishPostId = null

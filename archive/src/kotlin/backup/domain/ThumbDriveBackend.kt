@@ -3,11 +3,15 @@ package de.perigon.companion.archive.backup.domain
 import android.content.Context
 import android.net.Uri
 import android.util.Log
-import androidx.documentfile.provider.DocumentFile
 import de.perigon.companion.core.network.S3Backend
 import de.perigon.companion.core.saf.DriveEjectedException
-import de.perigon.companion.core.saf.navigateOrCreate
-import de.perigon.companion.core.saf.navigateTo
+import de.perigon.companion.core.saf.createDocument
+import de.perigon.companion.core.saf.deleteDocument
+import de.perigon.companion.core.saf.findChildByName
+import de.perigon.companion.core.saf.navigateOrCreateId
+import de.perigon.companion.core.saf.navigateToId
+import de.perigon.companion.core.saf.openOutputStream
+import de.perigon.companion.core.saf.renameDocument
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
@@ -17,7 +21,7 @@ private const val TAG = "ThumbDriveBackend"
 /**
  * Directory under every granted drive tree where packs live. Single
  * source of truth: [ThumbDriveBackend] writes under it, and the restore
- * side reads through [de.perigon.companion.core.saf.readRangeFromDrives]
+ * side reads through [de.perigon.companion.core.saf.readRangeFromFirstRoot]
  * passing this as rootFolder. Keeping the reader's and writer's view of
  * the layout in one constant is the reason DrivePackReader.kt no longer
  * needed to exist.
@@ -104,7 +108,8 @@ class ThumbDriveBackend(
     override suspend fun headObject(key: String): Boolean = withContext(Dispatchers.IO) {
         try {
             checkEject()
-            folderFor(key, create = false)?.findFile(fileName(key)) != null
+            val folderId = folderFor(key, create = false) ?: return@withContext false
+            findChildByName(ctx, treeUri, folderId, fileName(key)) != null
         } catch (e: DriveEjectedException) {
             throw e
         } catch (e: Exception) {
@@ -116,7 +121,9 @@ class ThumbDriveBackend(
     override suspend fun deleteMedia(key: String): Boolean = withContext(Dispatchers.IO) {
         try {
             checkEject()
-            folderFor(key, create = false)?.findFile(fileName(key))?.delete() ?: true
+            val folderId = folderFor(key, create = false) ?: return@withContext true
+            val child = findChildByName(ctx, treeUri, folderId, fileName(key)) ?: return@withContext true
+            deleteDocument(ctx, treeUri, child.documentId)
         } catch (e: DriveEjectedException) {
             throw e
         } catch (e: Exception) {
@@ -152,32 +159,38 @@ class ThumbDriveBackend(
 
     private fun writePack(key: String, chunks: List<ByteArray>) {
         checkEject()
-        val folder = folderFor(key, create = true) ?: error("no folder for $key")
+        val folderId = folderFor(key, create = true) ?: error("no folder for $key")
         val name = fileName(key)
         val tmpName = "$name.partial"
 
-        folder.findFile(tmpName)?.delete()
-        val tmp = folder.createFile("application/octet-stream", tmpName)
+        findChildByName(ctx, treeUri, folderId, tmpName)?.let { existing ->
+            deleteDocument(ctx, treeUri, existing.documentId)
+        }
+        val tmpUri = createDocument(ctx, treeUri, folderId, "application/octet-stream", tmpName)
             ?: error("cannot create $tmpName")
         try {
-            ctx.contentResolver.openOutputStream(tmp.uri)?.use { out ->
+            openOutputStream(ctx, tmpUri)?.use { out ->
                 for (chunk in chunks) out.write(chunk)
                 out.flush()
             } ?: error("cannot open stream for $tmpName")
 
-            folder.findFile(name)?.delete()
-            if (!tmp.renameTo(name)) error("cannot rename $tmpName to $name")
+            findChildByName(ctx, treeUri, folderId, name)?.let { existing ->
+                deleteDocument(ctx, treeUri, existing.documentId)
+            }
+            if (renameDocument(ctx, tmpUri, name) == null) {
+                error("cannot rename $tmpName to $name")
+            }
         } catch (e: Exception) {
-            tmp.delete()
+            deleteDocument(ctx, tmpUri)
             throw e
         }
     }
 
-    private fun folderFor(key: String, create: Boolean): DocumentFile? {
+    private fun folderFor(key: String, create: Boolean): String? {
         val parent = key.substringBeforeLast('/', "")
         val dirs = listOf(PACK_DRIVE_ROOT) + parent.split('/').filter { it.isNotEmpty() }
-        return if (create) navigateOrCreate(ctx, treeUri, dirs)
-               else navigateTo(ctx, treeUri, dirs)
+        return if (create) navigateOrCreateId(ctx, treeUri, dirs)
+               else navigateToId(ctx, treeUri, dirs)
     }
 
     private fun fileName(key: String): String = key.substringAfterLast('/')

@@ -16,8 +16,10 @@ import de.perigon.companion.core.feature.NotificationIds
 import de.perigon.companion.core.feature.RequestCodes
 import de.perigon.companion.core.prefs.FolderGrants
 import de.perigon.companion.core.prefs.FolderKeys
+import de.perigon.companion.core.saf.mimeTypeOf
 import de.perigon.companion.core.saf.openFileDescriptor
 import de.perigon.companion.core.saf.openInputStream
+import de.perigon.companion.core.saf.openOutputStream
 import de.perigon.companion.core.ui.WorkNotifier
 import de.perigon.companion.archive.consolidate.data.ConsolidateFileEntity
 import de.perigon.companion.archive.consolidate.data.ConsolidateRepository
@@ -36,7 +38,10 @@ import de.perigon.companion.media.transform.writeExif
 import de.perigon.companion.core.saf.ScannedFile
 import de.perigon.companion.core.saf.collectFileNames
 import de.perigon.companion.core.saf.listSubfolder
-import de.perigon.companion.core.saf.navigateOrCreate
+import de.perigon.companion.core.saf.createDocument
+import de.perigon.companion.core.saf.deleteDocument
+import de.perigon.companion.core.saf.findChildByName
+import de.perigon.companion.core.saf.navigateOrCreateId
 import de.perigon.companion.core.saf.setMtime
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
@@ -167,7 +172,7 @@ class ConsolidateWorker @AssistedInject constructor(
             // Unknown type, or the source is gone (getType resolves nothing
             // for a deleted document): drop the row rather than fail it on
             // every run.
-            if (target == null || ctx.contentResolver.getType(sourceUri) == null) {
+            if (target == null || mimeTypeOf(ctx, sourceUri) == null) {
                 consolidateRepo.deleteByIds(setOf(entity.id))
                 continue
             }
@@ -395,14 +400,16 @@ class ConsolidateWorker @AssistedInject constructor(
     ) {
         try {
             if (tj.mediaType != "VIDEO") copyExif(sourceUri, tempFile)
-            val folder = navigateOrCreate(ctx, dcimTreeUri, listOf(CONSOLIDATED_SUBFOLDER))
-            folder.findFile(tj.displayName)?.delete()
-            val doc = folder.createFile(tj.outputMimeType, tj.displayName)
+            val folderId = navigateOrCreateId(ctx, dcimTreeUri, listOf(CONSOLIDATED_SUBFOLDER))
+            findChildByName(ctx, dcimTreeUri, folderId, tj.displayName)?.let { existing ->
+                deleteDocument(ctx, dcimTreeUri, existing.documentId)
+            }
+            val docUri = createDocument(ctx, dcimTreeUri, folderId, tj.outputMimeType, tj.displayName)
                 ?: error("Cannot create ${tj.displayName} in Consolidated")
-            ctx.contentResolver.openOutputStream(doc.uri)?.use { out ->
+            openOutputStream(ctx, docUri)?.use { out ->
                 tempFile.inputStream().use { it.copyTo(out) }
-            } ?: error("Cannot open output stream for ${doc.uri}")
-            setMtime(ctx, doc.uri, sourceMtime)
+            } ?: error("Cannot open output stream for $docUri")
+            setMtime(ctx, docUri, sourceMtime)
         } finally {
             tempFile.delete()
         }

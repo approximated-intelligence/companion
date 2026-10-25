@@ -1,6 +1,5 @@
 package de.perigon.companion.archive.backup.ui
 
-import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -40,6 +39,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import de.perigon.companion.core.saf.driveUuidOf
 import de.perigon.companion.core.saf.isExternalVolume
+import de.perigon.companion.core.saf.persistSafGrant
 import de.perigon.companion.core.ui.DriveEjectButton
 import de.perigon.companion.core.ui.rememberConnectedDrives
 import de.perigon.companion.core.ui.rememberEjectingUuids
@@ -97,10 +97,7 @@ fun BackupDestinationSection(
             return@rememberLauncherForActivityResult
         }
         try {
-            ctx.contentResolver.takePersistableUriPermission(
-                uri,
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
-            )
+            persistSafGrant(ctx, uri, write = true)
             refreshKey++
         } catch (e: Exception) {
             scope.launch { snackbarHost.showSnackbar("Grant failed: ${e.message}") }

@@ -162,7 +162,7 @@ fun documentUriInTree(treeUri: Uri, documentId: String): Uri =
  * DocumentFile.fromTreeUri resolving document-in-tree URIs to the document
  * itself (isDocumentUri branch), preserving the tree permission grant.
  */
-fun documentFileInTree(context: Context, treeUri: Uri, documentId: String): DocumentFile? =
+internal fun documentFileInTree(context: Context, treeUri: Uri, documentId: String): DocumentFile? =
     DocumentFile.fromTreeUri(context, documentUriInTree(treeUri, documentId))
 
 private fun rootDocumentId(treeUri: Uri): String? = try {
@@ -170,6 +170,16 @@ private fun rootDocumentId(treeUri: Uri): String? = try {
 } catch (_: Exception) {
     null
 }
+
+/**
+ * Tree document id of [uri], or null if [uri] is not a tree URI. Public
+ * counterpart of [rootDocumentId], for callers outside saf/ that need to
+ * enumerate a tree's top-level children.
+ */
+fun treeDocumentId(uri: Uri): String? = rootDocumentId(uri)
+
+/** Document id of [uri]. Throws if [uri] is not a document URI. */
+fun documentIdOf(uri: Uri): String = DocumentsContract.getDocumentId(uri)
 
 /**
  * Provider-reported display name of a document. The only way for a caller
@@ -388,7 +398,7 @@ fun findOrCreateChildDirectory(
     return DocumentsContract.getDocumentId(created)
 }
 
-private fun navigateToId(context: Context, treeUri: Uri, subfolders: List<String>): String? {
+fun navigateToId(context: Context, treeUri: Uri, subfolders: List<String>): String? {
     var currentId = rootDocumentId(treeUri) ?: return null
     for (name in subfolders) {
         val child = findChildByName(context, treeUri, currentId, name) ?: return null
@@ -397,7 +407,7 @@ private fun navigateToId(context: Context, treeUri: Uri, subfolders: List<String
     return currentId
 }
 
-private fun navigateOrCreateId(context: Context, treeUri: Uri, subfolders: List<String>): String {
+fun navigateOrCreateId(context: Context, treeUri: Uri, subfolders: List<String>): String {
     var currentId = rootDocumentId(treeUri) ?: error("Cannot open SAF tree: $treeUri")
     for (name in subfolders) {
         val existing = findChildByName(context, treeUri, currentId, name)
@@ -420,7 +430,7 @@ private fun navigateOrCreateId(context: Context, treeUri: Uri, subfolders: List<
  * Navigate to (or create) a nested subfolder path within a SAF tree.
  * Returns the DocumentFile for the deepest folder.
  */
-fun navigateOrCreate(context: Context, treeUri: Uri, subfolders: List<String>): DocumentFile {
+internal fun navigateOrCreate(context: Context, treeUri: Uri, subfolders: List<String>): DocumentFile {
     val folderId = navigateOrCreateId(context, treeUri, subfolders)
     return documentFileInTree(context, treeUri, folderId)
         ?: error("Cannot open SAF tree: $treeUri")
@@ -429,7 +439,7 @@ fun navigateOrCreate(context: Context, treeUri: Uri, subfolders: List<String>): 
 /**
  * Navigate to a subfolder without creating it. Returns null if not found.
  */
-fun navigateTo(context: Context, treeUri: Uri, subfolders: List<String>): DocumentFile? {
+internal fun navigateTo(context: Context, treeUri: Uri, subfolders: List<String>): DocumentFile? {
     val folderId = navigateToId(context, treeUri, subfolders) ?: return null
     return documentFileInTree(context, treeUri, folderId)
 }
@@ -466,7 +476,7 @@ fun writeFile(
         displayName,
     ) ?: error("Cannot create file '$displayName'")
 
-    context.contentResolver.openOutputStream(created)?.use { out ->
+    openOutputStream(context, created)?.use { out ->
         out.write(bytes)
     } ?: error("Cannot open output stream for $created")
     return created
@@ -504,7 +514,7 @@ fun writeFileFromStream(
         displayName,
     ) ?: error("Cannot create file '$displayName' in folder $folderId")
 
-    context.contentResolver.openOutputStream(created)?.use { out ->
+    openOutputStream(context, created)?.use { out ->
         source.copyTo(out)
     } ?: error("Cannot open output stream for $created")
 
@@ -543,7 +553,7 @@ fun writeFileAtomic(
 
     try {
         val pfd = try {
-            context.contentResolver.openFileDescriptor(tmpFile.uri, "rw")
+            openRawFd(context, tmpFile.uri, "rw")
         } catch (_: Exception) {
             null
         }
@@ -556,7 +566,7 @@ fun writeFileAtomic(
                 }
             }
         } else {
-            context.contentResolver.openOutputStream(tmpFile.uri)?.use { out ->
+            openOutputStream(context, tmpFile.uri)?.use { out ->
                 source.copyTo(out)
             } ?: error("Cannot open output stream for ${tmpFile.uri}")
         }
@@ -585,7 +595,7 @@ fun writeFileAtomic(
  */
 fun setMtime(context: Context, doc: DocumentFile, mtime: Long) {
     try {
-        context.contentResolver.openFileDescriptor(doc.uri, "rw")?.use { pfd ->
+        openRawFd(context, doc.uri, "rw")?.use { pfd ->
             java.io.File("/proc/self/fd/${pfd.fd}").setLastModified(mtime)
         }
     } catch (_: Exception) { }
@@ -596,7 +606,7 @@ fun setMtime(context: Context, doc: DocumentFile, mtime: Long) {
  */
 fun setMtime(context: Context, uri: Uri, mtime: Long) {
     try {
-        context.contentResolver.openFileDescriptor(uri, "rw")?.use { pfd ->
+        openRawFd(context, uri, "rw")?.use { pfd ->
             java.io.File("/proc/self/fd/${pfd.fd}").setLastModified(mtime)
         }
     } catch (_: Exception) { }
@@ -635,15 +645,28 @@ fun collectFileNames(
 /**
  * Find a file by name within a subfolder. Returns its DocumentFile or null.
  */
-fun findFile(
+/**
+ * Doc id of the file [displayName] under [subfolders] in [treeUri], or null
+ * if the folder or file does not exist.
+ */
+fun findFileId(
+    context: Context,
+    treeUri: Uri,
+    subfolders: List<String>,
+    displayName: String,
+): String? {
+    val folderId = navigateToId(context, treeUri, subfolders) ?: return null
+    return findChildByName(context, treeUri, folderId, displayName)?.documentId
+}
+
+internal fun findFile(
     context: Context,
     treeUri: Uri,
     subfolders: List<String>,
     displayName: String,
 ): DocumentFile? {
-    val folderId = navigateToId(context, treeUri, subfolders) ?: return null
-    val child = findChildByName(context, treeUri, folderId, displayName) ?: return null
-    return documentFileInTree(context, treeUri, child.documentId)
+    val id = findFileId(context, treeUri, subfolders, displayName) ?: return null
+    return documentFileInTree(context, treeUri, id)
 }
 
 // getType returns null for file:// (no provider) and for any non-media MIME
@@ -848,6 +871,34 @@ fun enumerateConnectedDrives(context: Context): List<DriveInfo> {
 }
 
 /**
+ * Root URI for a removable volume. [fsUuid] is the volume's fsUuid
+ * ("XXXX-XXXX"), the same key [ExternalDriveEjectBus] and FolderGrants use.
+ * Used by the eject flow and the settings-UI fallbacks.
+ */
+fun externalStorageRootUri(fsUuid: String): Uri =
+    DocumentsContract.buildRootUri("com.android.externalstorage.documents", fsUuid)
+
+/**
+ * MIME type [DocumentsContract.Root] expects for an external-storage root.
+ * Exposed so settings-intent construction (DriveEject) can set the type
+ * without importing DocumentsContract itself.
+ */
+val EXTERNAL_STORAGE_ROOT_MIME: String = DocumentsContract.Root.MIME_TYPE_ITEM
+
+/**
+ * Ask the platform to eject the removable volume [fsUuid]. Best-effort:
+ * some devices do not implement ejectRoot, or refuse while the volume is
+ * busy. Returns true if the request was accepted. The caller's fallback
+ * is the system-settings eject UI.
+ */
+fun ejectStorageVolume(context: Context, fsUuid: String): Boolean = try {
+    DocumentsContract.ejectRoot(context.contentResolver, externalStorageRootUri(fsUuid))
+    true
+} catch (_: Exception) {
+    false
+}
+
+/**
  * Read bytes [from..to] inclusive of [path] under [rootFolder] from the
  * first tree root in [roots] that has it. [path] is interpreted relative
  * to [rootFolder] on each root — e.g. `rootFolder = "CompanionBackup"`,
@@ -875,11 +926,11 @@ suspend fun readRangeFromFirstRoot(
     val name = path.substringAfterLast('/')
     val subfolders = listOf(rootFolder) + parent.split('/').filter { it.isNotEmpty() }
     for (root in roots) {
-        val folder = try { navigateTo(context, root, subfolders) }
-                     catch (_: Exception) { null } ?: continue
-        val file = try { folder.findFile(name) }
-                   catch (_: Exception) { null } ?: continue
-        readRange(context, file.uri, from, to)?.let { return it }
+        val folderId = try { navigateToId(context, root, subfolders) }
+                       catch (_: Exception) { null } ?: continue
+        val child = try { findChildByName(context, root, folderId, name) }
+                    catch (_: Exception) { null } ?: continue
+        readRange(context, documentUriInTree(root, child.documentId), from, to)?.let { return it }
     }
     return null
 }

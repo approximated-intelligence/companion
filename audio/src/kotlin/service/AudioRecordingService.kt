@@ -14,7 +14,7 @@ import android.net.Uri
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
-import android.provider.DocumentsContract
+
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -31,6 +31,9 @@ import de.perigon.companion.audio.AudioChannels
 import de.perigon.companion.core.feature.NotificationIds
 import de.perigon.companion.core.feature.RequestCodes
 import de.perigon.companion.core.ui.CoreIcons
+import de.perigon.companion.core.saf.createDocument
+import de.perigon.companion.core.saf.openRawFd
+import de.perigon.companion.core.saf.treeDocumentId
 import de.perigon.companion.core.ui.navigatePendingIntent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -349,11 +352,9 @@ class AudioRecordingService : Service() {
     private fun createFile(folderUri: Uri, name: String, format: AudioFormat): Pair<Uri, ParcelFileDescriptor>? {
         return try {
             // Names carry a timestamp, so no existing-file lookup is needed.
-            val parentUri = DocumentsContract.buildDocumentUriUsingTree(
-                folderUri, DocumentsContract.getTreeDocumentId(folderUri),
-            )
-            val created = DocumentsContract.createDocument(contentResolver, parentUri, format.mimeType, name) ?: return null
-            val fd = contentResolver.openFileDescriptor(created, "w") ?: return null
+            val treeDocId = treeDocumentId(folderUri) ?: return null
+            val created = createDocument(this, folderUri, treeDocId, format.mimeType, name) ?: return null
+            val fd = openRawFd(this, created, "w") ?: return null
             created to fd
         } catch (e: Exception) {
             Log.e(TAG, "createFile failed", e)

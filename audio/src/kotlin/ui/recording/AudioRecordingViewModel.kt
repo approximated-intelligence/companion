@@ -16,6 +16,9 @@ import de.perigon.companion.audio.data.AudioPreset
 import de.perigon.companion.audio.data.AudioRecordingEntity
 import de.perigon.companion.audio.data.AudioRepository
 import de.perigon.companion.audio.service.AudioRecordingService
+import de.perigon.companion.core.saf.deleteDocument
+import de.perigon.companion.core.saf.openRawFd
+import de.perigon.companion.core.saf.persistSafGrant
 import de.perigon.companion.core.ui.SnackbarChannel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -158,9 +161,7 @@ class AudioRecordingViewModel @Inject constructor(
 
     fun setFolder(uri: Uri, displayName: String) {
         viewModelScope.launch {
-            ctx.contentResolver.takePersistableUriPermission(
-                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
-            )
+            persistSafGrant(ctx, uri, write = true)
             configPrefs.setFolder(uri.toString(), displayName)
             // Folder flows into UiState via configPrefs.observeFolder().
         }
@@ -193,9 +194,7 @@ class AudioRecordingViewModel @Inject constructor(
     fun delete(id: Long) {
         viewModelScope.launch(Dispatchers.IO) {
             val rec = repository.getById(id) ?: return@launch
-            try {
-                ctx.contentResolver.delete(rec.uri.toUri(), null, null)
-            } catch (_: Exception) {}
+            deleteDocument(ctx, rec.uri.toUri())
             repository.delete(id)
             snackbar.send("Recording deleted")
         }
@@ -206,7 +205,7 @@ class AudioRecordingViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             for (id in ids) {
                 val rec = repository.getById(id) ?: continue
-                try { ctx.contentResolver.delete(rec.uri.toUri(), null, null) } catch (_: Exception) {}
+                deleteDocument(ctx, rec.uri.toUri())
                 repository.delete(id)
             }
             selectedIds.value = emptySet()
@@ -260,7 +259,7 @@ class AudioRecordingViewModel @Inject constructor(
         for (o in orphans) {
             val (duration, size) = try {
                 val uri = o.uri.toUri()
-                val sizeBytes = ctx.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } ?: 0L
+                val sizeBytes = openRawFd(ctx, uri, "r")?.use { it.statSize } ?: 0L
                 val durationMs = probeDurationMs(uri) ?: 0L
                 durationMs to sizeBytes
             } catch (_: Exception) {

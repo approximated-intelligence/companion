@@ -41,6 +41,7 @@ import coil3.compose.AsyncImage
 import de.perigon.companion.posts.data.PostMediaEntity
 import de.perigon.companion.posts.data.MediaSourceStatus
 import de.perigon.companion.posts.data.ResolvedMedia
+import de.perigon.companion.core.saf.persistSafGrant
 import de.perigon.companion.core.ui.AppTopBar
 import de.perigon.companion.posts.PostsRoute as Route
 import de.perigon.companion.posts.ui.common.MediaSourceBadge
@@ -73,11 +74,7 @@ fun PostScreen(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         if (uri != null) {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                    android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
-            )
+            persistSafGrant(context, uri, write = true)
             vm.retryPublish { onPublished() }
         }
     }

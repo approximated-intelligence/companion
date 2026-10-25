@@ -2,7 +2,6 @@ package de.perigon.companion.archive.mirror.data
 
 import android.content.Context
 import android.net.Uri
-import android.provider.DocumentsContract
 import android.util.Log
 import androidx.core.net.toUri
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -17,12 +16,17 @@ import de.perigon.companion.archive.mirror.domain.guessMime
 import de.perigon.companion.archive.mirror.domain.parentDirs
 import de.perigon.companion.core.saf.ChildDoc
 import de.perigon.companion.core.saf.ScannedFile
+import de.perigon.companion.core.saf.createDocument
+import de.perigon.companion.core.saf.deleteDocument
 import de.perigon.companion.core.saf.documentUriInTree
 import de.perigon.companion.core.saf.findChildByName
-import de.perigon.companion.core.saf.navigateOrCreate
+import de.perigon.companion.core.saf.findOrCreateChildDirectory
+import de.perigon.companion.core.saf.navigateOrCreateId
 import de.perigon.companion.core.saf.openInputStream
 import de.perigon.companion.core.saf.openInputStreamRaw
+import de.perigon.companion.core.saf.openOutputStream
 import de.perigon.companion.core.saf.queryChildren
+import de.perigon.companion.core.saf.treeDocumentId
 import de.perigon.companion.core.saf.walkSubtree
 import de.perigon.companion.core.saf.writeFileAtomic
 import de.perigon.companion.core.util.sha256Hex
@@ -65,9 +69,9 @@ private val NEW_SUMS_NAME        = Regex("^T\\d{13}(?:\\.[A-Za-z0-9]+)?$")
  * provider-appended extension on either ("SHA256SUM.txt", "SHA256SUM (1).txt").
  *
  * Without the ".txt" branch the check silently skipped provider-renamed
- * files: a plain-text SHA256SUM written via DocumentsContract.createDocument
- * with "text/plain" gets ".txt" appended on most devices, and the read side
- * then never noticed the file existed.
+ * files: a plain-text SHA256SUM created with a "text/plain" MIME gets
+ * ".txt" appended on most devices (the SAF provider derives an extension
+ * from the MIME), and the read side then never noticed the file existed.
  */
 private val LEGACY_ROOT_SUMS_NAME =
     Regex("^${Regex.escape(LEGACY_SUMS_FILE)}(?: \\(\\d+\\))?(?:\\.[A-Za-z0-9]+)?$")
@@ -112,13 +116,11 @@ class MirrorRepository @Inject constructor(
 
     // ── folders ──────────────────────────────────────────────────────────
 
-    fun ensureMirrorFolder(driveRoot: Uri): String {
-        val folder = navigateOrCreate(ctx, driveRoot, listOf(MIRROR_FOLDER))
-        return DocumentsContract.getDocumentId(folder.uri)
-    }
+    fun ensureMirrorFolder(driveRoot: Uri): String =
+        navigateOrCreateId(ctx, driveRoot, listOf(MIRROR_FOLDER))
 
     fun findMirrorFolder(driveRoot: Uri): String? {
-        val rootId = DocumentsContract.getTreeDocumentId(driveRoot)
+        val rootId = treeDocumentId(driveRoot) ?: return null
         return findChildByName(ctx, driveRoot, rootId, MIRROR_FOLDER)?.documentId
     }
 
@@ -150,10 +152,8 @@ class MirrorRepository @Inject constructor(
             if (!sf.path.endsWith(TMP_SUFFIX)) {
                 continue
             }
-            try {
-                DocumentsContract.deleteDocument(ctx.contentResolver, sf.uri.toUri())
-            } catch (e: Exception) {
-                Log.w(TAG, "sweep failed: ${sf.path}", e)
+            if (!deleteDocument(ctx, sf.uri.toUri())) {
+                Log.w(TAG, "sweep failed: ${sf.path}")
             }
         }
     }
@@ -234,29 +234,17 @@ class MirrorRepository @Inject constructor(
         val name = pickSumsName(driveRoot, sumsDocId)
         val payload = buildPayload(merged.toList())
 
-        val docUri = DocumentsContract.createDocument(
-            ctx.contentResolver,
-            documentUriInTree(driveRoot, sumsDocId),
-            SUMS_MIME,
-            name,
-        )
+        val docUri = createDocument(ctx, driveRoot, sumsDocId, SUMS_MIME, name)
         if (docUri == null) {
             Log.w(TAG, "cannot create SUMS/$name")
             return null
         }
 
         val wroteOk: Boolean = try {
-            val out = ctx.contentResolver.openOutputStream(docUri)
-            if (out == null) {
-                Log.w(TAG, "cannot open output for SUMS/$name")
-                false
-            } else {
-                out.use { stream ->
-                    stream.write(payload)
-                    stream.flush()
-                }
-                true
-            }
+            openOutputStream(ctx, docUri)?.use { stream ->
+                stream.write(payload)
+                stream.flush()
+            } != null
         } catch (e: Exception) {
             Log.w(TAG, "write failed for SUMS/$name", e)
             false
@@ -265,10 +253,7 @@ class MirrorRepository @Inject constructor(
         if (!wroteOk) {
             // Partial file is unreadable garbage; drop it. Legacy originals
             // stay untouched so nothing is lost.
-            try {
-                DocumentsContract.deleteDocument(ctx.contentResolver, docUri)
-            } catch (_: Exception) {
-            }
+            deleteDocument(ctx, docUri)
             return null
         }
 
@@ -278,14 +263,10 @@ class MirrorRepository @Inject constructor(
         // Now that the merge file is on disk and flushed, the legacy files
         // are redundant. Deleting them is safe; a failure is cosmetic.
         for (doc in legacyDocs) {
-            try {
-                DocumentsContract.deleteDocument(
-                    ctx.contentResolver,
-                    documentUriInTree(driveRoot, doc.documentId),
-                )
+            if (deleteDocument(ctx, driveRoot, doc.documentId)) {
                 Log.i(TAG, "removed legacy SUMS/${doc.name}")
-            } catch (e: Exception) {
-                Log.w(TAG, "cleanup delete failed for ${doc.name}", e)
+            } else {
+                Log.w(TAG, "cleanup delete failed for ${doc.name}")
             }
         }
 
@@ -333,9 +314,7 @@ class MirrorRepository @Inject constructor(
         into: MutableMap<String, String>,
     ) {
         try {
-            val stream = ctx.contentResolver.openInputStream(
-                documentUriInTree(driveRoot, docId),
-            )
+            val stream = openInputStreamRaw(ctx, documentUriInTree(driveRoot, docId))
             if (stream == null) {
                 return
             }
@@ -361,26 +340,7 @@ class MirrorRepository @Inject constructor(
         driveRoot: Uri,
         parentDocId: String,
         name: String,
-    ): String {
-        val existing = findChildByName(ctx, driveRoot, parentDocId, name)
-        if (existing != null) {
-            if (existing.isDirectory) {
-                return existing.documentId
-            }
-            error("'$name' exists but is not a directory")
-        }
-
-        val created = DocumentsContract.createDocument(
-            ctx.contentResolver,
-            documentUriInTree(driveRoot, parentDocId),
-            DocumentsContract.Document.MIME_TYPE_DIR,
-            name,
-        )
-        if (created == null) {
-            error("Cannot create folder '$name'")
-        }
-        return DocumentsContract.getDocumentId(created)
-    }
+    ): String = findOrCreateChildDirectory(ctx, driveRoot, parentDocId, name)
 
     // ── hashing ──────────────────────────────────────────────────────────
 

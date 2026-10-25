@@ -1,6 +1,5 @@
 package de.perigon.companion.archive.backup.settings
 
-import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -42,6 +41,7 @@ import de.perigon.companion.archive.data.ArchiveStateRepository
 import de.perigon.companion.core.feature.QrScan
 import de.perigon.companion.core.feature.SettingsSection
 import de.perigon.companion.core.saf.folderLabel
+import de.perigon.companion.core.saf.persistSafGrant
 import de.perigon.companion.core.ui.SectionHeader
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -82,8 +82,7 @@ private fun BackupSourcesContent(
         ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        context.contentResolver.takePersistableUriPermission(
-            uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        persistSafGrant(context, uri)
         vm.addFolder(uri, folderLabel(uri))
     }
 
