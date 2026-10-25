@@ -156,8 +156,9 @@ fun KfContent(vm: KfViewModel) {
                     Text("Kalman Filter", style = MaterialTheme.typography.titleMedium)
                     Text(
                         "Sandbox — nothing here is saved or shared with the recorder. " +
-                            "Runs as a foreground service while this tab is open, so " +
-                            "the filter keeps sampling with the screen off.",
+                            "Samples only while this tab is visible. KeepScreenOn keeps the " +
+                            "display awake so the filter can converge without the screen " +
+                            "timing out.",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -329,6 +330,16 @@ fun KfContent(vm: KfViewModel) {
                 // sit below 1 on outlier-heavy data — that is the intended
                 // signature, not a calibration failure.
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    if (state.setSource != null || state.fixSource != null) {
+                        val mismatch = state.setSource != null && state.fixSource != null &&
+                            state.setSource != state.fixSource
+                        Text(
+                            "Source: ${state.setSource ?: "--"} · last fix: ${state.fixSource ?: "--"}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (mismatch) MaterialTheme.colorScheme.error
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     NumericRow(
                         listOf(
                             "h (m)" to fmtM(state.h, 1),
@@ -693,7 +704,7 @@ private fun KfChart(
     centerAtZero: Boolean = false,
     referenceLines: List<Float> = emptyList(),
     yClampMax: Float? = null,
-    windowSeconds: Int = 90,
+    windowSeconds: Int = 30,
 ) {
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val gridColor = MaterialTheme.colorScheme.outlineVariant

@@ -1,7 +1,6 @@
 package de.perigon.companion.sensors.ui.dashboard
 
 import android.content.ClipData
-import android.location.GnssStatus
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -62,55 +61,49 @@ import de.perigon.companion.core.geo.formatDdm
 import de.perigon.companion.core.geo.formatDms
 import de.perigon.companion.core.geo.formatPlusCode
 import de.perigon.companion.core.geo.formatUtm
+import de.perigon.companion.core.ui.CoordinateDisplay
 import de.perigon.companion.core.ui.access.RequireAccess
 import de.perigon.companion.core.ui.formatDateTime
 import de.perigon.companion.sensors.SensorsRequirements
+import de.perigon.companion.sensors.gnss.Constellation
+import de.perigon.companion.sensors.gnss.SatelliteObservation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private val CoordFormat.label: String
-    get() = when (this) {
-        CoordFormat.DD -> "DD"
-        CoordFormat.DDM -> "DDM"
-        CoordFormat.DMS -> "DMS"
-        CoordFormat.UTM -> "UTM"
-        CoordFormat.PLUS_CODE -> "Plus"
-    }
-
-internal fun constellationColor(constellation: Int): Color = when (constellation) {
-    GnssStatus.CONSTELLATION_GPS -> Color(0xFF26C6DA)
-    GnssStatus.CONSTELLATION_GLONASS -> Color(0xFFE53935)
-    GnssStatus.CONSTELLATION_GALILEO -> Color(0xFF1E88E5)
-    GnssStatus.CONSTELLATION_BEIDOU -> Color(0xFFFFB300)
-    GnssStatus.CONSTELLATION_QZSS -> Color(0xFFAB47BC)
-    GnssStatus.CONSTELLATION_SBAS -> Color(0xFF795548)
-    GnssStatus.CONSTELLATION_IRNSS -> Color(0xFFF4511E)
-    else -> Color.Gray
+internal fun constellationColor(c: Constellation): Color = when (c) {
+    Constellation.GPS      -> Color(0xFF26C6DA)
+    Constellation.GLONASS  -> Color(0xFFE53935)
+    Constellation.GALILEO  -> Color(0xFF1E88E5)
+    Constellation.BEIDOU   -> Color(0xFFFFB300)
+    Constellation.QZSS     -> Color(0xFFAB47BC)
+    Constellation.SBAS     -> Color(0xFF795548)
+    Constellation.NAVIC    -> Color(0xFFF4511E)
+    Constellation.UNKNOWN  -> Color.Gray
 }
 
-internal fun constellationShort(constellation: Int): String = when (constellation) {
-    GnssStatus.CONSTELLATION_GPS -> "GPS"
-    GnssStatus.CONSTELLATION_GLONASS -> "GLO"
-    GnssStatus.CONSTELLATION_GALILEO -> "GAL"
-    GnssStatus.CONSTELLATION_BEIDOU -> "BDS"
-    GnssStatus.CONSTELLATION_QZSS -> "QZS"
-    GnssStatus.CONSTELLATION_SBAS -> "SBAS"
-    GnssStatus.CONSTELLATION_IRNSS -> "IRNSS"
-    else -> "?"
+internal fun constellationShort(c: Constellation): String = when (c) {
+    Constellation.GPS      -> "GPS"
+    Constellation.GLONASS  -> "GLO"
+    Constellation.GALILEO  -> "GAL"
+    Constellation.BEIDOU   -> "BDS"
+    Constellation.QZSS     -> "QZS"
+    Constellation.SBAS     -> "SBAS"
+    Constellation.NAVIC    -> "IRNSS"
+    Constellation.UNKNOWN  -> "?"
 }
 
-internal fun constellationDisplayOrder(): List<Int> = listOf(
-    GnssStatus.CONSTELLATION_GPS,
-    GnssStatus.CONSTELLATION_GALILEO,
-    GnssStatus.CONSTELLATION_GLONASS,
-    GnssStatus.CONSTELLATION_BEIDOU,
-    GnssStatus.CONSTELLATION_QZSS,
-    GnssStatus.CONSTELLATION_SBAS,
-    GnssStatus.CONSTELLATION_IRNSS,
+internal fun constellationDisplayOrder(): List<Constellation> = listOf(
+    Constellation.GPS,
+    Constellation.GALILEO,
+    Constellation.GLONASS,
+    Constellation.BEIDOU,
+    Constellation.QZSS,
+    Constellation.SBAS,
+    Constellation.NAVIC,
 )
 
 @Composable
-fun GnssContent(vm: SensorDashboardViewModel) {
+fun GnssContent(vm: DashboardViewModel) {
     val gnss by vm.gnssState.collectAsStateWithLifecycle()
     val format by vm.coordFormat.collectAsStateWithLifecycle()
 
@@ -157,6 +150,17 @@ private fun GnssCard(
         ) {
             Text("GNSS Status", style = MaterialTheme.typography.titleMedium)
 
+            if (state.setSource != null || state.fixSource != null) {
+                val mismatch = state.setSource != null && state.fixSource != null &&
+                    state.setSource != state.fixSource
+                Text(
+                    "Source: ${state.setSource ?: "--"} · last fix: ${state.fixSource ?: "--"}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (mismatch) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
             Skyplot(state.satellites, Modifier.fillMaxWidth().aspectRatio(1f))
             ConstellationLegend(state.satellites)
 
@@ -167,26 +171,19 @@ private fun GnssCard(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                CoordFormat.entries.forEach { f ->
-                    FilterChip(
-                        selected = format == f,
-                        onClick = { onFormatChange(f) },
-                        label = { Text(f.label) },
-                    )
-                }
-            }
-            CoordinateValue(state, format)
+            CoordinateDisplay(
+                lat = state.latitude,
+                lon = state.longitude,
+                format = format,
+                onFormatChange = onFormatChange,
+            )
 
             HorizontalDivider()
 
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                GnssDataCell("Elevation", state.altitude?.let  { "%.0f m".format(it) } ?: "--")
-                GnssDataCell("Bearing",   state.bearing?.let   { "${it.toInt()}°" } ?: "--")
-                GnssDataCell("Speed",     state.speedMs?.let   { "%.1f km/h".format(it * 3.6) } ?: "--")
+                GnssDataCell("Elevation", state.altitude?.let { "%.0f m".format(it) } ?: "--")
+                GnssDataCell("Bearing",   state.bearing?.let { "${it.toInt()}°" } ?: "--")
+                GnssDataCell("Speed",     state.speedMs?.let { "%.1f km/h".format(it * 3.6) } ?: "--")
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 GnssDataCell("Error",      state.accuracy?.let { "%.0f m".format(it) } ?: "--")
@@ -211,82 +208,8 @@ private fun GnssCard(
     }
 }
 
-/**
- * Renders the current position in the user-selected [CoordFormat]. The copy
- * button puts the displayed string on the clipboard verbatim — the user
- * shares exactly what they see, in whatever format they chose.
- */
 @Composable
-private fun CoordinateValue(state: GnssUiState, format: CoordFormat) {
-    val lat = state.latitude
-    val lon = state.longitude
-    val clipboard = LocalClipboard.current
-    val scope = rememberCoroutineScope()
-    var copied by remember { mutableStateOf(false) }
-
-    val hasFix = lat != null && lon != null && lat.isFinite() && lon.isFinite()
-
-    val text: String = if (hasFix) {
-        when (format) {
-            CoordFormat.DD        -> formatDd(lat, lon)
-            CoordFormat.DDM       -> formatDdm(lat, lon)
-            CoordFormat.DMS       -> formatDms(lat, lon)
-            CoordFormat.UTM       -> formatUtm(lat, lon) ?: "Out of UTM range (±80°/84°)"
-            CoordFormat.PLUS_CODE -> formatPlusCode(lat, lon)
-        }
-    } else {
-        "--"
-    }
-
-    LaunchedEffect(copied) {
-        if (copied) {
-            delay(1500)
-            copied = false
-        }
-    }
-
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        shape = MaterialTheme.shapes.small,
-    ) {
-        Row(
-            modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text,
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodyLarge,
-                fontFamily = FontFamily.Monospace,
-            )
-            IconButton(
-                onClick = {
-                    if (hasFix) {
-                        scope.launch {
-                            clipboard.setClipEntry(
-                                ClipEntry(ClipData.newPlainText("coordinates", text))
-                            )
-                        }
-                        copied = true
-                    }
-                },
-                enabled = hasFix,
-                modifier = Modifier.size(40.dp),
-            ) {
-                Icon(
-                    imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
-                    contentDescription = if (copied) "Copied" else "Copy coordinates",
-                    tint = if (hasFix) MaterialTheme.colorScheme.primary
-                           else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ConstellationLegend(satellites: List<SatelliteInfo>) {
+private fun ConstellationLegend(satellites: List<SatelliteObservation>) {
     val present = remember(satellites) { satellites.map { it.constellation }.toSet() }
     if (present.isEmpty()) return
     val order = constellationDisplayOrder().filter { it in present }
@@ -314,7 +237,7 @@ private fun GnssDataCell(label: String, value: String) {
 }
 
 @Composable
-private fun Skyplot(satellites: List<SatelliteInfo>, modifier: Modifier = Modifier) {
+private fun Skyplot(satellites: List<SatelliteObservation>, modifier: Modifier = Modifier) {
     val gridColor = MaterialTheme.colorScheme.outlineVariant
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val lowElevBand = Color(0x2EFFC107)
@@ -345,8 +268,10 @@ private fun Skyplot(satellites: List<SatelliteInfo>, modifier: Modifier = Modifi
         drawCenteredText(textMeasurer, "W", center.x - maxRadius - 18.dp.toPx(), center.y - 8.dp.toPx(), compassStyle)
 
         satellites.forEach { sat ->
-            val r = maxRadius * (1f - sat.elevation / 90f)
-            val azRad = Math.toRadians(sat.azimuth.toDouble())
+            val elevation = sat.elevationDeg?.toFloat() ?: 0f
+            val azimuth = sat.azimuthDeg?.toFloat() ?: 0f
+            val r = maxRadius * (1f - elevation / 90f)
+            val azRad = Math.toRadians(azimuth.toDouble())
             val x = center.x + kotlin.math.sin(azRad).toFloat() * r
             val y = center.y - kotlin.math.cos(azRad).toFloat() * r
             val dotRadius = 7.dp.toPx()
@@ -367,7 +292,7 @@ private fun Skyplot(satellites: List<SatelliteInfo>, modifier: Modifier = Modifi
 }
 
 @Composable
-private fun SignalStrengthChart(satellites: List<SatelliteInfo>, modifier: Modifier = Modifier) {
+private fun SignalStrengthChart(satellites: List<SatelliteObservation>, modifier: Modifier = Modifier) {
     val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
     val gridColor = MaterialTheme.colorScheme.outlineVariant
     val textMeasurer = rememberTextMeasurer()
@@ -404,14 +329,16 @@ private fun SignalStrengthChart(satellites: List<SatelliteInfo>, modifier: Modif
         }
 
         order.forEachIndexed { groupIdx, constellation ->
-            val sats = byConst[constellation].orEmpty().sortedByDescending { it.snr }
+            val sats = byConst[constellation].orEmpty()
+                .sortedByDescending { it.snrDbHz ?: 0 }
             val groupX = groupIdx * groupWidth
             if (sats.isEmpty()) return@forEachIndexed
 
             val barWidth = (groupWidth - barGap * (sats.size + 1)) / sats.size
             sats.forEachIndexed { satIdx, sat ->
                 val x = groupX + barGap * (satIdx + 1) + barWidth * satIdx
-                val h = chartHeight * (sat.snr / maxSnr).coerceIn(0f, 1f)
+                val snr = sat.snrDbHz?.toFloat() ?: 0f
+                val h = chartHeight * (snr / maxSnr).coerceIn(0f, 1f)
                 val y = chartBottom - h
                 drawRect(
                     color = constellationColor(constellation).copy(

@@ -1,22 +1,15 @@
 package de.perigon.companion.sensors.ui.dashboard
 
-import android.Manifest
 import android.content.Context
-import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
 import android.os.SystemClock
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
-import de.perigon.companion.core.geo.geoid.GeoidGrid
 import de.perigon.companion.sensors.data.TrackConfigPrefs
 import de.perigon.companion.sensors.domain.AltitudeKalmanFilter
 import de.perigon.companion.sensors.domain.KalmanMode
@@ -24,6 +17,11 @@ import de.perigon.companion.sensors.domain.KalmanModel
 import de.perigon.companion.sensors.domain.KalmanTuning
 import de.perigon.companion.sensors.domain.KfStepRecord
 import de.perigon.companion.sensors.domain.UpdateSource
+import de.perigon.companion.sensors.middleware.GnssController
+import de.perigon.companion.sensors.middleware.GnssFix
+import de.perigon.companion.sensors.middleware.GnssSession
+import de.perigon.companion.sensors.middleware.GnssSourceType
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -117,23 +115,28 @@ data class KfUiState(
     val cusumPos: Float? = null,
     val cusumNeg: Float? = null,
     val airconDetected: Boolean = false,
+    // Per-fix reality vs. session setting — same diagnostic as the Track and
+    // GNSS tabs. KfViewModel branches on `setSource` for the σ policy (NMEA:
+    // trust GST; LOCATION: apply floor); showing both here makes a
+    // divergence between the policy and the actual fix source visible.
+    val fixSource: String? = null,
+    val setSource: String? = null,
     val history: List<KfSample> = emptyList(),
 )
 
 /**
  * Runs a standalone AltitudeKalmanFilter for the KF debug tab.
  *
- * TRUE SANDBOX, with one deliberate exception: a foreground service
- * ([KfSandboxService]) keeps the process in FOREGROUND_SERVICE_LOCATION
- * state while the tab is composed, so the filter keeps running (with the
- * screen off) long enough to converge. The tab never reads or writes
- * TrackConfigPrefs during normal operation; the only write path is
- * [applyToTrackSettings], an explicit promotion. Changing a chip in this
- * tab changes only this filter's configuration (state model or update
- * rule); the recorder's filter is untouched until the same setting is
- * changed on the Track tab. The point of the tab is to answer "what would
- * the filter do with these inputs?" without altering — or being altered
- * by — the session you are trying to inspect.
+ * TRUE SANDBOX with one deliberate integration point: GNSS input comes
+ * from [GnssController]'s unified fix stream. The middleware handles
+ * Location API vs NMEA mode transparently — the filter sees one
+ * [GnssFix] shape either way, and vertical σ comes from whichever source
+ * the user selected. The KF tab never touches `LocationManager`,
+ * `GnssStatus`, or `NmeaStream` directly.
+ *
+ * What remains local: the barometer sensor (it is not GNSS), the filter
+ * itself, the model/mode selectors, tuning, the RTS smoother buffer, and
+ * the NIS / CUSUM diagnostics.
  *
  * Defaults are the filter's INTENDED configuration (3-state, Gaussian, GPS
  * + baro fused, geoid applied), which is what the tab exists to show. They
@@ -154,40 +157,46 @@ data class KfUiState(
  * representation directly — q_b in m²/s, q_v in m²/s³, q_vb in m²/s³. Not
  * σ, not squared σ. See [KalmanTuning] for the convention.
  *
+ * Vertical σ policy — source-dependent, read from [GnssController.sourceType]
+ * at each fix:
+ *  - NMEA: GST residual σ is the solution's own noise estimate; trust it
+ *    verbatim. This is the design §4 rule — the gpsVerticalMinM floor's
+ *    reason disappears when GST is present.
+ *  - LOCATION: `Location.getVerticalAccuracyMeters()` is a HAL-model value
+ *    known optimistic during stationary plateaus on Pixel-class HALs.
+ *    Apply `gpsVerticalMinM` as a floor.
+ *  - No-baro model (GPS-only): `gpsOnlySigmaM` describes the *reported
+ *    series'* noise, not the chip's vertical accuracy. Neither GST nor
+ *    the floor applies — that model's R is a different quantity.
+ *
+ * State preservation across model/tuning changes is a first-class
+ * property here: the whole point of the sandbox is to compare 2-state vs
+ * 3-state vs 4-state vs GPS 2-state under the *same* trajectory.
+ * `setModel` carries h, b, v_z, v_b across the dimension swap, and
+ * `setTuning` reinstantiates the model object without touching state.
+ * Diagnostics that cannot span the swap are cleared: the RTS step-record
+ * buffer (the backward chain cannot cross a dimension change) so `b*`/
+ * `h*` show a brief gap until records accumulate, and the NIS running
+ * windows (the mean is a χ²(1) statistic, meaningful only under a single
+ * well-specified model).
+ *
  * RTS smoother buffer: bounded by TIME (BUFFER_WINDOW_MS), not by sample
  * count. A sample-count cap is coupled to sensor rate; a time window
  * guarantees the smoother always covers the chart's history.
  *
- * State preservation across model/tuning changes is a first-class
- * property here: the whole point of the sandbox is to compare 2-state vs
- * 3-state vs 4-state vs GPS 2-state under the *same* trajectory. `setModel`
- * carries h, b, v_z, v_b across the dimension swap (see
- * [de.perigon.companion.sensors.domain.AltitudeKalmanFilter.transitionModel]),
- * and `setTuning` reinstantiates the model object without touching state.
- * The chart's filtered trace is continuous across both. Diagnostics that
- * cannot span the swap are cleared: the RTS step-record buffer (the
- * backward chain cannot cross a dimension change) so `b*`/`h*` show a
- * brief gap until records accumulate, and the NIS running windows (the
- * mean is a χ²(1) statistic, meaningful only under a single well-
- * specified model).
- *
  * Seeding: [calibrateBaro] mirrors the Track tab's calibration dialog —
  * user-supplied reference altitude snaps h and b via
- * AltitudeKalmanFilter.resetWithAltitude. Same dialog reused via
- * [de.perigon.companion.sensors.ui.BaroCalibrationDialog]. The bias-rate
- * cascade/state and the CUSUM are reset by the filter (pre-calibration
- * data carries no information about aircon).
+ * AltitudeKalmanFilter.resetWithAltitude. The bias-rate cascade/state
+ * and the CUSUM are reset by the filter.
  *
  * [applyToTrackSettings] is the only path by which this tab writes to
- * TrackConfigPrefs. Explicit and one-way (the tab does not read config):
- * after promoting, the tab's own tuning copy is untouched, so further
- * edits are not auto-synced back to Track.
+ * TrackConfigPrefs. Explicit and one-way (the tab does not read config).
  */
 @HiltViewModel
 class KfViewModel @Inject constructor(
     @param:ApplicationContext private val context: Context,
-    private val geoidGrid: GeoidGrid,
     private val configPrefs: TrackConfigPrefs,
+    private val gnssController: GnssController,
 ) : ViewModel() {
 
     private val filter = AltitudeKalmanFilter(
@@ -201,10 +210,11 @@ class KfViewModel @Inject constructor(
     private val _state = MutableStateFlow(KfUiState())
     val state: StateFlow<KfUiState> = _state.asStateFlow()
 
-    private var locationListener: LocationListener? = null
+    private var gnssSession: GnssSession? = null
+    private var gnssFixJob: Job? = null
+
     private var pressureListener: SensorEventListener? = null
     private var sensorManager: SensorManager? = null
-    private var gnssActive = false
     private var baroActive = false
 
     private var lastHistoryMs = 0L
@@ -234,21 +244,21 @@ class KfViewModel @Inject constructor(
     private val nisBaroWindow = ArrayDeque<Float>(NIS_WINDOW)
 
     companion object {
-        const val HISTORY_SIZE = 180
+        const val HISTORY_SIZE = 60
         const val HISTORY_INTERVAL_MS = 500L
         private const val GPS_VERTICAL_DEFAULT_M = 15f
         private const val GPS_VERTICAL_FALLBACK_FACTOR = 3f
         // Time window for the RTS smoother buffer. Rate-independent (unlike
         // a sample count) so slow GPS-only configurations get the same
-        // coverage as fast baro configurations. 180s covers the 90s history
+        // coverage as fast baro configurations. 60s covers the 30s history
         // window with 2× margin.
-        private const val BUFFER_WINDOW_MS = 180_000L
+        private const val BUFFER_WINDOW_MS = 2*30_000L
         // Absolute sample cap to protect against a pathological sensor rate
         // (some devices fire TYPE_PRESSURE at 100+ Hz). At 20 Hz (high but
-        // plausible for baro), 4000 samples = 200s of data, comfortably
-        // above the 180s window.
-        private const val BUFFER_HARD_MAX = 4000
-        private const val NIS_WINDOW = 100
+        // plausible for baro), 2000 samples = 100s of data, comfortably
+        // above the 60s window.
+        private const val BUFFER_HARD_MAX = 20*2*60
+        private const val NIS_WINDOW = 60+10
     }
 
     fun start() {
@@ -270,7 +280,7 @@ class KfViewModel @Inject constructor(
         stopBaro()
     }
 
-    // ---- Toggles (all tab-local, none writes to config) ----
+    // ---- Toggles (tab-local, none writes to config) ----
 
     /**
      * Model changes transplant compatible state across the dimension swap
@@ -513,7 +523,7 @@ class KfViewModel @Inject constructor(
         }
     }
 
-    // ---- Baro ----
+    // ---- Baro (unchanged — pure sensor, no middleware involvement) ----
 
     private fun startBaro() {
         if (baroActive) return
@@ -559,93 +569,99 @@ class KfViewModel @Inject constructor(
         baroActive = false
     }
 
-    // ---- GNSS ----
+    // ---- GNSS via middleware ----
 
+    /**
+     * Acquire a middleware session and start collecting fixes. The
+     * middleware runs the active source (Location or NMEA per user
+     * setting) and delivers one unified stream — the KF tab does not
+     * know which source is active and does not care.
+     */
     private fun startGnss() {
-        if (gnssActive) return
-        if (ContextCompat.checkSelfPermission(
-                context, Manifest.permission.ACCESS_FINE_LOCATION
-            ) != PackageManager.PERMISSION_GRANTED
-        ) return
-
-        val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        val listener = object : LocationListener {
-            override fun onLocationChanged(location: Location) {
-                if (!location.hasAltitude()) return
-                // Measurement sigma depends on the active model. No-baro
-                // models (feature read from the filter, not from the enum)
-                // use gpsOnlySigmaM — the per-sample noise of the reported
-                // series (quantization-limited), not verticalAccuracyMeters.
-                // Fusion models use the floored verticalAccuracyMeters: the
-                // Pixel HAL's reported verticalAccuracyMeters is optimistic
-                // during stationary plateaus, where the solution is
-                // smoothed; flooring prevents the filter from following
-                // false steps and — the key reason — from attributing
-                // baro/alt divergence to bias when the barometer moved
-                // correctly and GPS did not. Read from the live tuning each
-                // time, like baroSigmaM, so a slider change takes effect on
-                // the next sample without a rebuild.
-                val vAcc = if (!filter.hasBaroMeasurement) {
-                    _state.value.tuning.gpsOnlySigmaM
-                        ?: KalmanTuning.DEFAULT_GPS_ONLY_SIGMA_M
-                } else {
-                    val floor = _state.value.tuning.gpsVerticalMinM
-                        ?: KalmanTuning.DEFAULT_GPS_VERTICAL_MIN_M
-                    when {
-                        location.hasVerticalAccuracy() ->
-                            maxOf(location.verticalAccuracyMeters, floor)
-                        location.hasAccuracy() ->
-                            maxOf(location.accuracy * GPS_VERTICAL_FALLBACK_FACTOR, floor)
-                        else -> GPS_VERTICAL_DEFAULT_M
-                    }
-                }
-                // Geoid is read unconditionally so the numeric grid can show
-                // the undulation even when the toggle is off.
-                val geoidM = geoidGrid.undulation(location.latitude, location.longitude)
-                val fedAlt = if (_state.value.geoidEnabled)
-                    (location.altitude - geoidM).toFloat()
-                else
-                    location.altitude.toFloat()
-                filter.updateGps(fedAlt, vAcc)
-                afterMeasurement()
-                publish(
-                    gpsInput = fedAlt,
-                    gpsSigmaM = vAcc,
-                    geoidUndulationM = geoidM,
-                )
-            }
-            override fun onProviderEnabled(provider: String) {}
-            override fun onProviderDisabled(provider: String) {}
-        }
-        try {
-            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, listener)
-            locationListener = listener
-            gnssActive = true
-        } catch (e: SecurityException) {
-            // permission revoked between check and here
+        if (gnssFixJob != null) return
+        gnssSession = gnssController.acquire(1_000L)
+        gnssFixJob = viewModelScope.launch {
+            gnssController.fixes.collect { fix -> onFix(fix) }
         }
     }
 
     private fun stopGnss() {
-        val listener = locationListener ?: return
-        val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        try {
-            lm.removeUpdates(listener)
-        } catch (e: SecurityException) {
-            // ignore
+        gnssFixJob?.cancel(); gnssFixJob = null
+        gnssSession?.close(); gnssSession = null
+    }
+
+    /**
+     * Feed the filter from a middleware fix.
+     *
+     * Altitude: the middleware provides both MSL and WGS84. When
+     * [KfUiState.geoidEnabled] is on, feed MSL (orthometric) — the
+     * domain the filter model was designed for. When off, feed WGS84
+     * (ellipsoidal) — a deliberate sandbox comparison.
+     *
+     * Vertical σ: depends on both the source type and the model.
+     *  - No-baro model: `gpsOnlySigmaM` (R of the reported series, not
+     *    the chip's accuracy). Not a flooring case.
+     *  - Fusion + NMEA: trust GST. Falls back to the conservative 15 m
+     *    default only when GST is absent — no Location sigma fabricating
+     *    a "floor" that was never computed from Location data.
+     *  - Fusion + LOCATION: apply `gpsVerticalMinM`. The floor exists
+     *    because Pixel HALs underreport vertical accuracy during
+     *    plateaus; it does not apply to GST-derived residuals.
+     */
+    private fun onFix(fix: GnssFix) {
+        // Altitude source depends on the sandbox's geoid toggle.
+        val fedAlt: Float = (if (_state.value.geoidEnabled) fix.altitudeMslM
+                             else fix.altitudeWgs84M)?.toFloat() ?: return
+
+        val vAcc: Float = if (!filter.hasBaroMeasurement) {
+            _state.value.tuning.gpsOnlySigmaM
+                ?: KalmanTuning.DEFAULT_GPS_ONLY_SIGMA_M
+        } else when (gnssController.sourceType.value) {
+            GnssSourceType.NMEA ->
+                fix.sigma.verticalM?.toFloat() ?: GPS_VERTICAL_DEFAULT_M
+            GnssSourceType.LOCATION -> {
+                val floor = _state.value.tuning.gpsVerticalMinM
+                    ?: KalmanTuning.DEFAULT_GPS_VERTICAL_MIN_M
+                when {
+                    fix.sigma.verticalM != null ->
+                        maxOf(fix.sigma.verticalM.toFloat(), floor)
+                    fix.sigma.horizontalM != null ->
+                        maxOf(fix.sigma.horizontalM.toFloat() * GPS_VERTICAL_FALLBACK_FACTOR, floor)
+                    else -> GPS_VERTICAL_DEFAULT_M
+                }
+            }
         }
-        locationListener = null
-        gnssActive = false
+
+        // Undulation for display. Derived from the fix's two altitudes;
+        // no separate GeoidGrid lookup needed — the source already
+        // computed it at the fix's position.
+        val geoidM: Float? = if (fix.altitudeWgs84M != null && fix.altitudeMslM != null)
+            (fix.altitudeWgs84M - fix.altitudeMslM).toFloat()
+        else null
+
+        filter.updateGps(fedAlt, vAcc)
+        afterMeasurement()
+        publish(
+            gpsInput = fedAlt,
+            gpsSigmaM = vAcc,
+            geoidUndulationM = geoidM,
+        )
+        _state.update {
+            it.copy(
+                setSource = gnssController.sourceType.value.name.lowercase(),
+                fixSource = fix.source.name.lowercase(),
+            )
+        }
     }
 
     // ---- Diagnostics buffering ----
 
     /**
-     * Called immediately after each filter measurement. Appends the forward-
-     * pass step record for the RTS smoother, and updates the running NIS
-     * windows.
+     * Called immediately after each filter measurement. Appends the
+     * forward-pass step record for the RTS smoother, and updates the
+     * running NIS windows.
      *
-     * Buffer bounding is TIME-based (BUFFER_WINDOW_MS = 180s), not sample-
+     * Buffer bounding is TIME-based (BUFFER_WINDOW_MS = 60s), not sample-
      * based: a sample-count cap couples the buffer's coverage to sensor
      * rate, so a GPS-only configuration would hold hours of data while a
      * baro-heavy one would hold seconds. The time window guarantees the
@@ -704,8 +720,8 @@ class KfViewModel @Inject constructor(
      * well below the 0.1 m visual resolution of the plot.
      *
      * Truncation: samples older than the smoothed buffer's range get null
-     * smoothed values — rendered as a gap. With the time-based buffer (180s
-     * vs. 90s history), this only happens (a) during warmup before the
+     * smoothed values — rendered as a gap. With the time-based buffer (60s
+     * vs. 30s history), this only happens (a) during warmup before the
      * buffer has accumulated, and (b) after a model swap, when stepRecords
      * is cleared by setModel() but history survives. Both are transient;
      * both are honest about what the smoother actually knows.
@@ -796,7 +812,8 @@ class KfViewModel @Inject constructor(
         _state.update {
             it.copy(
                 isInitialized = initialized,
-                hadGpsSeed = it.hadGpsSeed || (dg != null || (initialized && filter.lastUpdateSource() == UpdateSource.GPS)),
+                hadGpsSeed = it.hadGpsSeed || (dg != null ||
+                    (initialized && filter.lastUpdateSource() == UpdateSource.GPS)),
                 h = h, v = v, b = b, vB = vb,
                 sigmaH = sh, sigmaV = sv, sigmaB = sb, sigmaVB = svb,
                 deltaGps = dg, deltaBaro = db,
@@ -810,8 +827,10 @@ class KfViewModel @Inject constructor(
                 iskfProcessOutlierNorm = filter.lastIskfProcessOutlierNormValue(),
                 iskfMeasOutlier = filter.lastIskfMeasOutlierValue(),
                 lastUpdateSource = filter.lastUpdateSource(),
-                nisGpsMean = if (nisGpsWindow.isEmpty()) null else nisGpsWindow.average().toFloat(),
-                nisBaroMean = if (nisBaroWindow.isEmpty()) null else nisBaroWindow.average().toFloat(),
+                nisGpsMean = if (nisGpsWindow.isEmpty()) null
+                             else nisGpsWindow.average().toFloat(),
+                nisBaroMean = if (nisBaroWindow.isEmpty()) null
+                              else nisBaroWindow.average().toFloat(),
                 cusumPos = cusum.first,
                 cusumNeg = cusum.second,
                 airconDetected = aircon,

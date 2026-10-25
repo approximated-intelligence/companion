@@ -1,18 +1,10 @@
 package de.perigon.companion.sensors.ui.dashboard
 
 import androidx.compose.runtime.Immutable
-
-data class SatelliteInfo(
-    val svid: Int,
-    val constellation: Int,
-    val azimuth: Float,
-    val elevation: Float,
-    val snr: Float,
-    val usedInFix: Boolean
-)
+import de.perigon.companion.sensors.gnss.SatelliteObservation
 
 data class GnssUiState(
-    val satellites: List<SatelliteInfo> = emptyList(),
+    val satellites: List<SatelliteObservation> = emptyList(),
     val latitude: Double? = null,
     val longitude: Double? = null,
     val altitude: Double? = null,
@@ -21,6 +13,12 @@ data class GnssUiState(
     val accuracy: Float? = null,
     val ttffSeconds: Int? = null,
     val lastFixTimeMs: Long? = null,
+    // Per-fix reality vs. session setting. Populated on every fix from
+    // GnssFix.source and GnssController.sourceType respectively; mismatch
+    // is highlighted in GnssContent so a settings/reality divergence is
+    // visible without opening any other screen.
+    val fixSource: String? = null,
+    val setSource: String? = null,
 )
 
 /**
@@ -31,7 +29,7 @@ data class GnssUiState(
  * buffer and to compute "seen Xs ago" labels, both of which are monotonic
  * durations and immune to clock adjustments.
  *
- * Both are zero for a fresh [toTower] result; [SensorDashboardViewModel]'s
+ * Both are zero for a fresh [toTower] result; [DashboardViewModel]'s
  * accumulation step fills them via `copy`. Anything downstream reading these
  * fields should treat zero as "unknown" rather than "seen at boot".
  */
@@ -48,10 +46,7 @@ data class CellTowerInfo(
 
 @Immutable
 data class WifiInfo(
-    val ssid: String,
-    val bssid: String,
-    val frequencyMhz: Int,
-    val signalDbm: Int
+    val ssid: String, val bssid: String, val frequencyMhz: Int, val signalDbm: Int,
 )
 
 @Immutable

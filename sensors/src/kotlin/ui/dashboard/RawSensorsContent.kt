@@ -26,7 +26,7 @@ import de.perigon.companion.core.ui.cardinal
 import kotlin.math.sqrt
 
 @Composable
-fun RawSensorsContent(vm: SensorDashboardViewModel) {
+fun RawSensorsContent(vm: DashboardViewModel) {
     val raw by vm.rawSensors.collectAsStateWithLifecycle()
 
     // Raw sensors are only useful while this tab is on screen. Previously

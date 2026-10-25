@@ -24,6 +24,9 @@ import de.perigon.companion.sensors.data.SensorsRecordedTrackSource
 import de.perigon.companion.sensors.data.TrackDao
 import de.perigon.companion.sensors.data.TrackDatabase
 import de.perigon.companion.sensors.data.TrackRepository
+import de.perigon.companion.sensors.middleware.GnssController
+import de.perigon.companion.sensors.middleware.LocationGnssSource
+import de.perigon.companion.sensors.middleware.NmeaGnssSource
 import javax.inject.Singleton
 
 @Module
@@ -59,4 +62,17 @@ object SensorsModule {
         ChannelSpec(SensorsChannels.RECORDER, "Background Track"),
         ChannelSpec(SensorsChannels.EXPORT, "GPX export"),
     )
+
+    // Middleware sources are constructor-injected singletons; Hilt binds them
+    // automatically via @Inject on their constructors. The controller is
+    // likewise @Inject - no explicit provider needed. Listed here as
+    // documentation of the plug-in points:
+    //
+    //   LocationGnssSource  ─┐
+    //   NmeaGnssSource      ─┼─> GnssController
+    //                        │
+    //   A future source (USB, Bluetooth) must:
+    //     1. implement GnssSource
+    //     2. get @Inject @Singleton on its constructor
+    //     3. add a GnssSourceType value and a branch in GnssController.rebindLocked()
 }

@@ -1,4 +1,4 @@
-package de.perigon.companion.sensors.ui.recording
+package de.perigon.companion.sensors.ui.dashboard
 
 import android.content.Context
 import android.content.Intent
@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.work.WorkManager
 import androidx.work.ExistingWorkPolicy
 import de.perigon.companion.sensors.data.TrackPrefs
+import de.perigon.companion.core.geo.CoordFormat
 import de.perigon.companion.core.ui.SnackbarChannel
 import de.perigon.companion.sensors.data.CurrentTrackState
 import de.perigon.companion.sensors.data.RecordingMode
@@ -24,6 +25,7 @@ import de.perigon.companion.sensors.domain.KalmanMode
 import de.perigon.companion.sensors.domain.KalmanModel
 import de.perigon.companion.sensors.domain.KalmanTuning
 import de.perigon.companion.sensors.service.AutoScheduler
+import de.perigon.companion.sensors.middleware.GnssSourceType
 import de.perigon.companion.sensors.service.GnssInfo
 import de.perigon.companion.sensors.service.BackgroundService
 import de.perigon.companion.sensors.worker.GpxExportWorker
@@ -82,6 +84,11 @@ data class RecordingUiState(
     val airconDetected:        Boolean            = false,
     val pendingPoints:         Int                = 0,
     val gnssInfo:              GnssInfo           = GnssInfo.EMPTY,
+    // Setting-vs-reality diagnostic. The middleware's configured source,
+    // paired with each FixLine's per-fix `provider` string so a divergence
+    // (passive mode bypassing the middleware, a race during source swap,
+    // a stale prefs emission) is visible in the LiveCard.
+    val sourceType:            GnssSourceType     = GnssSourceType.LOCATION,
     val gpxExportFolderUri:    String?            = null,
     val gpxExportFolderLabel:  String?            = null,
     val showStartNowPrompt:    Boolean            = false,
@@ -90,7 +97,7 @@ data class RecordingUiState(
 )
 
 @HiltViewModel
-class RecordingViewModel @Inject constructor(
+class TrackViewModel @Inject constructor(
     @param:ApplicationContext private val ctx: Context,
     private val configPrefs: TrackConfigPrefs,
     private val appPrefs: TrackPrefs,
@@ -105,6 +112,18 @@ class RecordingViewModel @Inject constructor(
 
     val showDeprecatedModes: StateFlow<Boolean> = appPrefs.observeShowDeprecatedModes()
         .stateIn(viewModelScope, SharingStarted.Eagerly, appPrefs.isShowDeprecatedModesEnabled())
+
+    /**
+     * Coordinate display format, shared with the GNSS tab via [TrackPrefs].
+     * Both ViewModels observe the same DataStore key, so a chip tap in
+     * either surface updates the other without an explicit sync path.
+     */
+    val coordFormat: StateFlow<CoordFormat> = appPrefs.observeCoordFormat()
+        .stateIn(viewModelScope, SharingStarted.Eagerly, appPrefs.coordFormat())
+
+    fun setCoordFormat(format: CoordFormat) {
+        viewModelScope.launch { appPrefs.setCoordFormat(format) }
+    }
 
     val snackbar = SnackbarChannel()
 
@@ -124,12 +143,15 @@ class RecordingViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             combine(
-                BackgroundService.status,
+                combine(
+                    BackgroundService.status,
+                    appPrefs.observeGnssSourceType(),
+                ) { status, sourceType -> status to sourceType },
                 configPrefs.observe(),
                 trackRepository.observeSummaries(),
                 trackRepository.observeCurrentTrack(),
                 localUi,
-            ) { status, config, tracks, currentTrack, local ->
+            ) { (status, sourceType), config, tracks, currentTrack, local ->
                 RecordingUiState(
                     isRecording          = status.isRecording,
                     isPaused             = !status.isRecording && currentTrack?.state == CurrentTrackState.PAUSED,
@@ -156,6 +178,7 @@ class RecordingViewModel @Inject constructor(
                     airconDetected       = status.airconDetected,
                     pendingPoints        = status.pendingPoints,
                     gnssInfo             = status.gnssInfo,
+                    sourceType           = sourceType,
                     config               = config,
                     recentTracks         = tracks,
                     todayDate            = LocalDate.now().toString(),

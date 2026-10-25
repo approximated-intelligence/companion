@@ -1,4 +1,4 @@
-package de.perigon.companion.sensors.ui.recording
+package de.perigon.companion.sensors.ui.dashboard
 
 import de.perigon.companion.core.ui.ToggleRow
 import de.perigon.companion.core.ui.cardinal
@@ -34,6 +34,8 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import de.perigon.companion.core.geo.CoordFormat
+import de.perigon.companion.core.ui.CoordinateDisplay
 import de.perigon.companion.core.ui.SecureWindow
 import de.perigon.companion.sensors.data.RecordingMode
 import de.perigon.companion.sensors.data.TrackConfigEntity
@@ -46,6 +48,7 @@ import de.perigon.companion.sensors.domain.KalmanMode
 import de.perigon.companion.sensors.domain.KalmanModel
 import de.perigon.companion.sensors.domain.formatIntervalLabel
 import de.perigon.companion.sensors.domain.formatModeLabel
+import de.perigon.companion.sensors.middleware.GnssSourceType
 import de.perigon.companion.sensors.service.GnssInfo
 import de.perigon.companion.sensors.ui.BaroCalibrationDialog
 import de.perigon.companion.sensors.ui.KalmanAdvancedPanel
@@ -54,11 +57,12 @@ import de.perigon.companion.sensors.ui.KalmanModelSelector
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun RecordingScreenContent(
-    vm: RecordingViewModel = hiltViewModel(),
+fun TrackContent(
+    vm: TrackViewModel = hiltViewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
     val showDeprecatedModes by vm.showDeprecatedModes.collectAsStateWithLifecycle()
+    val coordFormat by vm.coordFormat.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val context = LocalContext.current
 
@@ -217,6 +221,9 @@ fun RecordingScreenContent(
                         hasBarometer         = state.hasBarometer,
                         airplaneMode         = state.config.airplaneMode,
                         gnssInfo             = state.gnssInfo,
+                        sourceType           = state.sourceType,
+                        coordFormat          = coordFormat,
+                        onFormatChange       = vm::setCoordFormat,
                         onShareFix           = vm::shareFixAsGeo,
                         onCalibrateBaro      = vm::calibrateBaro,
                         onSetAirplaneMode    = vm::setAirplaneMode,
@@ -371,7 +378,7 @@ fun RecordingScreenContent(
 
                 // Advanced tuning expander. Same composable as the KF tab,
                 // but wired to the persisted config: onChange writes through
-                // RecordingViewModel → TrackConfigPrefs, applyConfigChange
+                // TrackViewModel → TrackConfigPrefs, applyConfigChange
                 // picks it up, and the filter rebuilds if the change affects
                 // process noise. No "Apply to Track" button here — the tab
                 // *is* the Track settings.
@@ -729,6 +736,9 @@ private fun LiveCard(
     hasBarometer: Boolean,
     airplaneMode: Boolean,
     gnssInfo: GnssInfo,
+    sourceType: GnssSourceType,
+    coordFormat: CoordFormat,
+    onFormatChange: (CoordFormat) -> Unit,
     onShareFix: (TrackPointEntity) -> Unit,
     onCalibrateBaro: (Float) -> Unit,
     onSetAirplaneMode: (Boolean) -> Unit,
@@ -879,11 +889,19 @@ private fun LiveCard(
                     modifier = Modifier.size(18.dp),
                     tint = contentColor,
                 )
+                // `else` fires in preview only: either just after the tab
+                // opened (ACTION_PREVIEW_START) or just after stop. Both
+                // states have fixes flowing, so "Locating…" was wrong in
+                // both — it implied an indeterminate wait, and after stop
+                // it was false outright. "Preview" matches `previewActive`
+                // and is accurate in both sub-states; the "no fix yet"
+                // signal lives where it belongs, in CoordinateDisplay's
+                // "--" and FixChain's "waiting for fixes…".
                 Text(
                     when {
                         isRecording -> "Recording"
                         isPaused    -> "Paused"
-                        else        -> "Locating…"
+                        else        -> "Preview"
                     },
                     style = MaterialTheme.typography.titleSmall,
                     color = contentColor,
@@ -896,6 +914,21 @@ private fun LiveCard(
                     Text(ptsLabel, style = MaterialTheme.typography.labelSmall, color = contentColor.copy(alpha = 0.7f))
                 }
             }
+
+            // Coordinate display — GNSS-tab parity, live in the card. Sits
+            // above the heading/speed/distance row because position is the
+            // anchor for everything below it. Colors are threaded through
+            // so the widget reads correctly on the primary/secondary
+            // container rather than falling back to onSurface.
+            CoordinateDisplay(
+                lat = lastProvidedFix?.lat,
+                lon = lastProvidedFix?.lon,
+                format = coordFormat,
+                onFormatChange = onFormatChange,
+                modifier = Modifier.fillMaxWidth(),
+                contentColor = contentColor,
+                surfaceColor = contentColor.copy(alpha = 0.10f),
+            )
 
             // Distance only when there is one (recording or paused); during
             // locating/preview it is null and the cell is omitted entirely
@@ -1028,6 +1061,24 @@ private fun LiveCard(
                     gnssText,
                     style = MaterialTheme.typography.labelSmall,
                     color = contentColor.copy(alpha = 0.7f),
+                )
+            }
+
+            // Setting-vs-reality line. `sourceType` is what the middleware
+            // is configured for; each FixLine above carries the per-fix
+            // `provider` string. These come from independent code paths
+            // (TrackPrefs flow vs. the fix's own `source` tag), so any
+            // divergence is visible here in red. On a healthy continuous
+            // session the two never differ.
+            run {
+                val settingName = sourceType.name.lowercase()
+                val lastFixProvider = lastProvidedFix?.provider
+                val sourceMismatch = lastFixProvider != null && lastFixProvider != settingName
+                Text(
+                    "Source: $settingName · last fix: ${lastFixProvider ?: "--"}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (sourceMismatch) MaterialTheme.colorScheme.error
+                            else contentColor.copy(alpha = 0.7f),
                 )
             }
 
@@ -1183,6 +1234,10 @@ private fun FixLine(
 ) {
     val parts = mutableListOf("$label ${formatDateTime(fix.time, "yyyy-MM-dd HH:mm:ssXXX")}")
     if (fix.accuracyM != null) parts += "±%.0fm".format(fix.accuracyM)
+    // Per-fix truth: which source produced *this* fix. A FixChain can span
+    // a source swap, so each row carries its own tag rather than inheriting
+    // the LiveCard's setting line.
+    parts += fix.provider
     Text(
         parts.joinToString(" · "),
         modifier = Modifier

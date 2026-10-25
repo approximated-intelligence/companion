@@ -23,7 +23,7 @@ import de.perigon.companion.core.ui.access.RequireAccess
 import de.perigon.companion.sensors.SensorsRequirements
 
 @Composable
-fun WifiContent(vm: SensorDashboardViewModel) {
+fun WifiContent(vm: DashboardViewModel) {
     val networks by vm.wifiNetworks.collectAsStateWithLifecycle()
 
     // Start on resume, stop on pause/dispose. Tab switch disposes the old

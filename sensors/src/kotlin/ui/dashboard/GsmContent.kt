@@ -25,7 +25,7 @@ import de.perigon.companion.sensors.SensorsRequirements
 import kotlinx.coroutines.delay
 
 @Composable
-fun GsmContent(vm: SensorDashboardViewModel) {
+fun GsmContent(vm: DashboardViewModel) {
     val cells by vm.cellTowers.collectAsStateWithLifecycle()
 
     // No lifecycle effect here. Registration is owned by SensorsScreen's

@@ -7,10 +7,6 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.location.GnssStatus
-import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
 import android.net.wifi.WifiManager
 import android.os.SystemClock
 import android.telephony.CellIdentityNr
@@ -28,6 +24,9 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.core.geo.CoordFormat
 import de.perigon.companion.core.geo.magnetic.MagneticModel
 import de.perigon.companion.sensors.data.TrackPrefs
+import de.perigon.companion.sensors.middleware.GnssController
+import de.perigon.companion.sensors.middleware.GnssSession
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -38,10 +37,11 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
-class SensorDashboardViewModel @Inject constructor(
+class DashboardViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val trackPrefs: TrackPrefs,
     private val magneticModel: MagneticModel,
+    private val gnssController: GnssController,
 ) : ViewModel() {
 
     private val _gnssState = MutableStateFlow(GnssUiState())
@@ -80,12 +80,12 @@ class SensorDashboardViewModel @Inject constructor(
         viewModelScope.launch { trackPrefs.setCoordFormat(format) }
     }
 
-    private var gnssRegistered = false
-    private var locationListener: LocationListener? = null
-    private var gnssCallback: GnssStatus.Callback? = null
+    // ---- GNSS via middleware ----
+
+    private var gnssSession: GnssSession? = null
+    private var gnssFixJob: Job? = null
 
     private var telephonyCallback: TelephonyCallback? = null
-
     private var wifiCallback: WifiManager.ScanResultsCallback? = null
 
     private var rawSensorListener: SensorEventListener? = null
@@ -158,10 +158,13 @@ class SensorDashboardViewModel @Inject constructor(
             context, Manifest.permission.NEARBY_WIFI_DEVICES
         ) == PackageManager.PERMISSION_GRANTED
 
-    // ---- GNSS ----
+    // ---- GNSS (middleware) ----
 
     /**
-     * Register the GNSS listener and status callback.
+     * Acquire a middleware session and collect fixes. The middleware
+     * runs the active source (Location or NMEA per user setting) and
+     * delivers one unified GnssFix stream — this ViewModel does not know
+     * which source is active.
      *
      * Driven by SensorsScreen's effects for the whole screen, not by the
      * GNSS tab. Two reasons:
@@ -178,63 +181,31 @@ class SensorDashboardViewModel @Inject constructor(
      * The guard prevents double registration.
      */
     fun startGnss() {
-        if (gnssRegistered || !hasFineLocationPermission()) return
-        val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-
-        val listener = object : LocationListener {
-            override fun onLocationChanged(location: Location) {
+        if (gnssFixJob != null) return
+        gnssSession = gnssController.acquire(1_000L)
+        gnssFixJob = viewModelScope.launch {
+            gnssController.fixes.collect { fix ->
                 _gnssState.update {
                     it.copy(
-                        latitude = location.latitude,
-                        longitude = location.longitude,
-                        altitude = if (location.hasAltitude()) location.altitude else null,
-                        speedMs = if (location.hasSpeed()) location.speed else null,
-                        bearing = if (location.hasBearing()) location.bearing else null,
-                        accuracy = if (location.hasAccuracy()) location.accuracy else null,
+                        latitude = fix.position.lat,
+                        longitude = fix.position.lon,
+                        altitude = fix.altitudeWgs84M,
+                        speedMs = fix.speedMps?.toFloat(),
+                        bearing = fix.courseDeg?.toFloat(),
+                        accuracy = fix.sigma.horizontalM?.toFloat(),
+                        satellites = fix.satellites,
                         lastFixTimeMs = System.currentTimeMillis(),
+                        fixSource = fix.source.name.lowercase(),
+                        setSource = gnssController.sourceType.value.name.lowercase(),
                     )
                 }
             }
-            override fun onProviderEnabled(provider: String) {}
-            override fun onProviderDisabled(provider: String) {}
         }
-
-        val callback = object : GnssStatus.Callback() {
-            override fun onSatelliteStatusChanged(status: GnssStatus) {
-                val sats = ArrayList<SatelliteInfo>(status.satelliteCount)
-                for (i in 0 until status.satelliteCount) {
-                    sats.add(
-                        SatelliteInfo(
-                            svid = status.getSvid(i),
-                            constellation = status.getConstellationType(i),
-                            azimuth = status.getAzimuthDegrees(i),
-                            elevation = status.getElevationDegrees(i),
-                            snr = status.getCn0DbHz(i),
-                            usedInFix = status.usedInFix(i),
-                        )
-                    )
-                }
-                _gnssState.update { it.copy(satellites = sats) }
-            }
-        }
-
-        try {
-            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, listener)
-            lm.registerGnssStatusCallback(context.mainExecutor, callback)
-            locationListener = listener
-            gnssCallback = callback
-            gnssRegistered = true
-        } catch (e: SecurityException) {}
     }
 
     fun stopGnss() {
-        if (!gnssRegistered) return
-        val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
-        locationListener?.let { lm.removeUpdates(it) }
-        gnssCallback?.let { lm.unregisterGnssStatusCallback(it) }
-        locationListener = null
-        gnssCallback = null
-        gnssRegistered = false
+        gnssFixJob?.cancel(); gnssFixJob = null
+        gnssSession?.close(); gnssSession = null
     }
 
     // ---- Raw sensors ----
@@ -328,12 +299,13 @@ class SensorDashboardViewModel @Inject constructor(
         // that a stationary user does not pay for a fresh spherical-harmonic
         // expansion on every accelerometer tick.
         //
-        // `_gnssState.altitude` is Location.getAltitude() — metres above the
-        // WGS84 ellipsoid. WMM is referenced to the same ellipsoid, so no
-        // geoid adjustment is needed here. This is the OPPOSITE convention
-        // from BackgroundService.convert(), which subtracts undulation to
-        // get MSL because AltitudeKalmanFilter's `h` is MSL. Do not "unify"
-        // them: the KF's state is orthometric, the magnetic model's input is
+        // `_gnssState.altitude` is GNSS WGS84 altitude — metres above the
+        // WGS84 ellipsoid (the middleware's `altitudeWgs84M`). WMM is
+        // referenced to the same ellipsoid, so no geoid adjustment is
+        // needed here. This is the OPPOSITE convention from the KF, whose
+        // state is MSL (the middleware's `altitudeMslM`) because
+        // AltitudeKalmanFilter's `h` is orthometric. Do not "unify" them:
+        // the KF's state is orthometric, the magnetic model's input is
         // ellipsoidal, and both are correct as written.
         val lat = _gnssState.value.latitude
         val lon = _gnssState.value.longitude
@@ -581,14 +553,15 @@ class SensorDashboardViewModel @Inject constructor(
         const val DECL_POS_TOL_DEG = 0.01
 
         /**
-         * Altitude tolerance for the declination cache. Declination changes
-         * by ~0.001°/km of altitude, so 500 m contributes <0.001° error.
+         * Altitude tolerance for the declination cache. Declination
+         * changes by ~0.001°/km of altitude, so 500 m contributes
+         * <0.001° error.
          */
         const val DECL_ALT_TOL_M = 500.0
 
         /**
-         * Time tolerance for the declination cache. Secular variation is
-         * ~0.1°/year, so 15 minutes contributes <0.001° error.
+         * Time tolerance for the declination cache. Secular variation
+         * is ~0.1°/year, so 15 minutes contributes <0.001° error.
          */
         const val DECL_TIME_TOL_MS = 15L * 60 * 1000L
     }

@@ -22,16 +22,16 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import de.perigon.companion.core.ui.AppTopBar
-import de.perigon.companion.sensors.nmea.NmeaContent
-import de.perigon.companion.sensors.nmea.NmeaViewModel
 import de.perigon.companion.sensors.ui.dashboard.GnssContent
 import de.perigon.companion.sensors.ui.dashboard.GsmContent
 import de.perigon.companion.sensors.ui.dashboard.KfContent
 import de.perigon.companion.sensors.ui.dashboard.KfViewModel
+import de.perigon.companion.sensors.ui.dashboard.NmeaContent
+import de.perigon.companion.sensors.ui.dashboard.NmeaViewModel
 import de.perigon.companion.sensors.ui.dashboard.RawSensorsContent
-import de.perigon.companion.sensors.ui.dashboard.SensorDashboardViewModel
+import de.perigon.companion.sensors.ui.dashboard.DashboardViewModel
 import de.perigon.companion.sensors.ui.dashboard.WifiContent
-import de.perigon.companion.sensors.ui.recording.RecordingScreenContent
+import de.perigon.companion.sensors.ui.dashboard.TrackContent
 
 private enum class SensorsTab(val label: String) {
     Track("Track"),
@@ -58,7 +58,7 @@ private enum class SensorsTab(val label: String) {
 fun SensorsScreen(navController: NavController, initialTabId: String? = null) {
     // Shared across GNSS / Raw / Wifi / GSM so the hardware listeners
     // (GNSS, sensors, telephony, wifi) survive tab switches.
-    val vm: SensorDashboardViewModel = hiltViewModel()
+    val vm: DashboardViewModel = hiltViewModel()
 
     // Dedicated filter + listeners for the KF tab. Separate from vm so
     // the KF tab's diagnostics don't perturb the recording pipeline's
@@ -161,7 +161,7 @@ fun SensorsScreen(navController: NavController, initialTabId: String? = null) {
             }
 
             when (selectedTab) {
-                SensorsTab.Track -> RecordingScreenContent()
+                SensorsTab.Track -> TrackContent()
                 SensorsTab.Gnss -> GnssContent(vm)
                 SensorsTab.Raw -> RawSensorsContent(vm)
                 SensorsTab.Wifi -> WifiContent(vm)
