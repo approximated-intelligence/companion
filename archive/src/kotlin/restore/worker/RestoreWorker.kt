@@ -12,6 +12,7 @@ import dagger.assisted.AssistedInject
 import de.perigon.companion.archive.data.BackupFileEntity
 import de.perigon.companion.archive.data.ArchiveStateRepository
 import de.perigon.companion.archive.backup.domain.BackupOrchestrator
+import de.perigon.companion.archive.backup.domain.PACK_DRIVE_ROOT
 import de.perigon.companion.archive.domain.ArchivePartEncryptor
 import de.perigon.companion.archive.domain.ArchivePaxWriter
 import de.perigon.companion.archive.restore.domain.FileAccum
@@ -20,7 +21,6 @@ import de.perigon.companion.archive.restore.domain.RestoreProgressListener
 import de.perigon.companion.archive.restore.domain.finalizeFileAccum
 import de.perigon.companion.archive.restore.domain.openFileAccum
 import de.perigon.companion.archive.restore.domain.resolveDestination
-import de.perigon.companion.archive.restore.domain.readPackRangeFromDrives
 import de.perigon.companion.archive.restore.domain.restoreSelectedFiles
 import de.perigon.companion.core.data.UserNotificationDao
 import de.perigon.companion.core.data.UserNotifications
@@ -30,6 +30,7 @@ import de.perigon.companion.core.prefs.FolderGrants
 import de.perigon.companion.core.prefs.FolderKeys
 import de.perigon.companion.core.saf.DriveInfo
 import de.perigon.companion.core.saf.enumerateConnectedDrives
+import de.perigon.companion.core.saf.readRangeFromFirstRoot
 import de.perigon.companion.core.util.fromHex
 import de.perigon.companion.core.network.S3Backend
 import de.perigon.companion.core.network.S3BackendFactory
@@ -123,8 +124,9 @@ class RestoreWorker @AssistedInject constructor(
             emitProgress()
             setForeground(notifier.foregroundInfo("Rebuilding index…", "Pack ${packPos + 1} / $totalPacks"))
             val packKey  = "$packPrefix/%010d".format(packPos)
-            val wireData = readPackRangeFromDrives(
-                applicationContext, drives, packKey, 0L, BackupOrchestrator.PART_WIRE_SIZE - 1L,
+            val wireData = readRangeFromFirstRoot(
+                applicationContext, drives.map { it.treeUri }, PACK_DRIVE_ROOT, packKey, 0L,
+                BackupOrchestrator.PART_WIRE_SIZE - 1L,
             ) ?: retryWithBackoff { b2.getRange(packKey, 0L, BackupOrchestrator.PART_WIRE_SIZE - 1L) }
             scanPack(b2, drives, senderPk, recipientSk, packPos, packKey, wireData, restoreInline = false)
         }
@@ -206,8 +208,9 @@ class RestoreWorker @AssistedInject constructor(
             emitProgress()
             setForeground(notifier.foregroundInfo("Rebuilding & restoring…", "Pack ${packPos + 1} / $totalPacks"))
             val packKey  = "$packPrefix/%010d".format(packPos)
-            val wireData = readPackRangeFromDrives(
-                applicationContext, drives, packKey, 0L, BackupOrchestrator.PART_WIRE_SIZE - 1L,
+            val wireData = readRangeFromFirstRoot(
+                applicationContext, drives.map { it.treeUri }, PACK_DRIVE_ROOT, packKey, 0L,
+                BackupOrchestrator.PART_WIRE_SIZE - 1L,
             ) ?: retryWithBackoff { b2.getRange(packKey, 0L, BackupOrchestrator.PART_WIRE_SIZE - 1L) }
             errors += scanPack(b2, drives, senderPk, recipientSk, packPos, packKey, wireData,
                 restoreInline = true, dcimUri = dcimUri, safGrants = safGrants)
@@ -353,7 +356,7 @@ class RestoreWorker @AssistedInject constructor(
             // indistinguishable from end-of-pack and silently truncated the
             // restore while reporting success. An abandoned .tmp accum is
             // cleaned by openFileAccum on the next run.
-            wire = readPackRangeFromDrives(applicationContext, drives, packKey, from, to)
+            wire = readRangeFromFirstRoot(applicationContext, drives.map { it.treeUri }, PACK_DRIVE_ROOT, packKey, from, to)
                 ?: retryWithBackoff { b2.getRangeOrNull(packKey, from, to) }
                 ?: break
         }

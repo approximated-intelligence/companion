@@ -8,6 +8,7 @@ import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
 import de.perigon.companion.archive.data.BackupFileEntity
 import de.perigon.companion.archive.backup.domain.BackupOrchestrator
+import de.perigon.companion.archive.backup.domain.PACK_DRIVE_ROOT
 import de.perigon.companion.archive.data.ArchiveStateRepository
 import de.perigon.companion.archive.domain.ArchivePartEncryptor
 import de.perigon.companion.archive.domain.ArchivePaxWriter
@@ -15,6 +16,7 @@ import de.perigon.companion.archive.data.RestoreSelectionEntity
 import de.perigon.companion.core.network.S3Backend
 import de.perigon.companion.core.saf.DriveInfo
 import de.perigon.companion.core.saf.navigateOrCreate
+import de.perigon.companion.core.saf.readRangeFromFirstRoot
 import de.perigon.companion.core.saf.setMtime
 import de.perigon.companion.core.util.toHex
 import java.io.OutputStream
@@ -221,7 +223,7 @@ suspend fun restoreSelectedFiles(
         val to      = partNumber.toLong()       * BackupOrchestrator.PART_WIRE_SIZE - 1
 
         val wireData = try {
-            readPackRangeFromDrives(context, drives, packKey, from, to)
+            readRangeFromFirstRoot(context, drives.map { it.treeUri }, PACK_DRIVE_ROOT, packKey, from, to)
                 ?: retryWithBackoff { b2.getRange(packKey, from, to) }
         } catch (e: CancellationException) {
             throw e

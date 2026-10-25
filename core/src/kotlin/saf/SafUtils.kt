@@ -12,8 +12,11 @@ import android.provider.MediaStore
 import android.util.Log
 import androidx.core.net.toUri
 import androidx.documentfile.provider.DocumentFile
+import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.io.OutputStream
+import java.nio.ByteBuffer
 
 /**
  * Shared SAF utilities for tree walking, file creation, and permission management.
@@ -646,6 +649,50 @@ fun openInputStreamRaw(context: Context, uri: Uri): InputStream? =
 fun openFileDescriptor(context: Context, uri: Uri, mode: String = "r"): android.os.ParcelFileDescriptor? =
     context.contentResolver.openFileDescriptor(resolveOriginalUri(context, uri), mode)
 
+/**
+ * Raw file descriptor, no [resolveOriginalUri]. The seekable sibling of
+ * [openInputStreamRaw]: use when the caller must position to an absolute
+ * byte offset. Same raw-vs-resolved rule — correct for files this app
+ * wrote (packs, mirrors, sums) and non-media files; WRONG for verifying a
+ * media file that routes through MediaProvider, which needs
+ * [openFileDescriptor].
+ */
+fun openRawFd(context: Context, uri: Uri, mode: String = "r"): android.os.ParcelFileDescriptor? =
+    context.contentResolver.openFileDescriptor(uri, mode)
+
+/**
+ * Open an OutputStream for a SAF URI. No Raw/Original split — writes never
+ * redact, so [resolveOriginalUri] is meaningless here. [mode] follows
+ * ContentResolver semantics: "w" truncates, "wa" appends, "wt" truncates
+ * and will not create.
+ */
+fun openOutputStream(context: Context, uri: Uri, mode: String = "w"): OutputStream? =
+    context.contentResolver.openOutputStream(uri, mode)
+
+/**
+ * Read bytes [from..to] inclusive of a SAF document via a raw fd. Null on
+ * any failure — the caller's contract is "null = try elsewhere", not
+ * "throw". See [openRawFd] for why the raw (not resolved) opener is right.
+ */
+fun readRange(context: Context, uri: Uri, from: Long, to: Long): ByteArray? {
+    val len = (to - from + 1).toInt()
+    if (len <= 0) return null
+    return try {
+        openRawFd(context, uri)?.use { pfd ->
+            FileInputStream(pfd.fileDescriptor).use { fis ->
+                val ch = fis.channel
+                ch.position(from)
+                val buf = ByteBuffer.allocate(len)
+                while (buf.hasRemaining()) if (ch.read(buf) <= 0) break
+                if (buf.hasRemaining()) null else buf.array()
+            }
+        }
+    } catch (e: Exception) {
+        Log.w("RangeRead", "range read failed for $uri [$from..$to]", e)
+        null
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Thumb-drive enumeration
 // ---------------------------------------------------------------------------
@@ -702,4 +749,41 @@ fun enumerateConnectedDrives(context: Context): List<DriveInfo> {
             )
         }
         .toList()
+}
+
+/**
+ * Read bytes [from..to] inclusive of [path] under [rootFolder] from the
+ * first tree root in [roots] that has it. [path] is interpreted relative
+ * to [rootFolder] on each root — e.g. `rootFolder = "CompanionBackup"`,
+ * `path = "<pk>/0000000042"`.
+ *
+ * Null when no root can supply it: [roots] is empty, the file is absent
+ * from every root's [rootFolder], or every attempt threw (logged per
+ * root). "Null = try the cloud" is the caller contract; whether a root
+ * was missing the file or failed to read it is not distinguished,
+ * matching the drive-first-B2-second strategy where both fall through to B2.
+ *
+ * Raw reads throughout (see [openRawFd]): files this app wrote are never
+ * MediaStore-indexed, so [resolveOriginalUri] would waste an IPC per root.
+ */
+suspend fun readRangeFromFirstRoot(
+    context: Context,
+    roots: List<Uri>,
+    rootFolder: String,
+    path: String,
+    from: Long,
+    to: Long,
+): ByteArray? {
+    if (roots.isEmpty() || to < from) return null
+    val parent = path.substringBeforeLast('/', "")
+    val name = path.substringAfterLast('/')
+    val subfolders = listOf(rootFolder) + parent.split('/').filter { it.isNotEmpty() }
+    for (root in roots) {
+        val folder = try { navigateTo(context, root, subfolders) }
+                     catch (_: Exception) { null } ?: continue
+        val file = try { folder.findFile(name) }
+                   catch (_: Exception) { null } ?: continue
+        readRange(context, file.uri, from, to)?.let { return it }
+    }
+    return null
 }

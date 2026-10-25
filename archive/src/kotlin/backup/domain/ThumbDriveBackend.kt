@@ -13,7 +13,16 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "ThumbDriveBackend"
-private const val ROOT_FOLDER = "CompanionBackup"
+
+/**
+ * Directory under every granted drive tree where packs live. Single
+ * source of truth: [ThumbDriveBackend] writes under it, and the restore
+ * side reads through [de.perigon.companion.core.saf.readRangeFromDrives]
+ * passing this as rootFolder. Keeping the reader's and writer's view of
+ * the layout in one constant is the reason DrivePackReader.kt no longer
+ * needed to exist.
+ */
+internal const val PACK_DRIVE_ROOT = "CompanionBackup"
 
 /**
  * `S3Backend` over a SAF tree. Same pack bytes, same key layout as B2
@@ -166,7 +175,7 @@ class ThumbDriveBackend(
 
     private fun folderFor(key: String, create: Boolean): DocumentFile? {
         val parent = key.substringBeforeLast('/', "")
-        val dirs = listOf(ROOT_FOLDER) + parent.split('/').filter { it.isNotEmpty() }
+        val dirs = listOf(PACK_DRIVE_ROOT) + parent.split('/').filter { it.isNotEmpty() }
         return if (create) navigateOrCreate(ctx, treeUri, dirs)
                else navigateTo(ctx, treeUri, dirs)
     }
