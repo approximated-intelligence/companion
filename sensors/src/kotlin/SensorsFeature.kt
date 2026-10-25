@@ -5,9 +5,14 @@ import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -27,6 +32,7 @@ import de.perigon.companion.core.ui.SectionHeader
 import de.perigon.companion.core.ui.ToggleRow
 import de.perigon.companion.sensors.data.TrackConfigPrefs
 import de.perigon.companion.sensors.data.TrackPrefs
+import de.perigon.companion.sensors.middleware.GnssSourceType
 import de.perigon.companion.sensors.service.AutoScheduler
 import de.perigon.companion.sensors.service.BackgroundService
 import de.perigon.companion.sensors.ui.SensorsScreen
@@ -76,7 +82,6 @@ object SensorsRequirements {
         AccessRequirement.BackgroundLocation("For recording with the screen off.")
     val exactAlarms: AccessRequirement =
         AccessRequirement.ExactAlarms("For scheduled recording and alarm-mode fixes.")
-
     /**
      * Cell info on API 30+ requires BOTH permissions: READ_PHONE_STATE for
      * the TelephonyCallback to fire, and ACCESS_FINE_LOCATION for the cells
@@ -95,9 +100,8 @@ object SensorsRequirements {
             Manifest.permission.READ_PHONE_STATE,
             Manifest.permission.ACCESS_FINE_LOCATION,
         ),
-        optional = true
+        optional = true,
     )
-
     /**
      * NEARBY_WIFI_DEVICES is the only runtime permission WiFi scan needs on
      * API 33+. ACCESS_FINE_LOCATION was required on API 30-32, but minSdk=34
@@ -110,7 +114,7 @@ object SensorsRequirements {
         title = "WiFi Scan",
         rationale = "Required to display nearby WiFi networks.",
         permissions = listOf(Manifest.permission.NEARBY_WIFI_DEVICES),
-        optional = true
+        optional = true,
     )
 }
 
@@ -139,7 +143,7 @@ class SensorsFeature @Inject constructor() : FeatureEntry {
         SensorsRequirements.exactAlarms,
         CommonRequirements.notifications,
         SensorsRequirements.telephony,
-        SensorsRequirements.wifi
+        SensorsRequirements.wifi,
     )
 
     override fun register(graph: NavGraphBuilder, nav: NavHostController) {
@@ -173,9 +177,12 @@ class SensorsSettingsSection @Inject constructor(
     override fun Content(scan: QrScan) {
         val context = LocalContext.current
         val scope = rememberCoroutineScope()
-        val enabled by prefs.observeBackgroundGps().collectAsStateWithLifecycle(prefs.isBackgroundGpsEnabled())
+        val enabled by prefs.observeBackgroundGps()
+            .collectAsStateWithLifecycle(prefs.isBackgroundGpsEnabled())
         val showDeprecated by prefs.observeShowDeprecatedModes()
             .collectAsStateWithLifecycle(prefs.isShowDeprecatedModesEnabled())
+        val sourceType by prefs.observeGnssSourceType()
+            .collectAsStateWithLifecycle(prefs.gnssSourceType())
 
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SectionHeader("Background GPS", "Required for recording. Rendering and sharing work without it.")
@@ -188,7 +195,8 @@ class SensorsSettingsSection @Inject constructor(
                         prefs.setBackgroundGpsEnabled(on)
                         if (!on && BackgroundService.status.value.isRecording) {
                             context.startService(
-                                Intent(context, BackgroundService::class.java).setAction(BackgroundService.ACTION_STOP)
+                                Intent(context, BackgroundService::class.java)
+                                    .setAction(BackgroundService.ACTION_STOP)
                             )
                         }
                     }
@@ -204,6 +212,42 @@ class SensorsSettingsSection @Inject constructor(
                     },
                 )
             }
+
+            SectionHeader(
+                "GNSS data source",
+                "Where fix data comes from. The two sources are independent: each " +
+                    "produces a GnssFix from its own protocol, with no cross-source " +
+                    "field substitution. NMEA supplies DOP, fix quality, satellite " +
+                    "signals, and residual-derived σ that the Location API cannot. " +
+                    "Choose Android Location if your chipset emits NMEA sparsely, or " +
+                    "NMEA when you want richer fix data.",
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                GnssSourceType.entries.forEach { type ->
+                    FilterChip(
+                        selected = sourceType == type,
+                        onClick = { scope.launch { prefs.setGnssSourceType(type) } },
+                        label = { Text(type.label) },
+                    )
+                }
+            }
+            Text(
+                when (sourceType) {
+                    GnssSourceType.LOCATION ->
+                        "Fixes come from LocationManager + GnssStatus. DOP, fix quality " +
+                            "and per-signal satellite data are unavailable."
+                    GnssSourceType.NMEA ->
+                        "Fixes are built entirely from NMEA sentences. Location updates " +
+                            "are requested only to keep the GNSS engine producing; their " +
+                            "Location payloads are discarded. Fields the chipset does not " +
+                            "emit in the current cycle are null — no Location fallback."
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 
