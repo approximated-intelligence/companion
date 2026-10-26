@@ -14,6 +14,9 @@ import android.telephony.CellInfoGsm
 import android.telephony.CellInfoLte
 import android.telephony.CellInfoNr
 import android.telephony.CellInfoWcdma
+import android.telephony.CellSignalStrength
+import android.telephony.CellSignalStrengthLte
+import android.telephony.CellSignalStrengthNr
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
 import androidx.core.content.ContextCompat
@@ -592,14 +595,14 @@ private fun android.telephony.CellInfo.toTower(): CellTowerInfo? = when (this) {
         mcc = cellIdentity.mccString ?: "?",
         mnc = cellIdentity.mncString ?: "?",
         cid = cellIdentity.cid.takeUnless { it == Int.MAX_VALUE }?.toString() ?: "?",
-        signalDbm = cellSignalStrength.dbm,
+        metrics = cellSignalStrength.toMetrics(),
     )
     is CellInfoLte -> CellTowerInfo(
         type = "LTE",
         mcc = cellIdentity.mccString ?: "?",
         mnc = cellIdentity.mncString ?: "?",
         cid = cellIdentity.ci.takeUnless { it == Int.MAX_VALUE }?.toString() ?: "?",
-        signalDbm = cellSignalStrength.dbm,
+        metrics = cellSignalStrength.toMetrics(),
     )
     is CellInfoNr -> {
         val nr = cellIdentity as? CellIdentityNr ?: return null
@@ -608,7 +611,7 @@ private fun android.telephony.CellInfo.toTower(): CellTowerInfo? = when (this) {
             mcc = nr.mccString ?: "?",
             mnc = nr.mncString ?: "?",
             cid = nr.nci.takeUnless { it == Long.MAX_VALUE }?.toString() ?: "?",
-            signalDbm = cellSignalStrength.dbm,
+            metrics = cellSignalStrength.toMetrics(),
         )
     }
     is CellInfoWcdma -> CellTowerInfo(
@@ -616,7 +619,49 @@ private fun android.telephony.CellInfo.toTower(): CellTowerInfo? = when (this) {
         mcc = cellIdentity.mccString ?: "?",
         mnc = cellIdentity.mncString ?: "?",
         cid = cellIdentity.cid.takeUnless { it == Int.MAX_VALUE }?.toString() ?: "?",
-        signalDbm = cellSignalStrength.dbm,
+        metrics = cellSignalStrength.toMetrics(),
     )
     else -> null
 }
+
+/**
+ * Extract per-RAT signal metrics from a concrete CellSignalStrength
+ * subclass. Every getter in this family can return the CellInfo.UNAVAILABLE
+ * sentinel (Integer.MAX_VALUE); sanitized() strips it. Level uses its own
+ * sentinel (SIGNAL_STRENGTH_NONE_OR_UNKNOWN) which sanitizedLevel() handles.
+ *
+ * Units verified against the AOSP constructor bodies (no tenths-of-dB
+ * scaling — the constructor stores the argument directly):
+ *   CellSignalStrengthLte.getRsrp()   plain dBm, −140..−43
+ *   CellSignalStrengthLte.getRsrq()   plain dB,  −20..−3
+ *   CellSignalStrengthLte.getRssnr()  plain dB,  −20..+30
+ *   CellSignalStrengthNr.getSsRsrp()  plain dBm, −140..−44
+ *   CellSignalStrengthNr.getSsRsrq()  plain dB,  −20..−3
+ *   CellSignalStrengthNr.getSsSinr()  plain dB,  −23..+40
+ */
+private fun CellSignalStrength.toMetrics(): CellSignalMetrics = when (this) {
+    is CellSignalStrengthLte -> CellSignalMetrics(
+        dbm           = dbm.sanitized(),
+        level         = level.sanitizedLevel(),
+        rsrpDbm       = rsrp.sanitized(),
+        rsrqDb        = rsrq.sanitized(),
+        sinrDb        = rssnr.sanitized(),
+        timingAdvance = timingAdvance.sanitized(),
+    )
+    is CellSignalStrengthNr -> CellSignalMetrics(
+        dbm     = dbm.sanitized(),
+        level   = level.sanitizedLevel(),
+        rsrpDbm = ssRsrp.sanitized(),
+        rsrqDb  = ssRsrq.sanitized(),
+        sinrDb  = ssSinr.sanitized(),
+    )
+    else -> CellSignalMetrics(
+        dbm   = dbm.sanitized(),
+        level = level.sanitizedLevel(),
+    )
+}
+
+private fun Int.sanitized(): Int? = takeUnless { it == Int.MAX_VALUE }
+
+private fun Int.sanitizedLevel(): Int? =
+    takeUnless { it == CellSignalStrength.SIGNAL_STRENGTH_NONE_OR_UNKNOWN }

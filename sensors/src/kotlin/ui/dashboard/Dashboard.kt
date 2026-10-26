@@ -34,12 +34,31 @@ data class GnssUiState(
  * fields should treat zero as "unknown" rather than "seen at boot".
  */
 @Immutable
+data class CellSignalMetrics(
+    /** Base-class getDbm(); synthesised for LTE, often UNAVAILABLE for NR. */
+    val dbm: Int? = null,
+    /** Universal 0..4 level. 0 = SIGNAL_STRENGTH_NONE_OR_UNKNOWN, sanitised to null. */
+    val level: Int? = null,
+    /** LTE: getRsrp(); NR: getSsRsrp(). Plain dBm. */
+    val rsrpDbm: Int? = null,
+    /** LTE: getRsrq(); NR: getSsRsrq(). Plain dB. */
+    val rsrqDb: Int? = null,
+    /** LTE: getRssnr(); NR: getSsSinr(). Plain dB. */
+    val sinrDb: Int? = null,
+    /** LTE-only: getTimingAdvance(). */
+    val timingAdvance: Int? = null,
+) {
+    val hasAny: Boolean
+        get() = dbm != null || level != null || rsrpDbm != null
+}
+
+@Immutable
 data class CellTowerInfo(
     val type: String,
     val mcc: String,
     val mnc: String,
     val cid: String,
-    val signalDbm: Int,
+    val metrics: CellSignalMetrics = CellSignalMetrics(),
     val firstSeenMs: Long = 0L,
     val lastSeenMs: Long = 0L,
 )

@@ -93,7 +93,10 @@ private fun CellTowerCard(cells: List<CellTowerInfo>) {
                         )
                     }
                     Column(horizontalAlignment = Alignment.End) {
-                        Text("${cell.signalDbm} dBm", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            cell.metrics.formatForDisplay(),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
                     }
                 }
             }
@@ -106,4 +109,22 @@ private fun formatAge(ageMs: Long): String = when {
     ageMs < 60_000L -> "${ageMs / 1_000L}s ago"
     ageMs < 3_600_000L -> "${ageMs / 60_000L}m ago"
     else -> "${ageMs / 3_600_000L}h ago"
+}
+
+/**
+ * One-line summary of the cell's signal metrics. Prefers the richer per-RAT
+ * metrics when present (LTE RSRP/RSRQ/SINR, NR SS-RSRP/SS-RSRQ/SS-SINR);
+ * falls back to the base-class dBm, then the 0..4 level. "--" when the
+ * modem reported nothing usable (e.g. an NSA NR cell whose SS-RSRP the
+ * framework declines to expose).
+ */
+private fun CellSignalMetrics.formatForDisplay(): String {
+    val parts = buildList {
+        rsrpDbm?.let { add("RSRP $it dBm") }
+        rsrqDb?.let  { add("RSRQ $it dB") }
+        sinrDb?.let  { add("SINR $it dB") }
+        if (isEmpty()) dbm?.let { add("$it dBm") }
+        if (isEmpty()) level?.let { add("level $it/4") }
+    }
+    return if (parts.isEmpty()) "--" else parts.joinToString(" · ")
 }
