@@ -479,6 +479,20 @@ class TrackPointBuffer(
         return true
     }
 
+    /**
+     * Force-add a point, bypassing the interval rate filter. Used at
+     * lifecycle edges (start, resume, pause, stop, new segment) where a
+     * point should exist regardless of when the last scheduled point
+     * was. Returns false if the point would duplicate or precede the last
+     * accepted timestamp — a duplicate is worse than a small gap.
+     */
+    fun addForced(entity: TrackPointEntity): Boolean {
+        if (entity.time <= lastAcceptedMs) return false
+        lastAcceptedMs = entity.time
+        pending.add(entity.copy(segmentId = segmentId))
+        return true
+    }
+
     fun shouldFlush(): Boolean = Background.shouldFlush(
         bufferSize         = pending.size,
         lastFlushElapsedMs = SystemClock.elapsedRealtime() - lastFlushElapsed,

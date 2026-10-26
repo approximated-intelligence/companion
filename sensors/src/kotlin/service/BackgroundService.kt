@@ -724,6 +724,45 @@ class BackgroundService : Service() {
 
     private fun resetDistanceBaseline() { lastDistanceFix = null }
 
+    // ===== Event-time point capture =====
+
+    /**
+     * Enqueue the current fix, bypassing the buffer's interval rate
+     * filter. Used at lifecycle edges (start, resume, pause, stop, new
+     * segment) so a point exists at the transition moment even when the
+     * next scheduled point is far away. Skips if no fix has arrived yet,
+     * if the fix is stale, or if it would duplicate the last accepted
+     * point.
+     *
+     * Staleness: during an in-foreground pause with the FGS alive,
+     * preview keeps running and lastProvidedFix stays fresh. But if
+     * preview stalled (doze without wakelock, screen off, or a long
+     * foreground pause where fixes stopped arriving), the fix can be
+     * minutes or hours old. Forcing it would put a wrong timestamp at
+     * the top of the resume segment — worse than a gap.
+     *
+     * Threshold: one expected hardware delivery period + 30 s slack,
+     * with a 90 s floor for tight configs. At 5-min hardware: 5.5 min.
+     * At 1-sec (KF clamp): 90 sec. Beyond that, resume produces no
+     * forced point and the first post-resume fix becomes the start.
+     */
+    private fun forceBufferLastFix() {
+        val fix = _status.value.lastProvidedFix ?: return
+        val buf = buffer ?: return
+        val maxAgeMs = maxOf(config.effectiveHardwareIntervalMs, 60_000L) + 30_000L
+        if (System.currentTimeMillis() - fix.time > maxAgeMs) return
+        if (buf.addForced(fix)) {
+            accumulateLiveDistance(fix)
+            _status.update {
+                it.copy(
+                    pendingPoints = buf.pendingCount(),
+                    lastAcceptedFix = fix,
+                    lastEnqueuedFix = fix,
+                )
+            }
+        }
+    }
+
     // ===== Preview =====
 
     private fun startPreview() {
@@ -827,6 +866,11 @@ class BackgroundService : Service() {
             val seedDistance = repository.getStats(tId)?.distanceM ?: 0f
             _status.update { it.copy(liveDistanceM = seedDistance) }
             resetDistanceBaseline()
+            // Force the current fix as the first point (fresh start) or
+            // the resume point (resume from pause). No-op if preview was
+            // never active (cold start — first fix wins as usual) or the
+            // fix is a duplicate of an already-buffered point.
+            forceBufferLastFix()
             notificationManager.notify(NOTIFICATION_ID, buildNotification())
         }
     }
@@ -841,6 +885,10 @@ class BackgroundService : Service() {
         if (!recording) return
         recording = false
         previewing = true
+        // Capture the current fix before tearing down the buffer so a
+        // point exists at the pause moment, even when the interval
+        // hasn't elapsed since the last scheduled point.
+        forceBufferLastFix()
         val capturedBuffer = buffer
         val capturedTrackId = trackId
         buffer = null
@@ -858,6 +906,9 @@ class BackgroundService : Service() {
         if (!recording) return
         recording = false
         previewing = true
+        // Capture the current fix before teardown so the track ends with
+        // a point at the stop moment.
+        forceBufferLastFix()
         val capturedBuffer = buffer
         val capturedTrackId = trackId
         buffer = null
@@ -884,11 +935,22 @@ class BackgroundService : Service() {
     private fun newSegment() {
         if (trackId == 0L) return
         scope.launch {
+            // Force current fix into the OLD segment (if not already
+            // there), so the segment ends with a point at the split.
+            forceBufferLastFix()
             buffer?.flush()
             val newSegId = repository.startNewSegment(trackId)
             segmentId = newSegId
             buffer?.setSegmentId(newSegId)
+            // Reset baseline before forcing into the new segment so
+            // cross-segment distance doesn't pollute liveDistanceM.
             resetDistanceBaseline()
+            // Force the same fix as the first point of the NEW segment.
+            // Same coordinate at end-of-old and start-of-new is
+            // intentional: each segment is self-contained, so tools that
+            // open a single segment see a valid start point without
+            // needing the previous segment's last point.
+            forceBufferLastFix()
             _status.update { it.copy(pendingPoints = buffer?.pendingCount() ?: 0) }
         }
     }
