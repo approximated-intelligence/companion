@@ -54,7 +54,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlin.math.sqrt
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import de.perigon.companion.core.geo.CoordFormat
 import de.perigon.companion.core.geo.formatDd
@@ -68,6 +67,7 @@ import de.perigon.companion.core.ui.formatDateTime
 import de.perigon.companion.sensors.SensorsRequirements
 import de.perigon.companion.sensors.gnss.Constellation
 import de.perigon.companion.sensors.gnss.SatelliteObservation
+import kotlin.math.sqrt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -414,7 +414,7 @@ private fun SignalStrengthChart(satellites: List<SatelliteObservation>, modifier
         val labelStyle = TextStyle(fontSize = 9.sp, color = labelColor)
 
         // Right-hand label column so the numeric scale never overlaps a
-        // bar. 32 dp fits "60" at 9 sp with margin; wider would cost too
+        // bar. 32 dp fits "40" at 9 sp with margin; wider would cost too
         // much of a 379 dp plot on phones.
         val labelColWidth = 32.dp.toPx()
         val plotWidth = size.width - labelColWidth
