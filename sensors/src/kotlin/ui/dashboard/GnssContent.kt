@@ -54,6 +54,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.sqrt
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import de.perigon.companion.core.geo.CoordFormat
 import de.perigon.companion.core.geo.formatDd
@@ -124,11 +125,14 @@ fun GnssContent(vm: DashboardViewModel) {
                 inline = true,
             ) {
                 LaunchedEffect(Unit) { vm.startGnss() }
-                GnssCard(
-                    state = gnss,
-                    format = format,
-                    onFormatChange = vm::setCoordFormat,
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    GnssCard(
+                        state = gnss,
+                        format = format,
+                        onFormatChange = vm::setCoordFormat,
+                    )
+                    SatelliteTable(gnss.satellites)
+                }
             }
         }
     }
@@ -229,6 +233,55 @@ private fun ConstellationLegend(satellites: List<SatelliteObservation>) {
 }
 
 @Composable
+private fun SatelliteTable(satellites: List<SatelliteObservation>) {
+    if (satellites.isEmpty()) return
+    val order = constellationDisplayOrder()
+    val sorted = satellites.sortedWith(
+        compareBy({ order.indexOf(it.constellation) }, { it.prn })
+    )
+    val headerStyle = MaterialTheme.typography.labelSmall
+    val bodyStyle = MaterialTheme.typography.bodySmall
+    val headerColor = MaterialTheme.colorScheme.onSurfaceVariant
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(
+            Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text("Satellites", style = MaterialTheme.typography.titleSmall)
+            Spacer(Modifier.height(4.dp))
+            Row(Modifier.fillMaxWidth()) {
+                Text("Cst",  Modifier.width(44.dp), style = headerStyle, color = headerColor)
+                Text("PRN",  Modifier.width(40.dp), style = headerStyle, color = headerColor)
+                Text("El",   Modifier.width(40.dp), style = headerStyle, color = headerColor)
+                Text("Az",   Modifier.width(44.dp), style = headerStyle, color = headerColor)
+                Text("C/N0", Modifier.width(56.dp), style = headerStyle, color = headerColor)
+                Text("Use",  Modifier.width(32.dp), style = headerStyle, color = headerColor)
+            }
+            sorted.forEach { sat ->
+                val rowColor = if (sat.usedInFix) MaterialTheme.colorScheme.onSurface
+                               else MaterialTheme.colorScheme.onSurfaceVariant
+                val cno = sat.snrDbHz
+                Row(Modifier.fillMaxWidth()) {
+                    Text(constellationShort(sat.constellation), Modifier.width(44.dp),
+                        style = bodyStyle, color = constellationColor(sat.constellation))
+                    Text(sat.prn.toString(), Modifier.width(40.dp),
+                        style = bodyStyle, color = rowColor)
+                    Text(sat.elevationDeg?.let { "$it°" } ?: "--",
+                        Modifier.width(40.dp), style = bodyStyle, color = rowColor)
+                    Text(sat.azimuthDeg?.let { "$it°" } ?: "--",
+                        Modifier.width(44.dp), style = bodyStyle, color = rowColor)
+                    Text(cno?.toString() ?: "--", Modifier.width(56.dp),
+                        style = bodyStyle, color = rowColor)
+                    Text(if (sat.usedInFix) "yes" else "",
+                        Modifier.width(32.dp), style = bodyStyle, color = rowColor)
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun GnssDataCell(label: String, value: String) {
     Column {
         Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -274,8 +327,25 @@ private fun Skyplot(satellites: List<SatelliteObservation>, modifier: Modifier =
             val azRad = Math.toRadians(azimuth.toDouble())
             val x = center.x + kotlin.math.sin(azRad).toFloat() * r
             val y = center.y - kotlin.math.cos(azRad).toFloat() * r
-            val dotRadius = 7.dp.toPx()
+            // Dot radius proportional to sqrt(C/N0): dot AREA is then
+            // proportional to signal strength, so a satellite twice as
+            // strong occupies twice the visual area. Unknown C/N0 gets a
+            // fixed 5 dp (smaller than a typical strong satellite, still
+            // visible). Clamped to [2 dp, 14 dp] so 0 dB-Hz stays visible
+            // as a small dot and 45+ doesn't dominate the plot.
+            val cno = sat.snrDbHz?.toFloat()
+            val dotRadiusDp = if (cno == null) 5f
+                              else (1.5f * sqrt(cno.coerceAtLeast(0f))).coerceIn(2f, 14f)
+            val dotRadius = dotRadiusDp.dp.toPx()
             val color = constellationColor(sat.constellation)
+            // High elevation + weak signal: usually antenna null or local
+            // obstruction rather than sky conditions. Marker is a hint,
+            // not a verdict — indoors, roof/window attenuation triggers
+            // false positives. Visible only as a small black dot at the
+            // satellite's center so the skyplot stays readable; the
+            // constellation color is preserved.
+            val elev = sat.elevationDeg ?: 0
+            val isAnomaly = cno != null && cno < 25f && elev >= 60
 
             if (sat.usedInFix) {
                 drawCircle(color = color, radius = dotRadius, center = Offset(x, y))
@@ -285,6 +355,13 @@ private fun Skyplot(satellites: List<SatelliteObservation>, modifier: Modifier =
                     radius = dotRadius,
                     center = Offset(x, y),
                     style = Stroke(width = 1.5.dp.toPx()),
+                )
+            }
+            if (isAnomaly) {
+                drawCircle(
+                    color = Color.Black,
+                    radius = 1.5.dp.toPx(),
+                    center = Offset(x, y),
                 )
             }
         }
@@ -300,6 +377,19 @@ private fun SignalStrengthChart(satellites: List<SatelliteObservation>, modifier
     val byConst = remember(satellites) { satellites.groupBy { it.constellation } }
     val order = remember(byConst) { constellationDisplayOrder().filter { byConst.containsKey(it) } }
 
+    // One slot per PRN. Range per constellation is exactly
+    // [min observed PRN, max observed PRN] — slot 0 and slot (count-1)
+    // always contain a satellite; interior gaps remain as empty slots.
+    // Recomputed every frame from current observations: the chart
+    // breathes as satellites come and go, but slot width is uniform
+    // across the whole chart at any instant.
+    val observedRanges: Map<Constellation, IntRange> = remember(byConst) {
+        byConst.mapValues { (_, sats) ->
+            val prns = sats.map { it.prn }
+            prns.min()..prns.max()
+        }
+    }
+
     Canvas(modifier = modifier) {
         if (order.isEmpty()) {
             drawCenteredText(
@@ -310,45 +400,73 @@ private fun SignalStrengthChart(satellites: List<SatelliteObservation>, modifier
             return@Canvas
         }
 
-        val maxSnr = 60f
+        // 15-45 dB-Hz range. Below 15 a satellite barely contributes to
+        // a fix on a phone; above 45 is unreachable with an inbuilt
+        // antenna. Anchoring the baseline at 15 (instead of 0) spreads
+        // the 20-40 band where phones actually operate across most of
+        // the chart instead of compressing it into the upper half.
+        val maxSnr = 45f
+        val minSnr = 15f
+        val snrRange = maxSnr - minSnr
         val chartTop = 6.dp.toPx()
         val chartBottom = size.height - 22.dp.toPx()
         val chartHeight = chartBottom - chartTop
-        val groupWidth = size.width / order.size
-        val barGap = 2.dp.toPx()
         val labelStyle = TextStyle(fontSize = 9.sp, color = labelColor)
 
-        for (level in listOf(20, 40, 60)) {
-            val y = chartBottom - chartHeight * (level / maxSnr)
+        // Right-hand label column so the numeric scale never overlaps a
+        // bar. 32 dp fits "60" at 9 sp with margin; wider would cost too
+        // much of a 379 dp plot on phones.
+        val labelColWidth = 32.dp.toPx()
+        val plotWidth = size.width - labelColWidth
+
+        // 20 / 30 / 40 are the real decision boundaries on a phone:
+        // <20 barely contributes to a fix, 30 is usable, 40 is close to
+        // the practical antenna ceiling. Whole-tens keeps the labels
+        // readable at 9 sp in the 32 dp right column.
+        for (level in listOf(20, 30, 40)) {
+            val y = chartBottom - chartHeight * ((level - minSnr) / snrRange)
             drawLine(
                 color = gridColor,
                 start = Offset(0f, y),
-                end = Offset(size.width, y),
+                end = Offset(plotWidth, y),
                 strokeWidth = 1f,
+            )
+            val layout = textMeasurer.measure(
+                AnnotatedString(level.toString()), labelStyle,
+            )
+            drawText(
+                textLayoutResult = layout,
+                topLeft = Offset(
+                    plotWidth + 4.dp.toPx(),
+                    (y - layout.size.height / 2f)
+                        .coerceIn(0f, (size.height - layout.size.height).coerceAtLeast(0f)),
+                ),
             )
         }
 
-        order.forEachIndexed { groupIdx, constellation ->
-            val sats = byConst[constellation].orEmpty()
-                .sortedByDescending { it.snrDbHz ?: 0 }
-            val groupX = groupIdx * groupWidth
-            if (sats.isEmpty()) return@forEachIndexed
+        // Uniform slot width across the whole chart: every bar is the
+        // same pixel size regardless of constellation. Groups expand in
+        // proportion to their observed range so a wide-span constellation
+        // doesn't collapse to needles while a narrow one gets sparse.
+        val totalSlots = order.sumOf { observedRanges[it]?.count() ?: 0 }
+        if (totalSlots == 0) return@Canvas
+        val slotWidth = plotWidth / totalSlots
+        // Bar is 85% of slot, 15% gap. Adjacent bars stay visibly
+        // separated; dense constellations remain readable because each
+        // satellite gets its own slot, not a share of a group.
+        val barInner = (slotWidth * 0.85f).coerceAtLeast(1f)
+        val barPad = (slotWidth - barInner) / 2f
 
-            val barWidth = (groupWidth - barGap * (sats.size + 1)) / sats.size
-            sats.forEachIndexed { satIdx, sat ->
-                val x = groupX + barGap * (satIdx + 1) + barWidth * satIdx
-                val snr = sat.snrDbHz?.toFloat() ?: 0f
-                val h = chartHeight * (snr / maxSnr).coerceIn(0f, 1f)
-                val y = chartBottom - h
-                drawRect(
-                    color = constellationColor(constellation).copy(
-                        alpha = if (sat.usedInFix) 1f else 0.4f
-                    ),
-                    topLeft = Offset(x, y),
-                    size = Size(barWidth, h),
-                )
-            }
+        var cursorX = 0f
+        order.forEach { constellation ->
+            val range = observedRanges[constellation] ?: return@forEach
+            val slotCount = range.count()
+            val groupWidth = slotWidth * slotCount
+            val groupX = cursorX
+            cursorX += groupWidth
 
+            // Label drawn unconditionally so its position stays anchored
+            // to the group's actual column, not to a per-frame index.
             val label = constellationShort(constellation)
             val layout = textMeasurer.measure(AnnotatedString(label), style = labelStyle)
             drawText(
@@ -358,6 +476,25 @@ private fun SignalStrengthChart(satellites: List<SatelliteObservation>, modifier
                     chartBottom + 4.dp.toPx(),
                 ),
             )
+
+            val sats = byConst[constellation].orEmpty()
+            val color = constellationColor(constellation)
+            for (sat in sats) {
+                val snr = sat.snrDbHz?.toFloat() ?: continue
+                val slotIdx = sat.prn - range.first
+                if (slotIdx !in 0 until slotCount) continue
+                val x = groupX + slotIdx * slotWidth + barPad
+                // Floor at 2% of chart height so satellites below 15 dB-Hz
+                // still show a visible sliver (they exist, even if
+                // unusable) rather than vanishing from the plot.
+                val h = chartHeight * ((snr - minSnr) / snrRange).coerceIn(0.02f, 1f)
+                val y = chartBottom - h
+                drawRect(
+                    color = color.copy(alpha = if (sat.usedInFix) 1f else 0.4f),
+                    topLeft = Offset(x, y),
+                    size = Size(barInner, h),
+                )
+            }
         }
     }
 }
