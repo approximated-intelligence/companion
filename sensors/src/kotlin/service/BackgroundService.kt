@@ -727,37 +727,53 @@ class BackgroundService : Service() {
     // ===== Event-time point capture =====
 
     /**
-     * Enqueue the current fix, bypassing the buffer's interval rate
-     * filter. Used at lifecycle edges (start, resume, pause, stop, new
-     * segment) so a point exists at the transition moment even when the
-     * next scheduled point is far away. Skips if no fix has arrived yet,
-     * if the fix is stale, or if it would duplicate the last accepted
-     * point.
+     * Get a point to force into the buffer at a lifecycle edge. Returns
+     * lastProvidedFix if it's fresh enough; otherwise requests a single
+     * GPS fix with a short timeout. Returns null if neither works — the
+     * edge then has no recorded point, which is the honest outcome when
+     * no fix is available.
      *
-     * Staleness: during an in-foreground pause with the FGS alive,
-     * preview keeps running and lastProvidedFix stays fresh. But if
-     * preview stalled (doze without wakelock, screen off, or a long
-     * foreground pause where fixes stopped arriving), the fix can be
-     * minutes or hours old. Forcing it would put a wrong timestamp at
-     * the top of the resume segment — worse than a gap.
-     *
-     * Threshold: one expected hardware delivery period + 30 s slack,
-     * with a 90 s floor for tight configs. At 5-min hardware: 5.5 min.
-     * At 1-sec (KF clamp): 90 sec. Beyond that, resume produces no
-     * forced point and the first post-resume fix becomes the start.
+     * The staleness threshold is hardware interval + 30 s (floor 60 s).
+     * With KF on, hardware is clamped to 1 s, so lastProvidedFix is
+     * always fresh — no request needed. With KF off at 5 min hardware,
+     * lastProvidedFix can be up to 5 min old; that's the same fix
+     * already in the buffer, so adding it again would be rejected by
+     * addForced's timestamp check. Requesting a fresh fix is the only
+     * way to have a point at the pause moment in that case.
      */
-    private fun forceBufferLastFix() {
-        val fix = _status.value.lastProvidedFix ?: return
-        val buf = buffer ?: return
+    private suspend fun captureEdgePoint(timeoutMs: Long = 3_000L): TrackPointEntity? {
+        val last = _status.value.lastProvidedFix
+        val lastAccepted = _status.value.lastAcceptedFix
         val maxAgeMs = maxOf(config.effectiveHardwareIntervalMs, 60_000L) + 30_000L
-        if (System.currentTimeMillis() - fix.time > maxAgeMs) return
-        if (buf.addForced(fix)) {
-            accumulateLiveDistance(fix)
+        val isFresh = last != null && System.currentTimeMillis() - last.time <= maxAgeMs
+        // addForced rejects a fix whose timestamp is at or before the
+        // last accepted one. When lastProvidedFix IS the fix already
+        // buffered (the common case at 5-min hardware — nothing newer
+        // has arrived), returning it here is guaranteed rejection:
+        // every event after the first silently no-ops. A fresh fix must
+        // be requested.
+        val isAlreadyBuffered = last != null && lastAccepted != null &&
+                                last.time <= lastAccepted.time
+        if (isFresh && !isAlreadyBuffered) return last
+        return withTimeoutOrNull(timeoutMs) {
+            gnssController.requestSingleFix(timeoutMs)?.let { convertFix(it) }
+        }
+    }
+
+    /**
+     * Force [point] into [buf] if it exists and isn't a duplicate.
+     * Helper for pause/stop paths that detach the buffer before
+     * requesting the fresh fix.
+     */
+    private fun forceInto(buf: TrackPointBuffer?, point: TrackPointEntity?) {
+        if (buf == null || point == null) return
+        if (buf.addForced(point)) {
+            accumulateLiveDistance(point)
             _status.update {
                 it.copy(
                     pendingPoints = buf.pendingCount(),
-                    lastAcceptedFix = fix,
-                    lastEnqueuedFix = fix,
+                    lastAcceptedFix = point,
+                    lastEnqueuedFix = point,
                 )
             }
         }
@@ -866,11 +882,10 @@ class BackgroundService : Service() {
             val seedDistance = repository.getStats(tId)?.distanceM ?: 0f
             _status.update { it.copy(liveDistanceM = seedDistance) }
             resetDistanceBaseline()
-            // Force the current fix as the first point (fresh start) or
-            // the resume point (resume from pause). No-op if preview was
-            // never active (cold start — first fix wins as usual) or the
-            // fix is a duplicate of an already-buffered point.
-            forceBufferLastFix()
+            // Capture a resume point: fresh fix if lastProvidedFix is
+            // stale (long pause, preview stalled). Cold start has no
+            // fix to force — first live fix becomes the start point.
+            forceInto(buffer, captureEdgePoint())
             notificationManager.notify(NOTIFICATION_ID, buildNotification())
         }
     }
@@ -885,16 +900,13 @@ class BackgroundService : Service() {
         if (!recording) return
         recording = false
         previewing = true
-        // Capture the current fix before tearing down the buffer so a
-        // point exists at the pause moment, even when the interval
-        // hasn't elapsed since the last scheduled point.
-        forceBufferLastFix()
         val capturedBuffer = buffer
         val capturedTrackId = trackId
         buffer = null
         resetDistanceBaseline()
         _status.update { it.copy(isRecording = false, previewActive = true) }
         appScope.launch {
+            forceInto(capturedBuffer, captureEdgePoint())
             capturedBuffer?.flushRemaining()
             _status.update { it.copy(pendingPoints = 0) }
             repository.pauseRecording(capturedTrackId)
@@ -906,9 +918,6 @@ class BackgroundService : Service() {
         if (!recording) return
         recording = false
         previewing = true
-        // Capture the current fix before teardown so the track ends with
-        // a point at the stop moment.
-        forceBufferLastFix()
         val capturedBuffer = buffer
         val capturedTrackId = trackId
         buffer = null
@@ -925,6 +934,7 @@ class BackgroundService : Service() {
             )
         }
         appScope.launch {
+            forceInto(capturedBuffer, captureEdgePoint())
             capturedBuffer?.flushRemaining()
             _status.update { it.copy(pendingPoints = 0) }
             repository.stopRecording(capturedTrackId)
@@ -935,22 +945,19 @@ class BackgroundService : Service() {
     private fun newSegment() {
         if (trackId == 0L) return
         scope.launch {
-            // Force current fix into the OLD segment (if not already
-            // there), so the segment ends with a point at the split.
-            forceBufferLastFix()
+            // Capture the split point: fresh fix if lastProvidedFix is
+            // stale, else the last fix. Goes into both the end of the
+            // old segment and the start of the new segment so each
+            // segment is self-contained — tools that open one segment
+            // see a valid start without needing the other's endpoint.
+            val edgePoint = captureEdgePoint()
+            forceInto(buffer, edgePoint)
             buffer?.flush()
             val newSegId = repository.startNewSegment(trackId)
             segmentId = newSegId
             buffer?.setSegmentId(newSegId)
-            // Reset baseline before forcing into the new segment so
-            // cross-segment distance doesn't pollute liveDistanceM.
             resetDistanceBaseline()
-            // Force the same fix as the first point of the NEW segment.
-            // Same coordinate at end-of-old and start-of-new is
-            // intentional: each segment is self-contained, so tools that
-            // open a single segment see a valid start point without
-            // needing the previous segment's last point.
-            forceBufferLastFix()
+            forceInto(buffer, edgePoint)
             _status.update { it.copy(pendingPoints = buffer?.pendingCount() ?: 0) }
         }
     }
