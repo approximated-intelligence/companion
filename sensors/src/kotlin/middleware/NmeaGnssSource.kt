@@ -150,17 +150,21 @@ class NmeaGnssSource @Inject constructor(
         val lm = ctx.getSystemService(LocationManager::class.java) ?: return
         val l = warmupListener ?: return
 
-        // warmUpEngine() checked the grant when it registered, but the user
-        // can revoke location while a session is running. Failing the check
-        // must not leave the source looking healthy: the warm-up listener
-        // stays registered against a permission we no longer hold, the
-        // engine stops producing NMEA, and the only symptom is a fix stream
-        // that quietly goes stale. Surface it the way start() and
-        // warmUpEngine() already do — GnssController re-exposes this state
-        // flow — and drop the registration we can no longer use.
+        // warmUpEngine() checked the grant when it registered, but location
+        // can be revoked while a session is running. Returning silently
+        // would leave the source looking healthy while the warm-up
+        // registration — the only thing keeping the engine producing NMEA —
+        // stops having any effect. Report it the way start() and
+        // warmUpEngine() already do; GnssController re-exposes this flow.
+        //
+        // The registration is deliberately NOT dropped: it is inert while
+        // the grant is gone and delivers again if it comes back, and that is
+        // this class's only recovery path — start() early-returns on a live
+        // fixJob, so a torn-down warm-up would need a full session
+        // stop/start. tryEmit() clears the error on the next completed
+        // cycle, so it lives exactly as long as the silence does.
         if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION)
             != PackageManager.PERMISSION_GRANTED) {
-            coolDownEngine()
             _state.value = GnssSourceState.Error("Location permission required")
             return
         }
@@ -173,8 +177,7 @@ class NmeaGnssSource @Inject constructor(
                 l,
             )
         } catch (e: SecurityException) {
-            // TOCTOU: revoked between the check above and the call.
-            coolDownEngine()
+            // TOCTOU: revoked between the check and the call.
             _state.value = GnssSourceState.Error("Location permission required")
         } catch (e: Exception) {
             Log.w(TAG, "Warm-up interval update failed", e)
@@ -319,6 +322,10 @@ class NmeaGnssSource @Inject constructor(
 
         val fix = buildFixFromSnapshot(snapshot) ?: return
         lastEmittedUtcSecond = utcSecond
+        // A cycle got through, so the grant is demonstrably back — clear an
+        // error set by updateInterval() rather than letting it outlive the
+        // condition it reported.
+        if (_state.value is GnssSourceState.Error) _state.value = GnssSourceState.Running
         _fixes.tryEmit(fix)
     }
 

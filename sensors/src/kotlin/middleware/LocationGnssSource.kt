@@ -98,13 +98,32 @@ class LocationGnssSource @Inject constructor(
 
     override fun updateInterval(intervalMs: Long) {
         if (intervalMs == currentIntervalMs) return
+
+        // A revoked grant must not keep looking like a healthy session — this
+        // is the source the app runs on by default, so the bare `return` that
+        // used to sit here was a silently dead fix stream. Same shape as
+        // NmeaGnssSource.updateInterval: report the condition, keep the
+        // registration (inert while the grant is gone, delivering again once
+        // it is restored), and let emit() clear the error on the next fix.
+        //
+        // The check sits BEFORE currentIntervalMs is updated, so a failed
+        // check leaves the field agreeing with the live registration and a
+        // later call with the same interval re-checks instead of
+        // short-circuiting on the first line.
         if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED) return
+            != PackageManager.PERMISSION_GRANTED) {
+            _state.value = GnssSourceState.Error("Location permission required")
+            return
+        }
+
         currentIntervalMs = intervalMs
         val listener = locationListener ?: return
         try {
             ctx.getSystemService(LocationManager::class.java)
                 ?.requestLocationUpdates(LocationManager.GPS_PROVIDER, intervalMs, 0f, listener)
+        } catch (e: SecurityException) {
+            // TOCTOU: revoked between the check and the call.
+            _state.value = GnssSourceState.Error("Location permission required")
         } catch (e: Exception) {
             Log.w(TAG, "updateInterval failed", e)
         }
@@ -146,7 +165,11 @@ class LocationGnssSource @Inject constructor(
             }
         }
 
-    private fun emit(fix: GnssFix) { _fixes.tryEmit(fix) }
+    private fun emit(fix: GnssFix) {
+        // A fix proves the grant is back (see updateInterval's error path).
+        if (_state.value is GnssSourceState.Error) _state.value = GnssSourceState.Running
+        _fixes.tryEmit(fix)
+    }
 
     private fun buildFix(location: Location): GnssFix {
         val position = Position(location.latitude, location.longitude)
