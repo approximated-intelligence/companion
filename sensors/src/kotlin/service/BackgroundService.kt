@@ -150,9 +150,10 @@ data class RecordingStatus(
     val gnssInfo: GnssInfo = GnssInfo.EMPTY,
     // Last non-null bearing from the chipset, unfiltered. Null-bearing
     // fixes keep the previous value so the cell doesn't flap to "--" when
-    // the chipset momentarily drops the course. Reset on preview stop and
-    // on service teardown; survives pause→resume and stop→preview, because
-    // in both cases the display is still showing a live session.
+    // the chipset momentarily drops the course. Reset only on service
+    // teardown. Survives preview stop so a returning tab does not flash
+    // "--" while waiting for the next fix - same rule as the last*Fix
+    // fields.
     val lastHeadingDegrees: Float? = null,
 )
 
@@ -818,10 +819,15 @@ class BackgroundService : Service() {
         _status.update {
             it.copy(
                 previewActive = false,
-                lastProvidedFix = null,
-                lastAcceptedFix = null,
-                lastEnqueuedFix = null,
-                lastHeadingDegrees = null,
+                // lastProvidedFix / lastAcceptedFix / lastEnqueuedFix /
+                // lastHeadingDegrees are deliberately NOT cleared here.
+                // Every other tab preserves its last-known fix across a
+                // pause (GNSS via _gnssState, NMEA via NmeaStream.parsed),
+                // and clearing them made the Track card show "--" for up
+                // to a full hardware interval after every tab switch,
+                // because the next fix had not arrived yet. The card now
+                // shows the preserved value with its true age until the
+                // next fix replaces it.
                 liveDistanceM = null,
                 currentBaroAltitudeM = null,
                 currentPressureHpa = null,
