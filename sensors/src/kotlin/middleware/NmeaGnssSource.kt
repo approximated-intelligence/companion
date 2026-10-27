@@ -10,6 +10,7 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
+import de.perigon.companion.core.geo.geoid.GeoidGrid
 import de.perigon.companion.sensors.nmea.NmeaCycleTracker
 import de.perigon.companion.sensors.nmea.NmeaStream
 import kotlinx.coroutines.CompletableDeferred
@@ -61,16 +62,20 @@ import javax.inject.Singleton
  *    warm-up will not complete without at least one time-bearing
  *    sentence) is dropped with a diagnostic-style log entry.
  *
- * INTERVAL — throttle, not engine rate. The GNSS chip runs at its own
- * cadence. `intervalMs` decides how often we forward a cycle snapshot;
- * it does not slow the chip. Only SINGLE_FIX / ALARM / PASSIVE modes
- * change engine activity.
+ * INTERVAL — throttle AND engine-warming hint. `intervalMs` bounds the
+ * rate at which [tryEmit] forwards a cycle snapshot, and is passed to
+ * `requestLocationUpdates` in the warm-up listener. Chipsets that
+ * honour `minTime` slow the engine to the caller's rate; chipsets that
+ * produce at native rate ignore it. Both are correct — the emitted
+ * rate stays bounded by [tryEmit] either way, so the two sources
+ * (Location and NMEA) now agree on what the setting means.
  */
 @Singleton
 class NmeaGnssSource @Inject constructor(
     @param:ApplicationContext private val ctx: Context,
     private val nmeaStream: NmeaStream,
     private val cycleTracker: NmeaCycleTracker,
+    private val geoidGrid: GeoidGrid,
 ) : GnssSource {
 
     override val type: GnssSourceType = GnssSourceType.NMEA
@@ -89,6 +94,8 @@ class NmeaGnssSource @Inject constructor(
     private var fixJob: Job? = null
 
     private var currentIntervalMs: Long = 1_000L
+    private var sessionStartMs: Long = 0L
+    private var sessionTtffSeconds: Int? = null
 
     /**
      * UTC second of the last emitted cycle. The interval throttle
@@ -113,6 +120,8 @@ class NmeaGnssSource @Inject constructor(
 
         currentIntervalMs = intervalMs
         lastEmittedUtcSecond = null
+        sessionStartMs = SystemClock.elapsedRealtime()
+        sessionTtffSeconds = null
 
         nmeaLease = nmeaStream.acquire()
         trackerLease = cycleTracker.acquire()
@@ -120,6 +129,10 @@ class NmeaGnssSource @Inject constructor(
 
         fixJob = scope.launch {
             cycleTracker.cycleSnapshots.collect { snapshot ->
+                if (sessionTtffSeconds == null && snapshot.position != null && sessionStartMs > 0L) {
+                    sessionTtffSeconds =
+                        ((SystemClock.elapsedRealtime() - sessionStartMs) / 1000L).toInt()
+                }
                 tryEmit(snapshot)
             }
         }
@@ -127,8 +140,25 @@ class NmeaGnssSource @Inject constructor(
     }
 
     override fun updateInterval(intervalMs: Long) {
-        // Delivery throttle only. Engine runs at chipset rate.
+        if (intervalMs == currentIntervalMs) return
         currentIntervalMs = intervalMs
+        // Re-register so the platform sees the new minTime. On chipsets
+        // that honour it, the engine slows to the caller's rate; on
+        // chipsets that produce at native rate, this is a no-op and
+        // [tryEmit]'s throttle remains the bound on emission. Matches
+        // [LocationGnssSource.updateInterval]'s pattern.
+        val lm = ctx.getSystemService(LocationManager::class.java) ?: return
+        val l = warmupListener ?: return
+        try {
+            lm.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER,
+                currentIntervalMs.coerceAtLeast(1_000L),
+                0f,
+                l,
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Warm-up interval update failed", e)
+        }
     }
 
     override fun stop() {
@@ -136,6 +166,8 @@ class NmeaGnssSource @Inject constructor(
         coolDownEngine()
         trackerLease?.close(); trackerLease = null
         nmeaLease?.close(); nmeaLease = null
+        sessionStartMs = 0L
+        sessionTtffSeconds = null
         _state.value = GnssSourceState.Idle
     }
 
@@ -173,14 +205,28 @@ class NmeaGnssSource @Inject constructor(
         }
 
     /**
-     * Register a no-op `LocationListener`. Its only purpose is to keep
-     * the GNSS engine running so NMEA sentences flow. The Location
-     * objects it receives are discarded — NMEA mode uses only NMEA data.
+     * Active warm-up. Its only job is to trigger the GNSS engine so that
+     * `addNmeaListener` inside [NmeaStream] has something to receive. The
+     * Location objects delivered here are discarded; this class never
+     * reads a Location field.
      *
-     * The 1 s interval is unconditional: the engine runs at chipset
-     * rate, and this listener is the "someone is requesting updates"
-     * signal the platform needs. Delivery throttling happens in
-     * [tryEmit], not here.
+     * GPS_PROVIDER: PASSIVE_PROVIDER does not start the engine — it only
+     * receives whatever some other consumer is already producing. When
+     * NMEA is the only source asking for a fix, passive means "no
+     * sentences ever". An active request is the only warm-up that works
+     * universally.
+     *
+     * Interval: [currentIntervalMs], the minimum across all sessions
+     * supplied by GnssController. This is the same value LocationGnssSource
+     * passes to its own requestLocationUpdates, so the two sources agree
+     * on what the interval means. Chipsets that honour `minTime` slow
+     * the engine to this rate (a 300 s recording wakes the chip every
+     * 300 s, not every 1 s); chipsets that produce at native rate
+     * ignore it. Both are correct — [tryEmit]'s throttle is the bound
+     * on the emitted rate either way.
+     *
+     * Floor at 1 s so a pathological 0 or negative value (should not
+     * occur; sessions carry a validated interval) cannot flood the chip.
      */
     private fun warmUpEngine(lm: LocationManager) {
         if (warmupListener != null) return
@@ -195,7 +241,12 @@ class NmeaGnssSource @Inject constructor(
             override fun onProviderDisabled(provider: String) {}
         }
         try {
-            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1_000L, 0f, listener)
+            lm.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER,
+                currentIntervalMs.coerceAtLeast(1_000L),
+                0f,
+                listener,
+            )
             warmupListener = listener
         } catch (e: SecurityException) {
             Log.w(TAG, "Warm-up registration denied", e)
@@ -264,17 +315,25 @@ class NmeaGnssSource @Inject constructor(
         // consolidation, the stream owns cross-cycle satellite state.
         val parsed = nmeaStream.parsed.value
 
-        // Horizontal accuracy: GST residual-derived σ if the chipset
-        // emitted it, otherwise HDOP × UERE (standard standalone-GPS
-        // rule of thumb). When neither is present the fix stays
-        // accuracy-less — the recorder's max-inaccuracy gate rejects
-        // it, but the fix is still emitted and visible as "provided"
-        // on the live card.
-        val horizSigma: Double? = snapshot.horizontalSigmaM
-            ?: snapshot.hdop?.times(HDOP_UERE_M)
+        // Sigma derivation lives in deriveNmeaSigma (middleware/NmeaSigma.kt)
+        // so the NMEA debug tab can call the same function from its own
+        // ParsedSnapshot without duplicating the GST-vs-DOP rule. When
+        // neither GST nor DOP is present the fix stays accuracy-less — the
+        // recorder's max-inaccuracy gate rejects it, but the fix is still
+        // emitted and visible as "provided" on the live card.
 
-        val vertSigma: Double? = snapshot.verticalSigmaM
-            ?: snapshot.vdop?.times(HDOP_UERE_M)
+        // XGM2019e-derived MSL, not the chip's. Same semantics as the
+        // Location source (which already corrects via GeoidGrid), so
+        // consumers stay source-agnostic. Depends on the chip having
+        // emitted geoidSep (GGA field 11). Compliant receivers emit it,
+        // but some cheap chipsets and multiplexer rewrites omit the
+        // field — the null path is a real case, not defensive padding.
+        // When WGS84 or geoidSep is absent, MSL is absent too: null is
+        // the honest answer, and no silent fallback to the chip's own
+        // geoid (which is the exact value this field exists to replace).
+        val altMslAppM: Double? = snapshot.altitudeWgs84M?.let { wgs84 ->
+            wgs84 - geoidGrid.undulation(position.lat, position.lon)
+        }
 
         return GnssFix(
             source = GnssSourceType.NMEA,
@@ -283,7 +342,7 @@ class NmeaGnssSource @Inject constructor(
             // any decision in this class.
             monotonicNanos = SystemClock.elapsedRealtimeNanos(),
             position = position,
-            altitudeMslM = snapshot.altitudeMslM,
+            altitudeMslM = altMslAppM,
             altitudeWgs84M = snapshot.altitudeWgs84M,
             speedMps = snapshot.speedMps,
             courseDeg = snapshot.courseDeg,
@@ -293,14 +352,19 @@ class NmeaGnssSource @Inject constructor(
             satellitesUsed = snapshot.satellitesUsed,
             satellites = parsed.satellites,
             dop = Dop(snapshot.hdop, snapshot.vdop, snapshot.pdop),
-            sigma = Sigma(horizSigma, vertSigma),
+            sigma = deriveNmeaSigma(
+                gstHorizontalM = snapshot.horizontalSigmaM,
+                gstVerticalM = snapshot.verticalSigmaM,
+                hdop = snapshot.hdop,
+                vdop = snapshot.vdop,
+            ),
             sbasActive = parsed.sbasActive,
             sourceLocation = null,
+            ttffSeconds = sessionTtffSeconds,
         )
     }
 
     private companion object {
         const val TAG = "NmeaGnssSource"
-        const val HDOP_UERE_M = 5.0
     }
 }
