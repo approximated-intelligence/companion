@@ -54,6 +54,7 @@ class LocationGnssSource @Inject constructor(
     private var gnssCallback: GnssStatus.Callback? = null
     private var currentIntervalMs: Long = 1_000L
     private var cachedSatellites: List<SatelliteObservation> = emptyList()
+    private var sessionTtffSeconds: Int? = null
 
     override fun start(intervalMs: Long) {
         if (locationListener != null) { updateInterval(intervalMs); return }
@@ -68,12 +69,16 @@ class LocationGnssSource @Inject constructor(
             return
         }
         currentIntervalMs = intervalMs
+        sessionTtffSeconds = null
         val listener = object : LocationListener {
             override fun onLocationChanged(location: Location) { emit(buildFix(location)) }
             override fun onProviderEnabled(provider: String) {}
             override fun onProviderDisabled(provider: String) {}
         }
         val cb = object : GnssStatus.Callback() {
+            override fun onFirstFix(ttffMillis: Int) {
+                sessionTtffSeconds = ttffMillis / 1000
+            }
             override fun onSatelliteStatusChanged(status: GnssStatus) {
                 cachedSatellites = status.toObservations()
             }
@@ -117,6 +122,7 @@ class LocationGnssSource @Inject constructor(
         }
         gnssCallback = null
         cachedSatellites = emptyList()
+        sessionTtffSeconds = null
         _state.value = GnssSourceState.Idle
     }
 
@@ -170,6 +176,7 @@ class LocationGnssSource @Inject constructor(
             sigma = Sigma(horiz, vert),
             sbasActive = cachedSatellites.any { it.usedInFix && it.isSbas },
             sourceLocation = location,
+            ttffSeconds = sessionTtffSeconds,
         )
     }
 

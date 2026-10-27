@@ -41,6 +41,22 @@ data class GnssFix(
      * typed fields above.
      */
     val sourceLocation: android.location.Location?,
+    /**
+     * Time from the moment this source started observing to its first
+     * valid fix, in whole seconds. Null until the first fix of a
+     * session, and stays null if the session never produced one.
+     *
+     * Semantics differ between sources because the measurement differs:
+     * the Location source reports the platform's GnssStatus.onFirstFix —
+     * the time from its own requestLocationUpdates call to the HAL's
+     * first fix. The NMEA source records when it started observing and
+     * reports the delta to the first observed cycle; this may be nearly
+     * zero if the engine was already warm from another consumer (the
+     * recorder, the Sensors dashboard's own NMEA session, or another
+     * app). Both are honest for what they measure; consumers see one
+     * number.
+     */
+    val ttffSeconds: Int? = null,
 )
 
 data class Dop(
