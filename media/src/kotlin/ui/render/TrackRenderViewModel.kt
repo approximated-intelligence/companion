@@ -96,18 +96,13 @@ class TrackRenderViewModel @Inject constructor(
     // --- tile source state ---
 
     private fun buildTileState(): TileSourceState {
-        val localUri   = renderPrefs.tileSourceUri()
-        // Null = never configured; show the built-in default so it can be
-        // edited instead of retyped. Blank (explicitly cleared) is also
-        // replaced — "empty" is not a meaningful tile URL.
-        val networkUrl = renderPrefs.tileSourceNetworkUrl()
-            ?.takeIf { it.isNotBlank() }
-            ?: RenderPrefs.DEFAULT_NETWORK_TILE_URL
+        val localUri = renderPrefs.tileSourceUri()
+        val networkUrl = renderPrefs.tileSourceNetworkUrl()?.takeIf { it.isNotBlank() }
         return TileSourceState(
             hasLocalTiles   = localUri != null,
             localLabel      = renderPrefs.tileSourceLabel() ?: "",
-            hasNetworkTiles = true,
-            networkUrl      = networkUrl,
+            hasNetworkTiles = networkUrl != null,
+            networkUrl      = networkUrl ?: "",
             mode            = renderPrefs.tileSourceMode(),
         )
     }
@@ -146,6 +141,14 @@ class TrackRenderViewModel @Inject constructor(
     fun setTileSourceMode(mode: String) {
         viewModelScope.launch {
             renderPrefs.setTileSourceMode(mode)
+            // Prefill the URL only when the user switches TO network with no
+            // stored URL yet; picking it from the switch commits the default,
+            // so the field and what render() would use agree.
+            if (mode == RenderPrefs.TILE_MODE_NETWORK &&
+                renderPrefs.tileSourceNetworkUrl().isNullOrBlank()
+            ) {
+                renderPrefs.setTileSourceNetwork(RenderPrefs.DEFAULT_NETWORK_TILE_URL)
+            }
             _tileState.value = buildTileState()
         }
     }
@@ -171,14 +174,10 @@ class TrackRenderViewModel @Inject constructor(
 
     private fun loadTileSource(): TileSource? = when (renderPrefs.tileSourceMode()) {
         RenderPrefs.TILE_MODE_NETWORK ->
-            NetworkTileSource(
-                renderPrefs.tileSourceNetworkUrl()
-                    ?.takeIf { it.isNotBlank() }
-                    ?: RenderPrefs.DEFAULT_NETWORK_TILE_URL
-            )
-        // LOCAL mode with no local file falls back to the built-in default,
-        // matching what buildTileState() shows the user.
-        else -> loadLocalTileSource() ?: NetworkTileSource(RenderPrefs.DEFAULT_NETWORK_TILE_URL)
+            renderPrefs.tileSourceNetworkUrl()
+                ?.takeIf { it.isNotBlank() }
+                ?.let { NetworkTileSource(it) }
+        else -> loadLocalTileSource()
     }
 
     private fun loadLocalTileSource(): TileSource? {
@@ -233,6 +232,9 @@ class TrackRenderViewModel @Inject constructor(
             _state.value = withContext(Dispatchers.IO) {
                 try {
                     val tileSource = loadTileSource()
+                    if (tileSource == null) {
+                        snackbar.send("No tile source configured — rendering without a map background")
+                    }
                     val result = try {
                         renderTracks(loaded.tracks, tileSource)
                     } finally {

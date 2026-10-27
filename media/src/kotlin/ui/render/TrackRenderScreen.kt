@@ -20,7 +20,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -114,6 +117,18 @@ private fun TileSourceSection(
     onClearTileLocal:    () -> Unit,
     onPickTileFile:      () -> Unit,
 ) {
+    val focusRequester = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+    var focusPending by remember { mutableStateOf(false) }
+
+    LaunchedEffect(focusPending) {
+        if (focusPending) {
+            focusRequester.requestFocus()
+            keyboard?.show()
+            focusPending = false
+        }
+    }
+
     Text("Map tiles", style = MaterialTheme.typography.titleMedium)
     Text(
         "Configure tile sources for track rendering backgrounds. Both can coexist — toggle to choose the active source.",
@@ -121,20 +136,27 @@ private fun TileSourceSection(
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 
-    if (tileState.hasLocalTiles && tileState.hasNetworkTiles) {
-        Text("Active source", style = MaterialTheme.typography.bodyMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(
-                selected = tileState.mode == RenderPrefs.TILE_MODE_LOCAL,
-                onClick  = { onSetTileMode(RenderPrefs.TILE_MODE_LOCAL) },
-                label    = { Text("Local file") },
-            )
-            FilterChip(
-                selected = tileState.mode == RenderPrefs.TILE_MODE_NETWORK,
-                onClick  = { onSetTileMode(RenderPrefs.TILE_MODE_NETWORK) },
-                label    = { Text("Network") },
-            )
-        }
+    Text("Active source", style = MaterialTheme.typography.bodyMedium)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FilterChip(
+            selected = tileState.mode == RenderPrefs.TILE_MODE_LOCAL,
+            onClick  = {
+                if (tileState.mode != RenderPrefs.TILE_MODE_LOCAL) {
+                    onSetTileMode(RenderPrefs.TILE_MODE_LOCAL)
+                }
+            },
+            label    = { Text("Local file") },
+        )
+        FilterChip(
+            selected = tileState.mode == RenderPrefs.TILE_MODE_NETWORK,
+            onClick  = {
+                if (tileState.mode != RenderPrefs.TILE_MODE_NETWORK) {
+                    onSetTileMode(RenderPrefs.TILE_MODE_NETWORK)
+                }
+                focusPending = true
+            },
+            label    = { Text("Network") },
+        )
     }
 
     OutlinedTextField(
@@ -143,7 +165,7 @@ private fun TileSourceSection(
         label         = { Text("Network tile URL") },
         placeholder   = { Text("https://tile.example.com/{z}/{x}/{y}.png") },
         singleLine    = true,
-        modifier      = Modifier.fillMaxWidth(),
+        modifier      = Modifier.fillMaxWidth().focusRequester(focusRequester),
         supportingText = {
             Text(
                 "Use {z}/{x}/{y} for XYZ (e.g. https://tile.example.com/{z}/{x}/{y}.png) " +
@@ -151,6 +173,22 @@ private fun TileSourceSection(
             )
         },
     )
+
+    if (tileState.mode == RenderPrefs.TILE_MODE_NETWORK) {
+        if (!tileState.hasNetworkTiles) {
+            Text(
+                "No network URL configured — renders will have no map background.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    } else if (!tileState.hasLocalTiles) {
+        Text(
+            "No local tile file configured — renders will have no map background.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 
     TileSourceRow(
         configured = tileState.hasLocalTiles,
