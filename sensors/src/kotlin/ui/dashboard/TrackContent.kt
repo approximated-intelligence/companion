@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import de.perigon.companion.core.geo.CoordFormat
 import de.perigon.companion.core.ui.CoordinateDisplay
@@ -68,9 +69,22 @@ fun TrackContent(
 
     SecureWindow()
 
-    DisposableEffect(Unit) {
+    // Preview is a UI-only concern: the live card exists to be looked at.
+    // On pause (backgrounding, screen-off) it stops — the GNSS chip, baro
+    // sensor, and (if enabled) wake lock cost real power, and none of them
+    // serve a purpose while the user cannot see the card. Returning to the
+    // tab costs a few seconds of GNSS reacquisition; users who need zero
+    // latency should be recording, which keeps the service alive via the
+    // persistent notification and is the correct power contract for a
+    // background run.
+    //
+    // LifecycleResumeEffect fires onPauseOrDispose on both pause and
+    // dispose, so navigating away and backgrounding both stop the preview.
+    // The service-side stopPreview() already refuses to stop while
+    // recording, so a recording session is unaffected.
+    LifecycleResumeEffect(Unit) {
         vm.onScreenEnter()
-        onDispose { vm.onScreenExit() }
+        onPauseOrDispose { vm.onScreenExit() }
     }
 
     LaunchedEffect(Unit) {
@@ -928,7 +942,8 @@ private fun LiveCard(
                 onFormatChange = onFormatChange,
                 modifier = Modifier.fillMaxWidth(),
                 contentColor = contentColor,
-                surfaceColor = contentColor.copy(alpha = 0.10f),
+                lastFixTimeMs = lastProvidedFix?.time,
+                horizontalSigmaM = lastProvidedFix?.accuracyM?.toDouble(),
             )
 
             // Distance only when there is one (recording or paused); during
