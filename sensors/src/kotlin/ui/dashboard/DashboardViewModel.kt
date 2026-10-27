@@ -26,23 +26,29 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import de.perigon.companion.core.geo.CoordFormat
 import de.perigon.companion.core.geo.magnetic.MagneticModel
+import de.perigon.companion.sensors.data.TrackConfigPrefs
 import de.perigon.companion.sensors.data.TrackPrefs
 import de.perigon.companion.sensors.middleware.GnssController
-import de.perigon.companion.sensors.middleware.GnssSession
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
 import javax.inject.Inject
 
 @HiltViewModel
 class DashboardViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val trackPrefs: TrackPrefs,
+    private val trackConfigPrefs: TrackConfigPrefs,
     private val magneticModel: MagneticModel,
     private val gnssController: GnssController,
 ) : ViewModel() {
@@ -85,7 +91,6 @@ class DashboardViewModel @Inject constructor(
 
     // ---- GNSS via middleware ----
 
-    private var gnssSession: GnssSession? = null
     private var gnssFixJob: Job? = null
 
     private var telephonyCallback: TelephonyCallback? = null
@@ -169,6 +174,51 @@ class DashboardViewModel @Inject constructor(
      * delivers one unified GnssFix stream — this ViewModel does not know
      * which source is active.
      *
+     * Session interval comes from TrackConfigPrefs.observe(), mapped to
+     * hardwareIntervalMs. TrackConfigPrefs owns the recording config
+     * (TrackConfigEntity, DataStore-backed); TrackPrefs holds coordFormat,
+     * gnssSourceType, backgroundGps, gpxExportFolder, but no recording
+     * rates.
+     *
+     * The "Hardware rate" chip on the Track tab is the user's claim on
+     * the chip's cadence; the dashboard honours it, so min(dashboard,
+     * recorder) equals the hardware rate whenever the recorder is also
+     * at that rate. A hardcoded 1000 ms would override the user's setting
+     * while any Sensors tab was showing, defeating any attempt to observe
+     * the chip at a slower rate — the skyplot would silently be at 1 Hz
+     * regardless of what was chosen, and the LiveCard's provided/accepted
+     * lines would tick at 1 Hz while the chip had been told to run at 10 s.
+     *
+     * hardwareIntervalMs, not effectiveHardwareIntervalMs: the effective
+     * value clamps to KF_MAX_HARDWARE_INTERVAL_MS when the filter is on.
+     * That clamp is the recorder session's concern — when recording, the
+     * recorder requests effective, so min(dashboard=hardware,
+     * recorder=effective) = effective without the dashboard duplicating
+     * the clamp. When not recording, the dashboard alone drives the chip
+     * and the user's chosen rate is the honest answer.
+     *
+     * Interval changes re-acquire through collectLatest: the previous
+     * block is cancelled (its `finally` closes the session), then the
+     * new block acquires at the new interval. There is a brief
+     * "0 sessions" window on the controller between close and the next
+     * acquire, and that window is NOT free:
+     *
+     *   - GnssController.rebindLocked() sees sessions empty and calls
+     *     activeSource.stop(), which unregisters both the LocationListener
+     *     (or the NMEA warm-up listener) and the GnssStatus.Callback.
+     *   - The next acquire calls activeSource.start(), which re-registers
+     *     everything. For NMEA, this also resets NmeaCycleTracker to
+     *     WarmingUp — one full cycle must complete before the first
+     *     CycleSnapshot is emitted.
+     *
+     * Practically: the first post-change fix arrives after ~1 tracker
+     * cycle (NMEA) or after getLastKnownLocation returns (Location), so
+     * a rapid slider drag produces a visible re-acquire per stop, not a
+     * silent interval swap. That is acceptable for a config change. If
+     * it becomes a UX problem, replace collectLatest with a manual
+     * acquire-then-close pair: acquire the new session first, then close
+     * the old one, so the controller never sees a zero-session window.
+     *
      * Driven by SensorsScreen's effects for the whole screen, not by the
      * GNSS tab. Two reasons:
      *
@@ -181,26 +231,50 @@ class DashboardViewModel @Inject constructor(
      * Idempotent: safe to call from both SensorsScreen (on every resume,
      * which catches permission granted via system Settings while the app
      * was backgrounded) and GnssContent's post-permission LaunchedEffect.
-     * The guard prevents double registration.
+     * The `isActive` guard prevents double registration and restarts a
+     * dead collector if the previous one crashed.
      */
     fun startGnss() {
-        if (gnssFixJob != null) return
-        gnssSession = gnssController.acquire(1_000L)
+        if (gnssFixJob?.isActive == true) return
         gnssFixJob = viewModelScope.launch {
-            gnssController.fixes.collect { fix ->
-                _gnssState.update {
-                    it.copy(
-                        latitude = fix.position.lat,
-                        longitude = fix.position.lon,
-                        altitude = fix.altitudeWgs84M,
-                        speedMs = fix.speedMps?.toFloat(),
-                        bearing = fix.courseDeg?.toFloat(),
-                        accuracy = fix.sigma.horizontalM?.toFloat(),
-                        satellites = fix.satellites,
-                        lastFixTimeMs = System.currentTimeMillis(),
-                        fixSource = fix.source.name.lowercase(),
-                        setSource = gnssController.sourceType.value.name.lowercase(),
-                    )
+            supervisorScope {
+                launch {
+                    gnssController.fixes.collect { fix ->
+                        _gnssState.update {
+                            it.copy(
+                                latitude = fix.position.lat,
+                                longitude = fix.position.lon,
+                                altitudeWgs84 = fix.altitudeWgs84M,
+                                altitudeMsl = fix.altitudeMslM,
+                                speedMs = fix.speedMps?.toFloat(),
+                                bearing = fix.courseDeg?.toFloat(),
+                                accuracy = fix.sigma.horizontalM?.toFloat(),
+                                satellites = fix.satellites,
+                                lastFixTimeMs = System.currentTimeMillis(),
+                                ttffSeconds = fix.ttffSeconds ?: it.ttffSeconds,
+                                fixSource = fix.source.name.lowercase(),
+                                setSource = gnssController.sourceType.value.name.lowercase(),
+                            )
+                        }
+                    }
+                }
+                // Reactive session: acquire at the user's chosen hardware
+                // interval, re-acquire on change. See the KDoc on startGnss
+                // for why hardwareIntervalMs (not effective) is the right
+                // key and why TrackConfigPrefs (not TrackPrefs) is the
+                // source.
+                launch {
+                    trackConfigPrefs.observe()
+                        .map { it.hardwareIntervalMs }
+                        .distinctUntilChanged()
+                        .collectLatest { intervalMs ->
+                            val session = gnssController.acquire(intervalMs)
+                            try {
+                                awaitCancellation()
+                            } finally {
+                                session.close()
+                            }
+                        }
                 }
             }
         }
@@ -208,7 +282,6 @@ class DashboardViewModel @Inject constructor(
 
     fun stopGnss() {
         gnssFixJob?.cancel(); gnssFixJob = null
-        gnssSession?.close(); gnssSession = null
     }
 
     // ---- Raw sensors ----
@@ -302,8 +375,8 @@ class DashboardViewModel @Inject constructor(
         // that a stationary user does not pay for a fresh spherical-harmonic
         // expansion on every accelerometer tick.
         //
-        // `_gnssState.altitude` is GNSS WGS84 altitude — metres above the
-        // WGS84 ellipsoid (the middleware's `altitudeWgs84M`). WMM is
+        // `_gnssState.altitudeWgs84` is GNSS WGS84 altitude — metres above
+        // the WGS84 ellipsoid (the middleware's `altitudeWgs84M`). WMM is
         // referenced to the same ellipsoid, so no geoid adjustment is
         // needed here. This is the OPPOSITE convention from the KF, whose
         // state is MSL (the middleware's `altitudeMslM`) because
@@ -312,7 +385,7 @@ class DashboardViewModel @Inject constructor(
         // ellipsoidal, and both are correct as written.
         val lat = _gnssState.value.latitude
         val lon = _gnssState.value.longitude
-        val alt = _gnssState.value.altitude ?: 0.0
+        val alt = _gnssState.value.altitudeWgs84 ?: 0.0
         val declination: Float? = if (lat != null && lon != null) {
             declinationAt(lat, lon, alt)
         } else null

@@ -108,12 +108,14 @@ fun GnssContent(vm: DashboardViewModel) {
     val gnss by vm.gnssState.collectAsStateWithLifecycle()
     val format by vm.coordFormat.collectAsStateWithLifecycle()
 
-    // No lifecycle effect here: GNSS registration is hoisted to
-    // SensorsScreen's DisposableEffect so the listener feeds every tab
-    // (needed by the Raw tab's declination) and survives screen-off.
-    // The LaunchedEffect inside RequireAccess is the retry after an
-    // app-internal permission grant — startGnss() is idempotent, so the
-    // already-running case is a no-op.
+    // No lifecycle effect here. GNSS registration is owned by
+    // SensorsScreen's LifecycleResumeEffect(Unit) so the session feeds
+    // every tab (Raw's declination needs a position, GNSS needs the
+    // skyplot). The session stops on pause by design — see SensorsScreen
+    // for why "app is showing" is the correct gate. The LaunchedEffect
+    // inside RequireAccess is the retry after an app-internal permission
+    // grant; startGnss() is idempotent, so the already-running case is a
+    // no-op.
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -180,19 +182,39 @@ private fun GnssCard(
                 lon = state.longitude,
                 format = format,
                 onFormatChange = onFormatChange,
+                lastFixTimeMs = state.lastFixTimeMs,
+                horizontalSigmaM = state.accuracy?.toDouble(),
             )
 
             HorizontalDivider()
 
+            PositionReadings(
+                wgs84M = state.altitudeWgs84,
+                // GnssUiState carries `accuracy` (horizontal sigma from
+                // fix.sigma) but not vertical sigma. The fix's
+                // sigma.verticalM is available in the middleware; adding
+                // it to GnssUiState would populate this tail. Until that
+                // plumbing exists, the tail renders "--" not because the
+                // fix lacks a value, but because the ViewModel doesn't
+                // expose it.
+                wgs84SigmaM = null,
+                mslM = state.altitudeMsl,
+                speedMps = state.speedMs?.toDouble(),
+                headingDeg = state.bearing?.toDouble(),
+            )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                GnssDataCell("Elevation", state.altitude?.let { "%.0f m".format(it) } ?: "--")
-                GnssDataCell("Bearing",   state.bearing?.let { "${it.toInt()}°" } ?: "--")
-                GnssDataCell("Speed",     state.speedMs?.let { "%.1f km/h".format(it * 3.6) } ?: "--")
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                GnssDataCell("Error",      state.accuracy?.let { "%.0f m".format(it) } ?: "--")
-                GnssDataCell("Satellites", if (totalSats == 0) "--" else "$usedSats/$totalSats")
-                GnssDataCell("TTFF",       state.ttffSeconds?.let { "${it}s" } ?: "--")
+                Text(
+                    "Satellites " + if (totalSats == 0) "--" else "$usedSats/$totalSats",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (state.ttffSeconds != null) {
+                    Text(
+                        "TTFF ${state.ttffSeconds}s",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             Text(
                 "Last fix: " + (state.lastFixTimeMs?.let { formatDateTime(it, "yyyy-MM-dd HH:mm:ss") } ?: "--"),
@@ -278,14 +300,6 @@ private fun SatelliteTable(satellites: List<SatelliteObservation>) {
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun GnssDataCell(label: String, value: String) {
-    Column {
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(value, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
     }
 }
 
