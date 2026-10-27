@@ -64,6 +64,10 @@ class RenderPrefs @Inject constructor(
     companion object {
         const val TILE_MODE_LOCAL = "local"
         const val TILE_MODE_NETWORK = "network"
+
+        /** Suggested network tile template (Bing aerial, quadkey form). */
+        const val DEFAULT_NETWORK_TILE_URL =
+            "https://ecn.t0.tiles.virtualearth.net/tiles/a{q}.jpeg?g=14226"
     }
 
     private object Keys {

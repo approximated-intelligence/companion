@@ -145,7 +145,10 @@ private fun TileSourceSection(
         singleLine    = true,
         modifier      = Modifier.fillMaxWidth(),
         supportingText = {
-            Text("Use {z}/{x}/{y} for XYZ or {q} for quadkey.")
+            Text(
+                "Use {z}/{x}/{y} for XYZ (e.g. https://tile.example.com/{z}/{x}/{y}.png) " +
+                    "or {q} for quadkey."
+            )
         },
     )
 
