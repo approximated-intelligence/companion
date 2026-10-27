@@ -23,10 +23,39 @@ data class RestoreFileVersion(
     val endPart: Int,
     val numParts: Int,
     val selected: Boolean,
+    /** How this version compares to the current local file (default UNVERIFIED until annotated). */
+    val localMatch: LocalMatch = LocalMatch.UNVERIFIED,
 )
 
 /** Tri-state for folder checkboxes. */
 enum class SelectionState { NONE, SOME, ALL }
+
+/**
+ * How a backed-up version compares to the current local file at the same path.
+ * Populated by RestoreViewModel's scan from the FileHasher cache, hashing on
+ * miss.
+ *
+ * MISSING    — no file at this path on the device.
+ * UNVERIFIED — present, but sha256 could not be determined (walk failure,
+ *              unreadable file, or ungranted root).
+ * MATCHES    — sha256 == this version's sha256.
+ * DIFFERS    — sha256 != this version's sha256.
+ */
+enum class LocalMatch {
+    MISSING, UNVERIFIED, MATCHES, DIFFERS
+}
+
+/**
+ * Per-file aggregate of [LocalMatch] across versions.
+ *
+ * MISSING    — every version reports MISSING (no local file).
+ * UNVERIFIED — any version is UNVERIFIED (could not be compared).
+ * CURRENT    — the newest version matches the local file.
+ * CHANGED    — local file is present but differs from the newest version.
+ */
+enum class FileLocalStatus {
+    MISSING, UNVERIFIED, CURRENT, CHANGED
+}
 
 /**
  * A node in the restore file tree. Either a folder or a leaf file (which may
@@ -49,7 +78,24 @@ sealed class TreeNode {
         val versions: List<RestoreFileVersion>,
         val versionsExpanded: Boolean = false,
         override val selectionState: SelectionState,
-    ) : TreeNode()
+    ) : TreeNode() {
+
+        /**
+         * Aggregate local status across versions. Newest-first list drives
+         * CURRENT vs CHANGED: a match on the newest version means nothing
+         * needs restoring.
+         */
+        val localStatus: FileLocalStatus
+            get() {
+                if (versions.isEmpty()) return FileLocalStatus.UNVERIFIED
+                if (versions.all { it.localMatch == LocalMatch.MISSING }) return FileLocalStatus.MISSING
+                if (versions.any { it.localMatch == LocalMatch.UNVERIFIED }) return FileLocalStatus.UNVERIFIED
+                return when (versions.first().localMatch) {
+                    LocalMatch.MATCHES -> FileLocalStatus.CURRENT
+                    else -> FileLocalStatus.CHANGED
+                }
+            }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -261,6 +307,52 @@ private fun TreeNode.Folder.transformFiles(
         }
     }
     return copy(children = newChildren)
+}
+
+// ---------------------------------------------------------------------------
+// Local-state annotation helpers (used by RestoreViewModel)
+// ---------------------------------------------------------------------------
+
+/** Annotate every version's localMatch via [annotate]. */
+fun TreeNode.Folder.annotateLocalMatches(
+    annotate: (RestoreFileVersion) -> LocalMatch,
+): TreeNode.Folder = mapVersions { v -> v.copy(localMatch = annotate(v)) }
+
+/**
+ * Keep only files that are not CURRENT, and folders that contain at least
+ * one such file. Used when "only missing or changed" is on.
+ */
+fun TreeNode.Folder.filterRestorable(): TreeNode.Folder {
+    val kept = children.mapNotNull { child ->
+        when (child) {
+            is TreeNode.Folder -> child.filterRestorable().takeIf { it.children.isNotEmpty() }
+            is TreeNode.File -> child.takeIf { it.localStatus != FileLocalStatus.CURRENT }
+        }
+    }
+    return copy(children = kept)
+}
+
+/**
+ * Set [selected] on every version matching [selector]. Used to constrain
+ * "select all" / "deselect all" / folder toggles to the filtered subset.
+ */
+fun TreeNode.Folder.setSelectedWhere(
+    selector: (RestoreFileVersion) -> Boolean,
+    selected: Boolean,
+): TreeNode.Folder = mapVersions { v -> if (selector(v)) v.copy(selected = selected) else v }
+    .recomputeSelection()
+
+/** Keys (path, sha256) of every version in this subtree. */
+fun TreeNode.Folder.collectVersionKeys(): Set<Pair<String, String>> {
+    val out = mutableSetOf<Pair<String, String>>()
+    fun visit(n: TreeNode) {
+        when (n) {
+            is TreeNode.Folder -> n.children.forEach(::visit)
+            is TreeNode.File -> n.versions.forEach { out += it.path to it.sha256 }
+        }
+    }
+    children.forEach(::visit)
+    return out
 }
 
 // ---------------------------------------------------------------------------
