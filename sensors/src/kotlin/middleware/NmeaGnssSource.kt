@@ -149,6 +149,22 @@ class NmeaGnssSource @Inject constructor(
         // [LocationGnssSource.updateInterval]'s pattern.
         val lm = ctx.getSystemService(LocationManager::class.java) ?: return
         val l = warmupListener ?: return
+
+        // warmUpEngine() checked the grant when it registered, but the user
+        // can revoke location while a session is running. Failing the check
+        // must not leave the source looking healthy: the warm-up listener
+        // stays registered against a permission we no longer hold, the
+        // engine stops producing NMEA, and the only symptom is a fix stream
+        // that quietly goes stale. Surface it the way start() and
+        // warmUpEngine() already do — GnssController re-exposes this state
+        // flow — and drop the registration we can no longer use.
+        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED) {
+            coolDownEngine()
+            _state.value = GnssSourceState.Error("Location permission required")
+            return
+        }
+
         try {
             lm.requestLocationUpdates(
                 LocationManager.GPS_PROVIDER,
@@ -156,6 +172,10 @@ class NmeaGnssSource @Inject constructor(
                 0f,
                 l,
             )
+        } catch (e: SecurityException) {
+            // TOCTOU: revoked between the check above and the call.
+            coolDownEngine()
+            _state.value = GnssSourceState.Error("Location permission required")
         } catch (e: Exception) {
             Log.w(TAG, "Warm-up interval update failed", e)
         }
