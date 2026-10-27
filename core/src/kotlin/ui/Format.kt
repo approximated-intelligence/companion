@@ -53,3 +53,18 @@ fun cardinal(deg: Float): String {
     val n = ((deg % 360f) + 360f) % 360f
     return CARDINALS_8[((n + 22.5f) / 45f).toInt() % 8]
 }
+
+/**
+ * Short "how long ago" label — "just now", "3s ago", "5m ago", "2h ago",
+ * "3d ago". Cutoffs chosen so each unit is the natural reading until it
+ * gets unwieldy: seconds until 60, minutes until 60, hours until 24, days
+ * beyond. Sub-second deltas collapse to "just now" so a fresh fix does
+ * not flicker through "0s ago".
+ */
+fun formatAgeShort(ageMs: Long): String = when {
+    ageMs < 1_000L      -> "just now"
+    ageMs < 60_000L     -> "${ageMs / 1_000L}s ago"
+    ageMs < 3_600_000L  -> "${ageMs / 60_000L}m ago"
+    ageMs < 86_400_000L -> "${ageMs / 3_600_000L}h ago"
+    else                -> "${ageMs / 86_400_000L}d ago"
+}
