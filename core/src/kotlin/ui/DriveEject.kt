@@ -91,7 +91,7 @@ fun DriveEjectButton(
                 }) { Text("Open Settings") }
             },
             dismissButton = {
-                TextButton(onClick = { open = false }) { Text("Done") }
+                TextButton(onClick = { open = false }) { Text("Cancel") }
             },
         )
     }
