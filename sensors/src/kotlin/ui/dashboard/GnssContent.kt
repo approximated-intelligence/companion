@@ -184,6 +184,7 @@ private fun GnssCard(
                 onFormatChange = onFormatChange,
                 lastFixTimeMs = state.lastFixTimeMs,
                 horizontalSigmaM = state.accuracy?.toDouble(),
+                acquiring = state.lastFixTimeMs == null,
             )
 
             HorizontalDivider()

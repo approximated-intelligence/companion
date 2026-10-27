@@ -334,6 +334,7 @@ private fun CurrentPositionCard(
                 modifier = Modifier.fillMaxWidth(),
                 lastFixTimeMs = parsed.timestamp?.toInstant()?.toEpochMilli(),
                 horizontalSigmaM = sigma.horizontalM,
+                acquiring = pos == null,
             )
 
             HeightRow(

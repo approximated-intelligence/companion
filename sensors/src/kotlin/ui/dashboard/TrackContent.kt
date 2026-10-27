@@ -944,6 +944,7 @@ private fun LiveCard(
                 contentColor = contentColor,
                 lastFixTimeMs = lastProvidedFix?.time,
                 horizontalSigmaM = lastProvidedFix?.accuracyM?.toDouble(),
+                acquiring = lastProvidedFix == null,
             )
 
             // Distance only when there is one (recording or paused); during

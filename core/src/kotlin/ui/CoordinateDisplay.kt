@@ -95,6 +95,13 @@ fun CoordinateDisplay(
     contentColor: Color = MaterialTheme.colorScheme.onSurface,
     lastFixTimeMs: Long? = null,
     horizontalSigmaM: Double? = null,
+    /**
+     * True while the caller has an active session but no fix has arrived
+     * yet. Distinguishes "waiting for TTFF" from "nothing to show" — the
+     * widget renders "Acquiring GPS…" instead of "--". Ignored once [lat]
+     * and [lon] are non-null.
+     */
+    acquiring: Boolean = false,
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboard.current
@@ -103,16 +110,16 @@ fun CoordinateDisplay(
 
     val hasFix = lat != null && lon != null && lat.isFinite() && lon.isFinite()
 
-    val text: String = if (hasFix) {
-        when (format) {
+    val text: String = when {
+        hasFix -> when (format) {
             CoordFormat.DD        -> formatDd(lat, lon)
             CoordFormat.DDM       -> formatDdm(lat, lon)
             CoordFormat.DMS       -> formatDms(lat, lon)
             CoordFormat.UTM       -> formatUtm(lat, lon) ?: "Out of UTM range (±80°/84°)"
             CoordFormat.PLUS_CODE -> formatPlusCode(lat, lon)
         }
-    } else {
-        "--"
+        acquiring -> "Acquiring GPS…"
+        else -> "--"
     }
 
     LaunchedEffect(copied) {
