@@ -45,7 +45,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import de.perigon.companion.core.ui.KeepScreenOn
 import de.perigon.companion.core.ui.ToggleRow
 import de.perigon.companion.core.ui.access.RequireAccess
 import de.perigon.companion.sensors.SensorsRequirements
@@ -100,17 +99,15 @@ fun KfContent(vm: KfViewModel) {
     // LifecycleResumeEffect: the sandbox runs only while this tab is the
     // visibly-selected content. ON_PAUSE fires on tab switch, app
     // backgrounding, and manual screen-off, so the filter stops in all
-    // three cases — the strictest reading of "only while the tab is
-    // shown". KeepScreenOn below prevents idle screen timeout from firing
-    // ON_PAUSE and stopping the filter mid-convergence.
+    // three cases.
     //
-    // A previous version kept the filter running with the screen off via
-    // KfSandboxService (a foreground service). That service is deleted:
-    // the sandbox is a diagnostic, not a recorder. Leave it on the tab and
-    // the screen stays lit; turn the screen off and the filter stops — the
-    // alternative (run overnight in the background) was a feature the
-    // user did not ask for and had no visible cost until the battery died.
-    KeepScreenOn()
+    // Screen-on is governed by the Sensors screen's shared toggle
+    // ("Keep screen on while viewing"), which applies to every tab
+    // uniformly. The KfSandboxService foreground-service version was
+    // deleted for the same reason — background operation was never the
+    // point of the sandbox. It was a feature the user did not ask for,
+    // and its cost (running the filter overnight) was invisible until
+    // the battery died.
     LifecycleResumeEffect(Unit) {
         vm.start()
         onPauseOrDispose { vm.stop() }
