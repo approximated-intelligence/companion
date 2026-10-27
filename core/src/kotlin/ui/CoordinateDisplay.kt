@@ -21,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -137,7 +138,10 @@ fun CoordinateDisplay(
     //      restarts the ticker per fix, so nowMs is refreshed in step with
     //      the value it is subtracted from. The 10 s delay handles the
     //      no-fix-arriving case at formatAgeShort's native resolution.
-    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    // Long, not the boxed mutableStateOf: this ticks every 10 s for as long
+    // as a fix is displayed, and each tick would otherwise allocate a
+    // java.lang.Long for the snapshot system to write.
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     if (lastFixTimeMs != null) {
         LaunchedEffect(lastFixTimeMs) {
             while (true) {
