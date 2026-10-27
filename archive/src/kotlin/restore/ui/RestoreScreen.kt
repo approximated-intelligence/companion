@@ -12,6 +12,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -133,40 +135,76 @@ private fun RestoreMainContent(
         }
 
         if (state.hasFiles) {
+            val filterActive = state.onlyRestorable && state.localScanState == LocalScanState.DONE
+            val scanning     = state.onlyRestorable && state.localScanState == LocalScanState.SCANNING
             // Memoized on the tree reference: without this, ANY unrelated state
             // change (e.g. per-tick isRunning/fileIndex/currentFile updates while
             // a restore is in progress) re-walked the whole tree on every
             // recomposition even though selection was unchanged and locked.
-            val selectedCount = remember(state.tree) { state.tree.selectedCount() }
+            val visibleTree = remember(state.tree, filterActive) {
+                if (filterActive) state.tree.filterRestorable() else state.tree
+            }
+            val selectedCount = remember(visibleTree) { visibleTree.selectedCount() }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically) {
                 Text("$selectedCount selected", style = MaterialTheme.typography.titleSmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = vm::selectAll)   { Text("All") }
-                    TextButton(onClick = vm::deselectAll) { Text("None") }
+                    TextButton(onClick = vm::selectAll, enabled = !scanning)   { Text("All") }
+                    TextButton(onClick = vm::deselectAll, enabled = !scanning) { Text("None") }
                 }
             }
+            FilterChip(
+                selected = state.onlyRestorable,
+                onClick = { vm.setOnlyRestorable(!state.onlyRestorable) },
+                label = { Text("Only missing or changed") },
+            )
 
-            LazyColumn(modifier = Modifier.weight(1f)) {
-                state.tree.children.forEach { node ->
-                    renderTreeNode(
-                        node = node, pathPrefix = "", depth = 0,
-                        onToggleFolder = vm::toggleFolder,
-                        onToggleFolderExpanded = vm::toggleFolderExpanded,
-                        onToggleVersion = vm::toggleVersion,
-                        onToggleVersionsExpanded = vm::toggleVersionsExpanded,
+            if (scanning) {
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Text(
+                        "Scanning local files…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-            }
+            } else {
+                if (visibleTree.children.isEmpty()) {
+                    Text(
+                        if (filterActive)
+                            "All backed-up files match the local copies — nothing to restore."
+                        else
+                            "No files in this backup.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
 
-            Button(
-                onClick = vm::restoreSelected,
-                modifier = Modifier.fillMaxWidth(),
-                enabled = selectedCount > 0 && !state.isRunning,
-            ) {
-                Icon(Icons.Default.Restore, null, Modifier.size(18.dp))
-                Spacer(Modifier.width(8.dp))
-                Text("Restore $selectedCount file(s)")
+                LazyColumn(modifier = Modifier.weight(1f)) {
+                    visibleTree.children.forEach { node ->
+                        renderTreeNode(
+                            node = node, pathPrefix = "", depth = 0,
+                            onToggleFolder = vm::toggleFolder,
+                            onToggleFolderExpanded = vm::toggleFolderExpanded,
+                            onToggleVersion = vm::toggleVersion,
+                            onToggleVersionsExpanded = vm::toggleVersionsExpanded,
+                        )
+                    }
+                }
+
+                Button(
+                    onClick = vm::restoreSelected,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = selectedCount > 0 && !state.isRunning,
+                ) {
+                    Icon(Icons.Default.Restore, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Restore $selectedCount file(s)")
+                }
             }
         }
 
@@ -290,9 +328,13 @@ private fun FileRow(version: RestoreFileVersion, depth: Int, onToggle: () -> Uni
         Column(Modifier.weight(1f)) {
             Text(version.path.substringAfterLast('/'), style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("${formatBytes(version.size)} — ${formatDateTime(version.mtime, "MMM d, yyyy HH:mm")} — Pack ${version.startPack}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("${formatBytes(version.size)} — ${formatDateTime(version.mtime, "MMM d, yyyy HH:mm")} — Pack ${version.startPack}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                LocalMatchBadge(version.localMatch)
+            }
         }
     }
 }
@@ -312,8 +354,12 @@ private fun MultiVersionFileRow(node: TreeNode.File, depth: Int, onToggleExpande
         Column(Modifier.weight(1f)) {
             Text(node.name, style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("${node.versions.size} versions", style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("${node.versions.size} versions", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                FileLocalStatusBadge(node.localStatus)
+            }
         }
         Icon(if (node.versionsExpanded) Icons.Default.ExpandMore else Icons.Default.ChevronRight,
             null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -333,9 +379,13 @@ private fun VersionRow(version: RestoreFileVersion, depth: Int, onToggle: () -> 
         Spacer(Modifier.width(6.dp))
         Column(Modifier.weight(1f)) {
             Text(formatDateTime(version.mtime, "MMM d, yyyy HH:mm"), style = MaterialTheme.typography.bodyMedium)
-            Text("${formatBytes(version.size)} — Pack ${version.startPack}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("${formatBytes(version.size)} — Pack ${version.startPack}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                LocalMatchBadge(version.localMatch)
+            }
         }
     }
 }
@@ -353,3 +403,42 @@ private fun restoreStateLabel(state: String) = when (state) {
     RestoreNotifier.STATE_DONE       -> "Complete"
     else                             -> state
 }
+
+/**
+ * FileLocalStatus and LocalMatch render identically but are different
+ * types: FileLocalStatus is the per-file aggregate (newest version matches
+ * → CURRENT), LocalMatch is per-version. Filter operations use
+ * FileLocalStatus; only the badge collapses the two for display.
+ */
+private fun FileLocalStatus.toLocalMatch(): LocalMatch = when (this) {
+    FileLocalStatus.MISSING    -> LocalMatch.MISSING
+    FileLocalStatus.UNVERIFIED -> LocalMatch.UNVERIFIED
+    FileLocalStatus.CURRENT    -> LocalMatch.MATCHES
+    FileLocalStatus.CHANGED    -> LocalMatch.DIFFERS
+}
+
+/**
+ * One glyph per status: text labels overflowed the right-hand column, but a
+ * single character fits even under the file name's ellipsis budget. Colour
+ * is the primary signal; [semantics.contentDescription] carries the word for
+ * TalkBack (missing / changed / unverified / current).
+ */
+@Composable
+private fun LocalMatchBadge(match: LocalMatch) {
+    val (glyph, label, color) = when (match) {
+        LocalMatch.MISSING    -> Triple("✗", "missing",    MaterialTheme.colorScheme.error)
+        LocalMatch.DIFFERS    -> Triple("~", "changed",    MaterialTheme.colorScheme.tertiary)
+        LocalMatch.UNVERIFIED -> Triple("?", "unverified", MaterialTheme.colorScheme.outline)
+        LocalMatch.MATCHES    -> Triple("✓", "current",    MaterialTheme.colorScheme.primary)
+    }
+    Text(
+        glyph,
+        style = MaterialTheme.typography.bodyMedium,
+        color = color,
+        modifier = Modifier.semantics { contentDescription = label },
+    )
+}
+
+@Composable
+private fun FileLocalStatusBadge(status: FileLocalStatus) =
+    LocalMatchBadge(status.toLocalMatch())
