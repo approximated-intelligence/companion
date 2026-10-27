@@ -348,6 +348,14 @@ class RestoreViewModel @Inject constructor(
      * restore completed, another app edited a file, new photos arrived) and
      * stale annotations are exactly what the user notices first. Off is
      * instant and leaves annotations in place.
+     *
+     * Off does NOT cancel an in-flight scan. The scan's hash work is what
+     * warms the cache for the next toggle-on, and hashAllOrCached upserts
+     * only at the very end of its batch — cancelling mid-scan would
+     * discard every digest computed so far, making a rapid off-then-on
+     * re-hash from scratch. Letting the scan finish turns the next
+     * toggle-on into a cache-hit pass. The filter is off while it runs,
+     * so the annotations it produces are inert until the user toggles on.
      */
     fun setOnlyRestorable(enabled: Boolean) {
         if (!enabled) {
