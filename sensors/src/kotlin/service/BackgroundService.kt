@@ -192,6 +192,26 @@ class BackgroundService : Service() {
         private const val SESSION_WAKELOCK_LEASE_MS = 60 * 60 * 1000L
         private const val SESSION_WAKELOCK_RENEW_MS = SESSION_WAKELOCK_LEASE_MS / 2
         private const val BARO_STATUS_INTERVAL_MS = 1_000L
+
+        /**
+         * How old a stream fix may be and still count as "the position at
+         * this edge" without asking the source for a fresh one.
+         * Cadence-independent on purpose: at a 60 s hardware rate, a 60 s-
+         * old fix is one full interval old and does not reflect where the
+         * user is now — an edge point exists to capture the moment of the
+         * user's action, not the moment of the last scheduled measurement.
+         */
+        private const val EDGE_FIX_MAX_AGE_MS = 5_000L
+
+        /**
+         * Bound on the fresh-fix wait at a lifecycle edge. A warm engine
+         * returns in 1-3 s; cold would need TTFF and the caller must not
+         * stall the UI for that long. On timeout the edge proceeds without
+         * a forced point; the next stream fix becomes the recording's
+         * first (or next) point, and is current by construction.
+         */
+        private const val EDGE_FIX_TIMEOUT_MS = 5_000L
+
         private const val GPS_VERTICAL_FALLBACK_FACTOR = 3f
         private const val GPS_VERTICAL_DEFAULT_M = 15f
         private const val MIN_SPEED_FOR_SLOPE_MPS = 0.5f
@@ -728,31 +748,35 @@ class BackgroundService : Service() {
     // ===== Event-time point capture =====
 
     /**
-     * Get a point to force into the buffer at a lifecycle edge. Returns
-     * lastProvidedFix if it's fresh enough; otherwise requests a single
-     * GPS fix with a short timeout. Returns null if neither works — the
-     * edge then has no recorded point, which is the honest outcome when
-     * no fix is available.
+     * Capture the position at the moment of a lifecycle edge (start,
+     * pause, resume, stop, new segment).
      *
-     * The staleness threshold is hardware interval + 30 s (floor 60 s).
-     * With KF on, hardware is clamped to 1 s, so lastProvidedFix is
-     * always fresh — no request needed. With KF off at 5 min hardware,
-     * lastProvidedFix can be up to 5 min old; that's the same fix
-     * already in the buffer, so adding it again would be rejected by
-     * addForced's timestamp check. Requesting a fresh fix is the only
-     * way to have a point at the pause moment in that case.
+     * A stream fix counts if it is within [EDGE_FIX_MAX_AGE_MS]. Otherwise
+     * call [GnssController.requestSingleFix], which asks the platform for
+     * the present position via getCurrentLocation; android.location
+     * guarantees it will not return a fix that is minutes old. On timeout
+     * the edge proceeds without a forced point; the next stream fix
+     * becomes the recording's first (or next) point and is current by
+     * construction.
+     *
+     * The previous threshold — `maxOf(effectiveHardwareIntervalMs, 60 s)
+     * + 30 s` — allowed a 90 s-old (or, at a 1 h cadence, an hour-old)
+     * stream fix to be recorded as the position at Start/Pause/Stop. That
+     * is not where the user was when they pressed the button; it is where
+     * they were up to two intervals ago. Every edge point is a claim
+     * about position at a specific time, and only a cadence-independent
+     * age bound makes that claim true.
      */
-    private suspend fun captureEdgePoint(timeoutMs: Long = 3_000L): TrackPointEntity? {
+    private suspend fun captureEdgePoint(timeoutMs: Long = EDGE_FIX_TIMEOUT_MS): TrackPointEntity? {
         val last = _status.value.lastProvidedFix
         val lastAccepted = _status.value.lastAcceptedFix
-        val maxAgeMs = maxOf(config.effectiveHardwareIntervalMs, 60_000L) + 30_000L
-        val isFresh = last != null && System.currentTimeMillis() - last.time <= maxAgeMs
-        // addForced rejects a fix whose timestamp is at or before the
-        // last accepted one. When lastProvidedFix IS the fix already
-        // buffered (the common case at 5-min hardware — nothing newer
-        // has arrived), returning it here is guaranteed rejection:
-        // every event after the first silently no-ops. A fresh fix must
-        // be requested.
+        val age = last?.let { System.currentTimeMillis() - it.time } ?: Long.MAX_VALUE
+        val isFresh = age <= EDGE_FIX_MAX_AGE_MS
+        // addForced rejects a fix whose timestamp is at or before the last
+        // accepted one. Returning a fix that is already buffered would be
+        // silently dropped, so ask for a fresh one even if the age check
+        // passed — the point must advance past lastAcceptedMs to be
+        // recorded.
         val isAlreadyBuffered = last != null && lastAccepted != null &&
                                 last.time <= lastAccepted.time
         if (isFresh && !isAlreadyBuffered) return last
@@ -804,8 +828,49 @@ class BackgroundService : Service() {
             applyBarometric()
             applyWakeLock()
             applyEphemeris()
+
+            // Acquire FIRST. This is what calls GnssController.acquire →
+            // source.restartWarmUp() → applyInterval(FIRST_CYCLE_INTERVAL_MS),
+            // dropping the engine to 1 Hz. requestSingleFix below must be
+            // sequenced AFTER this, or the engine is still at whatever rate
+            // the dashboard session set it to (60 s in practice) when the
+            // fresh-fix request fires:
+            //
+            //   - NMEA requestSingleFix is a passive collector on
+            //     cycleTracker.cycleSnapshots. Cycles only complete at the
+            //     engine's current cadence; with the engine at 60 s, the
+            //     next cycle is up to 60 s away and the 5 s timeout returns
+            //     null.
+            //
+            // After acquire, the engine is at 1 Hz, so the NMEA collector
+            // receives its first cycle in ~1 s. For Location the reorder is
+            // neutral: getCurrentLocation returns whatever the platform has,
+            // cached or fresh, independent of the registration rate; that
+            // fix shows its true age and is replaced by a fresh stream fix
+            // within a few seconds.
             beginFixCycle()
             observeConfigChanges()
+
+            // Now request a fresh fix as a parallel accelerator. On a warm
+            // engine this returns in 1–3 s; on a cold engine it shares TTFF
+            // with the stream. Either way, it is no longer blocked on a 60 s
+            // cadence that restartWarmUp already dropped.
+            //
+            // previewing is re-checked after the await: a fast tab switch
+            // could tear the preview down before the fix lands, and writing
+            // a fix into _status after stopPreview would race the
+            // preservation logic.
+            val fresh = withTimeoutOrNull(EDGE_FIX_TIMEOUT_MS) {
+                gnssController.requestSingleFix(EDGE_FIX_TIMEOUT_MS)?.let { convertFix(it) }
+            }
+            if (fresh != null && previewing) {
+                _status.update {
+                    it.copy(
+                        lastProvidedFix = fresh,
+                        lastHeadingDegrees = fresh.bearing ?: it.lastHeadingDegrees,
+                    )
+                }
+            }
         }
     }
 
@@ -1536,7 +1601,44 @@ class BackgroundService : Service() {
         buffer = null
         appScope.launch { withTimeoutOrNull(2000) { capturedBuffer?.flushRemaining() } }
         scope.launch { delay(2100); scope.cancel() }
-        _status.value = RecordingStatus()
+        // Clear session and sensor state, but preserve the last-fix cache
+        // the same way stopPreview() does. Without this, Track → GNSS →
+        // Track shows "--" on the return leg even though the GNSS tab still
+        // has the fix: DashboardViewModel._gnssState survives the tab switch
+        // because the SensorsScreen ViewModel outlives the tab, but _status
+        // did not, so the Track card lost its last fix on every switch.
+        // Preserving it here is what makes the card's continuity
+        // independent of which tab the user visited first.
+        //
+        // The KF-derived fields are cleared because teardownGps() above
+        // stopped the filter and the baro listener; stale values would
+        // misrepresent a live state the pipeline no longer has. The
+        // last*Fix fields and lastHeadingDegrees are display cache and
+        // survive — CoordinateDisplay renders them with their true age via
+        // formatAgeShort, so a stale fix reads as "2m ago", not as live.
+        _status.update {
+            it.copy(
+                isRecording = false,
+                previewActive = false,
+                pendingPoints = 0,
+                liveDistanceM = null,
+                currentBaroAltitudeM = null,
+                currentPressureHpa = null,
+                kalmanAltitudeM = null,
+                currentQnhHpa = null,
+                verticalSpeedMps = null,
+                slopePercent = null,
+                kalmanBiasM = null,
+                kalmanBiasRateMps = null,
+                kalmanAltitudeSigmaM = null,
+                kalmanBiasSigmaM = null,
+                lastGpsInnovationM = null,
+                lastBaroInnovationM = null,
+                airconCusumPos = null,
+                airconCusumNeg = null,
+                airconDetected = false,
+            )
+        }
         super.onDestroy()
     }
 

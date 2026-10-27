@@ -84,6 +84,17 @@ class GnssController @Inject constructor(
         val id = synchronized(lock) {
             val id = nextId.incrementAndGet()
             sessions[id] = intervalMs
+            // A new session means a UI surface just opened that displays
+            // position. Force warm-up on the already-running source so the
+            // fresh session's first fix arrives at TTFF, not one slow
+            // interval later. Without this, returning to the Track tab
+            // while the dashboard's session keeps the source alive at
+            // hardwareIntervalMs leaves the card waiting a full interval
+            // for its first fresh fix — see GnssSource.restartWarmUp.
+            // No-op during an active warm-up and null-safe on the first
+            // acquire, where rebindLocked() below calls start() which
+            // handles warm-up itself.
+            activeSource?.restartWarmUp()
             rebindLocked()
             id
         }

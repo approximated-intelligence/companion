@@ -93,7 +93,17 @@ class NmeaGnssSource @Inject constructor(
     private var warmupListener: LocationListener? = null
     private var fixJob: Job? = null
 
-    private var currentIntervalMs: Long = 1_000L
+    // Two-rate state machine: the warm-up LocationListener runs at
+    // FIRST_CYCLE_INTERVAL_MS until the first cycle snapshot is emitted,
+    // then at targetIntervalMs (the user's request). Also the interval
+    // [tryEmit] uses for its throttle, so the first cycle is never
+    // throttled and later cycles obey the user's rate.
+    private var currentIntervalMs: Long = GnssSource.FIRST_CYCLE_INTERVAL_MS
+    private var targetIntervalMs: Long = GnssSource.FIRST_CYCLE_INTERVAL_MS
+
+    /** True once a cycle snapshot has been emitted; see [applyInterval]. */
+    private var firstFixDelivered: Boolean = false
+
     private var sessionStartMs: Long = 0L
     private var sessionTtffSeconds: Int? = null
 
@@ -118,7 +128,9 @@ class NmeaGnssSource @Inject constructor(
             return
         }
 
-        currentIntervalMs = intervalMs
+        targetIntervalMs = intervalMs
+        currentIntervalMs = GnssSource.FIRST_CYCLE_INTERVAL_MS
+        firstFixDelivered = false
         lastEmittedUtcSecond = null
         sessionStartMs = SystemClock.elapsedRealtime()
         sessionTtffSeconds = null
@@ -140,39 +152,41 @@ class NmeaGnssSource @Inject constructor(
     }
 
     override fun updateInterval(intervalMs: Long) {
-        if (intervalMs == currentIntervalMs) return
-        currentIntervalMs = intervalMs
-        // Re-register so the platform sees the new minTime. On chipsets
-        // that honour it, the engine slows to the caller's rate; on
-        // chipsets that produce at native rate, this is a no-op and
-        // [tryEmit]'s throttle remains the bound on emission. Matches
-        // [LocationGnssSource.updateInterval]'s pattern.
-        val lm = ctx.getSystemService(LocationManager::class.java) ?: return
-        val l = warmupListener ?: return
+        if (intervalMs == targetIntervalMs) return
+        targetIntervalMs = intervalMs
+        if (!firstFixDelivered) return
+        applyInterval(intervalMs)
+    }
 
-        // warmUpEngine() checked the grant when it registered, but location
-        // can be revoked while a session is running. Returning silently
-        // would leave the source looking healthy while the warm-up
-        // registration — the only thing keeping the engine producing NMEA —
-        // stops having any effect. Report it the way start() and
-        // warmUpEngine() already do; GnssController re-exposes this flow.
-        //
-        // The registration is deliberately NOT dropped: it is inert while
-        // the grant is gone and delivers again if it comes back, and that is
-        // this class's only recovery path — start() early-returns on a live
-        // fixJob, so a torn-down warm-up would need a full session
-        // stop/start. tryEmit() clears the error on the next completed
-        // cycle, so it lives exactly as long as the silence does.
+    /**
+     * Promote [intervalMs] into [currentIntervalMs] and re-register the
+     * warm-up LocationListener. Called from the first-cycle transition,
+     * [updateInterval] and [restartWarmUp].
+     *
+     * On chipsets that honour `minTime` the engine slows to the new rate;
+     * on chipsets that produce at native rate this is a no-op and
+     * [tryEmit]'s throttle remains the bound on emission.
+     *
+     * A revoked grant must not keep looking like a healthy session. The
+     * registration is kept (inert while the grant is gone, delivering
+     * again once restored) because start() early-returns on a live fixJob
+     * — dropping the listener would require a full session stop/start to
+     * recover. tryEmit() clears the error on the next completed cycle.
+     */
+    private fun applyInterval(intervalMs: Long) {
+        if (intervalMs == currentIntervalMs) return
         if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION)
             != PackageManager.PERMISSION_GRANTED) {
             _state.value = GnssSourceState.Error("Location permission required")
             return
         }
-
+        currentIntervalMs = intervalMs
+        val lm = ctx.getSystemService(LocationManager::class.java) ?: return
+        val l = warmupListener ?: return
         try {
             lm.requestLocationUpdates(
                 LocationManager.GPS_PROVIDER,
-                currentIntervalMs.coerceAtLeast(1_000L),
+                intervalMs.coerceAtLeast(1_000L),
                 0f,
                 l,
             )
@@ -180,8 +194,13 @@ class NmeaGnssSource @Inject constructor(
             // TOCTOU: revoked between the check and the call.
             _state.value = GnssSourceState.Error("Location permission required")
         } catch (e: Exception) {
-            Log.w(TAG, "Warm-up interval update failed", e)
+            Log.w(TAG, "Interval update failed", e)
         }
+    }
+
+    override fun restartWarmUp() {
+        firstFixDelivered = false
+        applyInterval(GnssSource.FIRST_CYCLE_INTERVAL_MS)
     }
 
     override fun stop() {
@@ -323,10 +342,18 @@ class NmeaGnssSource @Inject constructor(
         val fix = buildFixFromSnapshot(snapshot) ?: return
         lastEmittedUtcSecond = utcSecond
         // A cycle got through, so the grant is demonstrably back — clear an
-        // error set by updateInterval() rather than letting it outlive the
+        // error set by applyInterval() rather than letting it outlive the
         // condition it reported.
         if (_state.value is GnssSourceState.Error) _state.value = GnssSourceState.Running
         _fixes.tryEmit(fix)
+        // First cycle delivered at the fast warm-up rate. Now drop to the
+        // user's requested interval. Held until here (rather than applied
+        // at start()) so a slow first cycle does not itself wait for the
+        // user's interval on a HAL that treats minTime as a polling period.
+        if (!firstFixDelivered) {
+            firstFixDelivered = true
+            applyInterval(targetIntervalMs)
+        }
     }
 
     private fun buildFixFromSnapshot(

@@ -52,7 +52,22 @@ class LocationGnssSource @Inject constructor(
 
     private var locationListener: LocationListener? = null
     private var gnssCallback: GnssStatus.Callback? = null
-    private var currentIntervalMs: Long = 1_000L
+
+    // Two-rate state machine: the engine runs at FIRST_CYCLE_INTERVAL_MS
+    // until the first live fix lands, then at targetIntervalMs (the user's
+    // request). Splitting the two means a mid-warm-up settings change
+    // cannot postpone the first fix.
+    private var currentIntervalMs: Long = GnssSource.FIRST_CYCLE_INTERVAL_MS
+    private var targetIntervalMs: Long = GnssSource.FIRST_CYCLE_INTERVAL_MS
+
+    /**
+     * True once a LIVE fix has been emitted. getLastKnownLocation emissions
+     * do NOT set this: a cached fix does not mean the engine is warm, and
+     * dropping to the user's rate before a live fix would delay TTFF on a
+     * HAL that treats `minTime` as a polling interval.
+     */
+    private var firstFixDelivered: Boolean = false
+
     private var cachedSatellites: List<SatelliteObservation> = emptyList()
     private var sessionTtffSeconds: Int? = null
 
@@ -68,10 +83,21 @@ class LocationGnssSource @Inject constructor(
             _state.value = GnssSourceState.Error("LocationManager unavailable")
             return
         }
-        currentIntervalMs = intervalMs
+        targetIntervalMs = intervalMs
+        currentIntervalMs = GnssSource.FIRST_CYCLE_INTERVAL_MS
+        firstFixDelivered = false
         sessionTtffSeconds = null
         val listener = object : LocationListener {
-            override fun onLocationChanged(location: Location) { emit(buildFix(location)) }
+            override fun onLocationChanged(location: Location) {
+                emit(buildFix(location))
+                // First live fix: drop from the warm-up rate to the user's
+                // requested interval. firstFixDelivered is sticky for the
+                // session, so this transition runs exactly once.
+                if (!firstFixDelivered) {
+                    firstFixDelivered = true
+                    applyInterval(targetIntervalMs)
+                }
+            }
             override fun onProviderEnabled(provider: String) {}
             override fun onProviderDisabled(provider: String) {}
         }
@@ -84,7 +110,9 @@ class LocationGnssSource @Inject constructor(
             }
         }
         try {
-            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, intervalMs, 0f, listener)
+            lm.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER, GnssSource.FIRST_CYCLE_INTERVAL_MS, 0f, listener,
+            )
             lm.registerGnssStatusCallback(ctx.mainExecutor, cb)
             locationListener = listener
             gnssCallback = cb
@@ -97,25 +125,30 @@ class LocationGnssSource @Inject constructor(
     }
 
     override fun updateInterval(intervalMs: Long) {
-        if (intervalMs == currentIntervalMs) return
+        if (intervalMs == targetIntervalMs) return
+        targetIntervalMs = intervalMs
+        if (!firstFixDelivered) return
+        applyInterval(intervalMs)
+    }
 
-        // A revoked grant must not keep looking like a healthy session — this
-        // is the source the app runs on by default, so the bare `return` that
-        // used to sit here was a silently dead fix stream. Same shape as
-        // NmeaGnssSource.updateInterval: report the condition, keep the
-        // registration (inert while the grant is gone, delivering again once
-        // it is restored), and let emit() clear the error on the next fix.
-        //
-        // The check sits BEFORE currentIntervalMs is updated, so a failed
-        // check leaves the field agreeing with the live registration and a
-        // later call with the same interval re-checks instead of
-        // short-circuiting on the first line.
+    /**
+     * Promote [intervalMs] into [currentIntervalMs] and re-register the
+     * LocationListener. Called from the first-fix transition,
+     * [updateInterval] and [restartWarmUp].
+     *
+     * A revoked grant must not keep looking like a healthy session — this
+     * is the source the app runs on by default, so a silent return here
+     * would be a silently dead fix stream. Report the condition, keep the
+     * registration (inert while the grant is gone, delivering again once
+     * it is restored), and let emit() clear the error on the next fix.
+     */
+    private fun applyInterval(intervalMs: Long) {
+        if (intervalMs == currentIntervalMs) return
         if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION)
             != PackageManager.PERMISSION_GRANTED) {
             _state.value = GnssSourceState.Error("Location permission required")
             return
         }
-
         currentIntervalMs = intervalMs
         val listener = locationListener ?: return
         try {
@@ -125,8 +158,13 @@ class LocationGnssSource @Inject constructor(
             // TOCTOU: revoked between the check and the call.
             _state.value = GnssSourceState.Error("Location permission required")
         } catch (e: Exception) {
-            Log.w(TAG, "updateInterval failed", e)
+            Log.w(TAG, "Interval update failed", e)
         }
+    }
+
+    override fun restartWarmUp() {
+        firstFixDelivered = false
+        applyInterval(GnssSource.FIRST_CYCLE_INTERVAL_MS)
     }
 
     override fun stop() {
@@ -166,7 +204,7 @@ class LocationGnssSource @Inject constructor(
         }
 
     private fun emit(fix: GnssFix) {
-        // A fix proves the grant is back (see updateInterval's error path).
+        // A fix proves the grant is back (see applyInterval's error path).
         if (_state.value is GnssSourceState.Error) _state.value = GnssSourceState.Running
         _fixes.tryEmit(fix)
     }
