@@ -2,6 +2,10 @@ package de.perigon.companion.core.geo.geoid
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
+import de.perigon.companion.core.di.ApplicationScope
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -21,24 +25,56 @@ import javax.inject.Singleton
  * The grid itself is stateless, read-only, feature-specific data — not
  * shared infrastructure, so it lives here rather than in :core. It wears
  * @Singleton because the 2 MB mapping should be process-wide once any
- * consumer needs it, and because the two consumers (BackgroundService's
- * GPS→MSL conversion for track storage, and the KF debug tab) should not
- * each map their own copy.
+ * consumer needs it, and because the consumers below should not each map
+ * their own copy:
  *
- * Loaded on first [undulation] call, not at construction: a service that
- * starts but never receives a fix, or a KF tab opened on a device with no
- * barometer, should not pay for the cache install.
+ *   - LocationGnssSource.buildFix and NmeaGnssSource.buildFixFromSnapshot:
+ *     WGS84 → MSL on every fix.
+ *   - BackgroundService.buildPassiveFix: the same conversion for the
+ *     passive-mode LocationListener (the middleware has no passive source).
+ *   - NmeaViewModel: undulation at the current parsed position, memoized
+ *     by position bucket, for the NMEA tab's MSL comparison card and the
+ *     Location-comparison card's MSL row.
+ *
+ * The KF debug tab is NOT a consumer: it derives undulation from
+ * (altitudeWgs84M − altitudeMslM) on the middleware's corrected fix, so
+ * no lookup is needed there.
+ *
+ * Loaded at construction (async, on IO). The class-level lazy is forced
+ * by the init block, so every consumer hits a warm grid on its own hot
+ * path — the recorder, both GNSS sources, and the NMEA tab all need
+ * undulation within a second or two of starting, and paying the ~1 ms
+ * mmap (plus first-launch asset copy) at construction is cheaper than
+ * leaving it to whichever thread happens to make the first call
+ * (sometimes main, if the first fix arrives before anything else touches
+ * the grid). The lazy stays as a thread-safety idiom, not as a deferral
+ * mechanism. If a future caller genuinely needs the "never pay for what
+ * you do not use" behaviour, remove the init block — the lazy will fall
+ * back to deferring naturally.
  */
 @Singleton
 class GeoidGrid @Inject constructor(
     @param:ApplicationContext private val ctx: Context,
+    @ApplicationScope scope: CoroutineScope,
 ) {
     private val buffer: ShortBuffer by lazy { load() }
 
+    init {
+        // Warm the grid off-main. On most launches the cache file already
+        // exists (a ~1 ms mmap); only the first launch after install pays
+        // the asset-to-cache copy. Doing it here, in the singleton's init,
+        // means no consumer pays the load cost on its own hot path — the
+        // recorder, both GNSS sources, and the NMEA tab all hit a warm
+        // grid without any per-consumer warm-up code.
+        scope.launch(Dispatchers.IO) { buffer }
+    }
+
     /**
-     * Bilinear interpolation of the geoid undulation (EGM96-style) at
+     * Bilinear interpolation of the geoid undulation (XGM2019e) at
      * [lat], [lon]. Returns the separation in metres between the WGS84
      * ellipsoid and mean sea level. Longitudes outside [-180, 180] wrap.
+     *
+     * The grid is packed as 0.25° int16 decimetres (see load()).
      */
     fun undulation(lat: Double, lon: Double): Float {
         val cols = 1441
