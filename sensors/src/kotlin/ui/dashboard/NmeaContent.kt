@@ -56,11 +56,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import de.perigon.companion.core.geo.CoordFormat
+import de.perigon.companion.core.ui.CoordinateDisplay
 import de.perigon.companion.core.ui.access.RequireAccess
 import de.perigon.companion.sensors.SensorsRequirements
 import de.perigon.companion.sensors.gnss.SatelliteObservation
 import de.perigon.companion.sensors.gnss.UTCDateTime
 import de.perigon.companion.sensors.gnss.sbasPrnFromNmeaId
+import de.perigon.companion.sensors.middleware.deriveNmeaSigma
 import de.perigon.companion.sensors.nmea.NmeaSentence
 import de.perigon.companion.sensors.nmea.NmeaStream
 import de.perigon.companion.sensors.nmea.modeIndicatorLabel
@@ -81,35 +84,34 @@ private val SENTENCE_TYPES = listOf(
 )
 
 /**
- * NMEA tab. Debug surface for the NMEA stream:
- *   - per-sentence-type status chips
- *   - full parsed-values table (all fields the parser extracts)
- *   - satellite table (from GSV, annotated with GSA active set)
- *   - SBAS status
- *   - Android Location comparison
- *   - raw log with filter, freeze, last-cycle, and truncate toggles
+ * NMEA tab. Debug surface for the NMEA stream: per-sentence-type status
+ * chips, parsed-values table, satellite table, SBAS status, and the raw
+ * log with filter / freeze / last-cycle / truncate toggles.
  *
- * The tab is orthogonal to the middleware's source toggle — it always
- * observes `NmeaStream` directly, because it exists to answer "what does
+ * Observes `NmeaStream` directly, because it exists to answer "what does
  * the chip actually emit". Consumers of the merged `GnssFix` (Track tab,
  * GNSS tab, KF tab) do not use this tab's data.
  *
- * The raw log is rendered as a single text window: one Text node holding
- * all lines joined by newlines, inside a Box with both vertical and
- * horizontal scroll. That is what makes horizontal scrolling move the
- * whole viewport instead of individual lines, and what eliminates the
- * inter-item padding that used to appear as visual "empty lines".
+ * No warming control. Sentences flow while the Sensors screen is resumed
+ * (its dashboard session keeps the active source warming the engine —
+ * both sources use an active requestLocationUpdates, not PASSIVE) and
+ * while the recorder is running. If neither is active — Sensors paused
+ * and no recording — nothing is requesting fixes, and the log stays
+ * empty regardless of what this tab does.
  */
 @Composable
-fun NmeaContent(vm: NmeaViewModel) {
+fun NmeaContent(
+    vm: NmeaViewModel,
+    coordFormat: CoordFormat,
+    onFormatChange: (CoordFormat) -> Unit,
+) {
     val parsed by vm.parsed.collectAsStateWithLifecycle()
     val recent by vm.recent.collectAsStateWithLifecycle()
     val lastCycle by vm.lastCycleSentences.collectAsStateWithLifecycle()
     val lastSeen by vm.lastSeen.collectAsStateWithLifecycle()
     val latestLoc by vm.latestLocation.collectAsStateWithLifecycle()
-    val requestGps by vm.requestGpsEnabled.collectAsStateWithLifecycle()
     val streamState by vm.streamState.collectAsStateWithLifecycle()
-    val engineError by vm.engineError.collectAsStateWithLifecycle()
+    val appUndulation by vm.appUndulation.collectAsStateWithLifecycle()
 
     LifecycleResumeEffect(Unit) {
         vm.start()
@@ -172,16 +174,30 @@ fun NmeaContent(vm: NmeaViewModel) {
         ) {
             val errorMsg = when (val s = streamState) {
                 is NmeaStream.State.Error -> s.message
-                else -> engineError
+                else -> null
             }
             if (errorMsg != null) item { ErrorBanner(errorMsg) }
 
-            item { EngineControl(requestGps, vm::setRequestGpsEnabled) }
+            item {
+                CurrentPositionCard(
+                    parsed = parsed,
+                    appUndulationM = appUndulation,
+                    coordFormat = coordFormat,
+                    onFormatChange = onFormatChange,
+                )
+            }
             item { StatusChips(lastSeen) }
             item { ParsedValues(parsed, lastSeen) }
             item { SatelliteSection(parsed.satellites) }
             item { SbasSection(parsed.satellites, parsed.sbasActive) }
-            item { LocationComparison(latestLoc) }
+            item {
+                LocationComparison(
+                    loc = latestLoc,
+                    coordFormat = coordFormat,
+                    onFormatChange = onFormatChange,
+                    undulationAt = vm::undulationAt,
+                )
+            }
 
             item { HorizontalDivider() }
             item {
@@ -243,9 +259,12 @@ fun NmeaContent(vm: NmeaViewModel) {
                 ) {
                     if (displayText.isEmpty()) {
                         Text(
-                            "No NMEA sentences. Ensure GPS is enabled and 'Request GPS " +
-                                "updates' is on (or track recording is active to keep the " +
-                                "engine warm).",
+                            "No NMEA sentences received yet. The active GNSS " +
+                                "source warms the engine while the Sensors screen is " +
+                                "showing; sentences appear once the first cycle " +
+                                "completes. If the log stays empty, check the active " +
+                                "source in Settings → Sensors, or verify that location " +
+                                "permission is granted.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
                         )
@@ -266,7 +285,115 @@ fun NmeaContent(vm: NmeaViewModel) {
     }
 }
 
-// ---- Error + engine control ----
+// ---- Current position (NMEA) ----
+
+/**
+ * Position + heights from the NMEA stream. Shows the chip's WGS84, both
+ * MSL derivations (chip's own geoid vs XGM2019e), and the difference
+ * between them, so a user seeing MSL drift from the platform's own
+ * Location API can trace where the discrepancy comes from.
+ */
+@Composable
+private fun CurrentPositionCard(
+    parsed: NmeaStream.ParsedSnapshot,
+    appUndulationM: Float?,
+    coordFormat: CoordFormat,
+    onFormatChange: (CoordFormat) -> Unit,
+) {
+    val pos = parsed.position
+    val wgs84 = parsed.altitudeWgs84M
+    val chipMsl = parsed.altitudeMslM
+    val chipGeoid = parsed.geoidSepM
+    val xgmMsl = if (wgs84 != null && appUndulationM != null) {
+        wgs84 - appUndulationM.toDouble()
+    } else null
+
+    if (pos == null && wgs84 == null && chipMsl == null) return
+
+    // The same function NmeaGnssSource.buildFixFromSnapshot calls. GNSS
+    // card (fed by fix.sigma), this card, and the Height WGS84 tail all
+    // now agree on the GST-vs-DOP fallback because there is only one
+    // implementation. ParsedSnapshot and CycleSnapshot carry the same
+    // four inputs, so the result is the same for the same fix.
+    val sigma = deriveNmeaSigma(
+        gstHorizontalM = parsed.horizontalSigmaM,
+        gstVerticalM = parsed.verticalSigmaM,
+        hdop = parsed.hdop,
+        vdop = parsed.vdop,
+    )
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("Current position (NMEA)", style = MaterialTheme.typography.titleSmall)
+
+            CoordinateDisplay(
+                lat = pos?.lat,
+                lon = pos?.lon,
+                format = coordFormat,
+                onFormatChange = onFormatChange,
+                modifier = Modifier.fillMaxWidth(),
+                lastFixTimeMs = parsed.timestamp?.toInstant()?.toEpochMilli(),
+                horizontalSigmaM = sigma.horizontalM,
+            )
+
+            HeightRow(
+                label = "Height WGS84",
+                value = wgs84,
+                tail = sigma.verticalM?.let { "± %.1f m".format(Locale.US, it) },
+            )
+            HeightRow(
+                label = "Height MSL (chip)",
+                value = chipMsl,
+                tail = chipGeoid?.let { "geoid %.1f m".format(Locale.US, it) },
+            )
+            HeightRow(
+                label = "Height MSL (XGM2019e)",
+                value = xgmMsl,
+                tail = appUndulationM?.let { "geoid %.1f m".format(Locale.US, it) },
+            )
+
+            if (chipMsl != null && xgmMsl != null) {
+                val delta = kotlin.math.abs(xgmMsl - chipMsl)
+                Text(
+                    if (delta < 0.05) {
+                        "Chip and XGM2019e geoid models agree at this position."
+                    } else {
+                        "Chip and XGM2019e geoid models differ by %.1f m at this position."
+                            .format(Locale.US, delta)
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HeightRow(label: String, value: Double?, tail: String?) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                value?.let { "%.1f m".format(Locale.US, it) } ?: "--",
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            if (tail != null) {
+                Text(
+                    tail,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+// ---- Error ----
 
 @Composable
 private fun ErrorBanner(message: String) {
@@ -283,34 +410,8 @@ private fun ErrorBanner(message: String) {
     }
 }
 
-@Composable
-private fun EngineControl(enabled: Boolean, onToggle: (Boolean) -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Request GPS updates", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        "NMEA sentences are produced by the GNSS engine, which runs only " +
-                            "while something requests location updates. Keep this on so " +
-                            "the tab receives data. Turn off only when another consumer " +
-                            "(e.g. track recording) is keeping the engine warm.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Switch(checked = enabled, onCheckedChange = onToggle)
-            }
-        }
-    }
-}
-
 // ---- Status chips ----
 
-/**
- * Per-sentence-type arrival chips. The 1 Hz ticker keeps the elapsed
- * labels fresh without a full recomposition of the whole page.
- */
 @Composable
 private fun StatusChips(lastSeen: Map<String, Long>) {
     val now by produceState(initialValue = SystemClock.elapsedRealtime()) {
@@ -366,8 +467,6 @@ private fun ParsedValues(p: NmeaStream.ParsedSnapshot, lastSeen: Map<String, Lon
             Spacer(Modifier.height(4.dp))
             if (lastSeen.any { it.key in setOf("GGA", "RMC", "GNS", "GLL") }) {
                 ValueRow("UTC", formatUtcDateTime(p.timestamp))
-                ValueRow("Position",
-                    p.position?.let { "%.7f, %.7f".format(Locale.US, it.lat, it.lon) } ?: "--")
             }
             ValueRow("Fix quality", p.fixQuality?.label ?: "--")
             ValueRow("Fix dimension", p.fixDimension?.label ?: "--")
@@ -493,31 +592,42 @@ private fun SbasSection(sats: List<SatelliteObservation>, active: Boolean) {
 // ---- Location comparison ----
 
 @Composable
-private fun LocationComparison(loc: Location?) {
+private fun LocationComparison(
+    loc: Location?,
+    coordFormat: CoordFormat,
+    onFormatChange: (CoordFormat) -> Unit,
+    undulationAt: (Double, Double) -> Float,
+) {
     if (loc == null) return
+    val wgs84 = if (loc.hasAltitude()) loc.altitude else null
+    val msl = if (wgs84 != null) {
+        wgs84 - undulationAt(loc.latitude, loc.longitude)
+    } else null
     Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("Android Location (for comparison)", style = MaterialTheme.typography.titleSmall)
             Text(
-                "Values from the platform's most recent fix, delivered because the " +
-                    "engine is running. Compare against NMEA fields above to spot " +
-                    "HAL quantization and vertical-accuracy differences.",
+                "Values from the platform's most recent fix. Compare against NMEA " +
+                    "above to spot HAL quantization and vertical-accuracy differences.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Spacer(Modifier.height(4.dp))
-            ValueRow("Altitude",
-                if (loc.hasAltitude()) "%.1f m".format(Locale.US, loc.altitude) else "--")
-            ValueRow("Speed",
-                if (loc.hasSpeed()) "%.2f m/s".format(Locale.US, loc.speed) else "--")
-            ValueRow("Bearing",
-                if (loc.hasBearing()) "%.1f°".format(Locale.US, loc.bearing) else "--")
-            ValueRow("Horizontal accuracy",
-                if (loc.hasAccuracy()) "%.1f m".format(Locale.US, loc.accuracy) else "--")
-            ValueRow("Vertical accuracy",
-                if (loc.hasVerticalAccuracy())
-                    "%.1f m".format(Locale.US, loc.verticalAccuracyMeters)
-                else "--")
+            CoordinateDisplay(
+                lat = loc.latitude,
+                lon = loc.longitude,
+                format = coordFormat,
+                onFormatChange = onFormatChange,
+                modifier = Modifier.fillMaxWidth(),
+                lastFixTimeMs = loc.time,
+                horizontalSigmaM = if (loc.hasAccuracy()) loc.accuracy.toDouble() else null,
+            )
+            PositionReadings(
+                wgs84M = wgs84,
+                wgs84SigmaM = if (loc.hasVerticalAccuracy()) loc.verticalAccuracyMeters.toDouble() else null,
+                mslM = msl,
+                speedMps = if (loc.hasSpeed()) loc.speed.toDouble() else null,
+                headingDeg = if (loc.hasBearing()) loc.bearing.toDouble() else null,
+            )
         }
     }
 }

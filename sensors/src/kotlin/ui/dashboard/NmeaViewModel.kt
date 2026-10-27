@@ -9,52 +9,59 @@ import android.location.LocationManager
 import android.util.Log
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import de.perigon.companion.core.geo.geoid.GeoidGrid
 import de.perigon.companion.sensors.nmea.NmeaCycleTracker
 import de.perigon.companion.sensors.nmea.NmeaSentence
 import de.perigon.companion.sensors.nmea.NmeaStream
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import java.io.Closeable
 import javax.inject.Inject
 
 /**
  * Backs the NMEA tab.
  *
- * Three responsibilities:
+ * Holds two leases while the tab is visible:
+ *   1. [NmeaStream] — passive observer of the platform's NMEA callback.
+ *   2. [NmeaCycleTracker] — consolidates the raw sentence stream into
+ *      per-cycle snapshots for the "Last Cycle" view.
  *
- *  1. Hold a [NmeaStream] lease while the tab is visible. The stream is
- *     passive: it observes whatever the GNSS engine emits. If nothing is
- *     warming the engine, the stream is silent.
+ * Registers a PASSIVE_PROVIDER Location listener, purely so the
+ * Location-comparison card has data. That listener is a consumer of the
+ * LocationManager, not a warmer — it does not trigger the GNSS engine.
  *
- *  2. Hold a [NmeaCycleTracker] lease so the "Last Cycle" view has data
- *     to render. The tracker consolidates the raw sentence stream into
- *     per-cycle snapshots — it uses the same passive subscription model
- *     as the stream, so this lease is cheap.
+ * Engine warming is NOT this ViewModel's job. SensorsScreen's
+ * LifecycleResumeEffect(Unit) acquires a DashboardViewModel GnssSession
+ * for the whole screen lifetime, which drives the active source (Location
+ * or NMEA per user setting). Both sources register an ACTIVE
+ * requestLocationUpdates(GPS_PROVIDER) — the Location source for its own
+ * fix stream, the NMEA source purely to keep the engine producing (its
+ * Location payloads are discarded; it builds fixes from NMEA sentences
+ * via addNmeaListener). Neither uses PASSIVE_PROVIDER for warm-up:
+ * passive receives nothing when no other consumer is requesting.
  *
- *  3. Warm the engine via a `requestLocationUpdates` call. The GNSS chip
- *     produces NMEA only while *something* is requesting fixes; the
- *     listener here is that "something" when the tab is open and no
- *     recorder is running. The user-facing toggle controls this — on by
- *     default so the tab has data to show, off when another consumer is
- *     keeping the engine warm and the user wants zero cost from this tab.
+ * Consequence: while the Sensors screen is resumed, NMEA sentences reach
+ * this tab regardless of whether the recorder is running or which source
+ * is selected. The blank-tab case is "Sensors screen paused AND nothing
+ * else on the device is requesting fixes."
  *
- * The interval passed to `requestLocationUpdates` is a delivery throttle,
- * not an engine throttle — the GNSS chip runs at its own (~1 Hz) cadence
- * regardless. This is why the toggle only makes sense as on/off:
- * adjusting an interval would not change battery cost.
- *
- * Failures surface as state, not exceptions: [streamState] carries the
- * stream lifecycle, [engineError] carries location-request failures. Both
- * drive the banner in the UI.
+ * No "Request GPS updates" toggle. There is nothing to toggle: warming is
+ * a screen-level or source-level decision, and the tab cannot affect it
+ * either way without duplicating the source's job.
  */
 @HiltViewModel
 class NmeaViewModel @Inject constructor(
     @param:ApplicationContext private val ctx: Context,
     private val stream: NmeaStream,
     private val cycleTracker: NmeaCycleTracker,
+    private val geoidGrid: GeoidGrid,
 ) : ViewModel() {
 
     val parsed: StateFlow<NmeaStream.ParsedSnapshot> = stream.parsed
@@ -65,97 +72,116 @@ class NmeaViewModel @Inject constructor(
     /** Raw sentences of the last complete cycle, updated by the tracker. */
     val lastCycleSentences: StateFlow<List<NmeaSentence>> = cycleTracker.lastCycleSentences
 
-    /** Most recent platform fix, for the comparison card. */
-    private val _latestLocation = MutableStateFlow<Location?>(null)
-    val latestLocation: StateFlow<Location?> = _latestLocation.asStateFlow()
-
-    /** Location-request failure message, or null when running / idle. */
-    private val _engineError = MutableStateFlow<String?>(null)
-    val engineError: StateFlow<String?> = _engineError.asStateFlow()
+    /**
+     * XGM2019e undulation at the last parsed position. Recomputed only
+     * when position crosses a 0.00005° boundary — a bucket narrow enough
+     * that the memoized undulation differs from the exact-value
+     * computation by at most ~1 cm on the steepest walkable terrain, well
+     * below the display precision of the card's heights.
+     *
+     * Quantization is on the position, not the output:
+     * distinctUntilChanged drops emissions where consecutive sentences
+     * report positions within the same bucket, so the undulation
+     * computation runs at most once per bucket rather than once per
+     * sentence (which would be 8–10× per second from the raw stream).
+     */
+    private val _appUndulation = MutableStateFlow<Float?>(null)
+    val appUndulation: StateFlow<Float?> = _appUndulation.asStateFlow()
 
     /**
-     * Whether this tab requests GPS updates to keep the engine warm. On by
-     * default: without it, the tab would show no data unless the recorder
-     * or another app happened to be requesting fixes.
+     * Most recent platform Location, for the comparison card. Fed by a
+     * PASSIVE_PROVIDER listener that does not warm the engine. Null until
+     * something else on the device starts requesting fixes.
      */
-    private val _requestGpsEnabled = MutableStateFlow(true)
-    val requestGpsEnabled: StateFlow<Boolean> = _requestGpsEnabled.asStateFlow()
+    private val _latestLocation = MutableStateFlow<Location?>(null)
+    val latestLocation: StateFlow<Location?> = _latestLocation.asStateFlow()
 
     private var streamLease: Closeable? = null
     private var trackerLease: Closeable? = null
     private var locationListener: LocationListener? = null
 
+    init {
+        viewModelScope.launch {
+            stream.parsed
+                .map { it.position }
+                .distinctUntilChanged { a, b ->
+                    a == b || (
+                        a != null && b != null &&
+                        (a.lat * 20000).toLong() == (b.lat * 20000).toLong() &&
+                        (a.lon * 20000).toLong() == (b.lon * 20000).toLong()
+                    )
+                }
+                .collect { pos ->
+                    _appUndulation.value = pos?.let {
+                        geoidGrid.undulation(it.lat, it.lon)
+                    }
+                }
+        }
+    }
+
+    /** Undulation lookup for the Location-comparison card's MSL row. */
+    fun undulationAt(lat: Double, lon: Double): Float = geoidGrid.undulation(lat, lon)
+
     /**
-     * Acquire the stream + tracker, and start the location request (if
-     * enabled). Idempotent — safe to call from both the outer
+     * Acquire the stream + tracker, and start the passive Location
+     * listener. Idempotent — safe to call from both the outer
      * LifecycleResumeEffect and the inner RequireAccess LaunchedEffect.
      */
     fun start() {
         if (streamLease == null) streamLease = stream.acquire()
         if (trackerLease == null) trackerLease = cycleTracker.acquire()
-        if (_requestGpsEnabled.value) startLocationRequest()
+        startPassiveLocationListener()
     }
 
-    /** Release both leases and stop the location request. Idempotent. */
+    /** Release both leases and stop the passive listener. Idempotent. */
     fun stop() {
         streamLease?.close()
         streamLease = null
         trackerLease?.close()
         trackerLease = null
-        stopLocationRequest()
+        stopPassiveLocationListener()
     }
 
-    /**
-     * Toggle the engine-warming request. On when the tab needs its own
-     * fix stream; off when another consumer (recorder, GNSS tab) is
-     * already keeping the engine warm and the user prefers this tab to
-     * add no cost.
-     */
-    fun setRequestGpsEnabled(enabled: Boolean) {
-        if (_requestGpsEnabled.value == enabled) return
-        _requestGpsEnabled.value = enabled
-        if (enabled) startLocationRequest() else stopLocationRequest()
-    }
-
-    private fun startLocationRequest() {
+    private fun startPassiveLocationListener() {
         if (locationListener != null) return
         if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION)
-            != PackageManager.PERMISSION_GRANTED) {
-            _engineError.value = "Location permission required"
-            return
-        }
-        val lm = ctx.getSystemService(LocationManager::class.java)
-        if (lm == null) {
-            _engineError.value = "LocationManager unavailable"
-            return
-        }
-        // Seed the comparison card from whatever the platform already has.
+            != PackageManager.PERMISSION_GRANTED) return
+        val lm = ctx.getSystemService(LocationManager::class.java) ?: return
         lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.let {
             _latestLocation.value = it
         }
         val listener = object : LocationListener {
             override fun onLocationChanged(location: Location) {
-                _latestLocation.value = location
+                // Prefer altitude-bearing locations. Network-only passive
+                // updates arrive without altitude, which would blank the
+                // MSL cell in the comparison card every time one lands.
+                // Accept an altitude-less location only when nothing
+                // better is held — position stays usable, MSL lights up
+                // again as soon as a GPS fix arrives.
+                val current = _latestLocation.value
+                if (location.hasAltitude() || current == null || !current.hasAltitude()) {
+                    _latestLocation.value = location
+                }
             }
             override fun onProviderEnabled(provider: String) {}
             override fun onProviderDisabled(provider: String) {}
         }
         try {
-            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1_000L, 0f, listener)
+            lm.requestLocationUpdates(LocationManager.PASSIVE_PROVIDER, 0L, 0f, listener)
             locationListener = listener
-            _engineError.value = null
         } catch (e: SecurityException) {
-            _engineError.value = "Location permission denied: ${e.message}"
-            Log.w(TAG, "Location request denied", e)
+            Log.w(TAG, "Passive listener registration denied", e)
+        } catch (e: Exception) {
+            Log.w(TAG, "Passive listener registration failed", e)
         }
     }
 
-    private fun stopLocationRequest() {
+    private fun stopPassiveLocationListener() {
         val l = locationListener ?: return
         try {
             ctx.getSystemService(LocationManager::class.java)?.removeUpdates(l)
         } catch (e: Exception) {
-            Log.w(TAG, "Location request removal failed", e)
+            Log.w(TAG, "Passive listener removal failed", e)
         }
         locationListener = null
     }
