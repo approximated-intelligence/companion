@@ -67,6 +67,7 @@ fun BackupDestinationSection(
     enabled: Boolean,
     modifier: Modifier = Modifier,
     currentDestination: String = "",
+    isRunning: Boolean = false,
     vm: BackupDestinationViewModel = hiltViewModel(),
 ) {
     val ctx = LocalContext.current
@@ -134,7 +135,11 @@ fun BackupDestinationSection(
                 val driveUri = drive.treeUri.toString()
                 val dest = "THUMBDRIVE:$driveUri"
                 val uuid = driveUuidOf(drive.treeUri)
-                val isWriting = currentDestination == dest
+                // Gate on isRunning: WorkManager retains the last progress
+                // across terminal transitions, so matching the string alone
+                // would leave a finished drive's eject button stuck as
+                // "Writing…". Same gate as MirrorScreen's writingDriveUri.
+                val isWriting = isRunning && currentDestination == dest
                 val isEjecting = uuid != null && uuid in ejectingUuids
                 DestinationRow(
                     icon = Icons.Default.Usb,

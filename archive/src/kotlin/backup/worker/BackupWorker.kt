@@ -269,6 +269,8 @@ class BackupWorker @AssistedInject constructor(
             // accumulator is empty.
             postSkipSummary()
             fail(ERR_B2_ERROR, e.message ?: "Unknown error")
+        } finally {
+            clearTrackedDestination()
         }
     }
 
@@ -417,5 +419,25 @@ class BackupWorker @AssistedInject constructor(
             packPercent  = trackedPackPercent,
             currentDestination = trackedDestination,
         ))
+    }
+
+    /**
+     * Clear [trackedDestination] and re-emit progress, so WorkInfo.progress
+     * says "no destination" once the run is over.
+     *
+     * Belt-and-suspenders with [BackupPresentation.toBackupProgress]'s
+     * sanitization: this call runs (and setProgress works) on success and
+     * failure; on CANCELLED, setProgress throws and the presentation layer
+     * is the only thing that clears the field. Either alone is sufficient.
+     */
+    private suspend fun clearTrackedDestination() {
+        trackedDestination = ""
+        try {
+            emitProgress()
+        } catch (_: CancellationException) {
+            // Worker stopped; presentation layer sanitizes terminal state.
+        } catch (_: Exception) {
+            // setProgress failed; presentation layer sanitizes terminal state.
+        }
     }
 }

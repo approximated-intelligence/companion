@@ -267,6 +267,7 @@ private fun ListContent(
                 snackbarHost = snackbarHost,
                 enabled      = !state.backup.isRunning && !state.consolidateRunning && !state.isDeleting,
                 currentDestination = state.backup.currentDestination,
+                isRunning          = state.backup.isRunning,
             )
         }
 
@@ -362,6 +363,7 @@ private fun GridContent(
                 snackbarHost = snackbarHost,
                 enabled      = !state.backup.isRunning && !state.consolidateRunning && !state.isDeleting,
                 currentDestination = state.backup.currentDestination,
+                isRunning          = state.backup.isRunning,
             )
         }
 

@@ -23,9 +23,15 @@ data class BackupProgress(
     val errorType: String = BackupWorker.ERR_NONE,
     val errorDetail: String = "",
     /**
-     * The destination the worker is writing right now:
-     * "B2" or "THUMBDRIVE:<treeUri>". Empty when nothing is running.
-     * Drives not equal to this string are idle and ejectable.
+     * The destination the worker is writing right now: "B2" or
+     * "THUMBDRIVE:<treeUri>". Drives not equal to this string are idle
+     * and ejectable.
+     *
+     * INVARIANT: non-empty iff [isRunning]. Enforced by [toBackupProgress],
+     * which sanitizes this to "" on every non-RUNNING state — WorkManager
+     * does not clear WorkInfo.progress on terminal transitions, so without
+     * the sanitization the last thumb drive stays "Writing…" (eject
+     * disabled) after the run ends.
      */
     val currentDestination: String = "",
 ) {
@@ -62,8 +68,10 @@ fun WorkInfo.toBackupProgress(prev: BackupProgress): BackupProgress {
             WorkInfo.State.SUCCEEDED -> ""
             else -> p.getString(BackupWorker.KEY_ERROR_DETAIL) ?: prev.errorDetail
         },
-        currentDestination = p.getString(BackupWorker.KEY_CURRENT_DESTINATION)
-                             ?: prev.currentDestination,
+        currentDestination =
+            if (state == WorkInfo.State.RUNNING)
+                p.getString(BackupWorker.KEY_CURRENT_DESTINATION) ?: prev.currentDestination
+            else "",
     )
 }
 
