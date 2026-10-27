@@ -35,10 +35,10 @@ private fun valid(lat: Double, lon: Double): Boolean =
 
 // ---- Decimal degrees (DD) ----
 
-/** "48.12345° N, 11.57658° E" — 5 decimals ≈ 1 m at the equator. */
+/** "48.12345°N, 11.57658°E" — 5 decimals ≈ 1 m at the equator. */
 fun formatDd(lat: Double, lon: Double, decimals: Int = 5): String {
     if (!valid(lat, lon)) return "--"
-    return "%.${decimals}f° %s, %.${decimals}f° %s".format(
+    return "%.${decimals}f°%s, %.${decimals}f°%s".format(
         NUM,
         abs(lat), if (lat >= 0) "N" else "S",
         abs(lon), if (lon >= 0) "E" else "W",
@@ -52,7 +52,7 @@ private fun toDdm(value: Double, positive: String, negative: String): String {
     val v = abs(value)
     val deg = v.toInt()
     val min = (v - deg) * 60.0
-    return "%d° %.3f' %s".format(NUM, deg, min, hemisphere)
+    return "%d° %.3f'%s".format(NUM, deg, min, hemisphere)
 }
 
 fun formatDdm(lat: Double, lon: Double): String {
@@ -69,7 +69,7 @@ private fun toDms(value: Double, positive: String, negative: String): String {
     val tmp = (v - deg) * 60.0
     val min = tmp.toInt()
     val sec = (tmp - min) * 60.0
-    return "%d° %d' %.1f\" %s".format(NUM, deg, min, sec, hemisphere)
+    return "%d° %d' %.1f\"%s".format(NUM, deg, min, sec, hemisphere)
 }
 
 fun formatDms(lat: Double, lon: Double): String {
